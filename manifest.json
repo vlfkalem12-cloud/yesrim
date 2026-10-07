@@ -1,0 +1,13 @@
+{
+  "name": "HTML → Editable Figma",
+  "id": "html-to-editable-figma-local",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["*"],
+    "reasoning": "User-selected HTML can reference HTTPS stylesheets, fonts and images on arbitrary hosts. No uploaded HTML or conversion results are sent to a server."
+  }
+}
