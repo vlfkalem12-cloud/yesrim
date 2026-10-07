@@ -512,6 +512,46 @@
     await Promise.all(Array.from({ length: Math.min(4, requests.length) }, () => worker()));
   }
 
+  // src/form-controls.ts
+  var TEXT_INPUT_TYPES = /* @__PURE__ */ new Set(["text", "search", "email", "url", "tel", "number"]);
+  function readFormContent(element) {
+    if (element.localName === "select") {
+      const select = element;
+      return { text: select.selectedOptions[0]?.label ?? "", placeholder: false, multiline: false };
+    }
+    if (element.localName !== "input" && element.localName !== "textarea") return null;
+    const control = element;
+    if (element.localName === "input" && !TEXT_INPUT_TYPES.has(control.type)) return null;
+    return { text: control.value || control.placeholder || "", placeholder: !control.value && !!control.placeholder, multiline: element.localName === "textarea" };
+  }
+  function measureFormText(element, rect, style, content) {
+    const doc = element.ownerDocument;
+    const controlStyle = doc.defaultView.getComputedStyle(element);
+    const border = readInsets(controlStyle, "border"), padding = readInsets(controlStyle, "padding");
+    const width = Math.max(1, rect.width - border.left - border.right - padding.left - padding.right);
+    const height = Math.max(0, rect.height - border.top - border.bottom - padding.top - padding.bottom);
+    const mirror = doc.createElement("span");
+    mirror.style.setProperty("all", "initial", "important");
+    for (const key of ["font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "direction", "word-break", "overflow-wrap", "tab-size"]) mirror.style.setProperty(key, style.getPropertyValue(key), "important");
+    for (const [key, value] of Object.entries({ position: "fixed", left: "0", top: "0", display: "block", width: `${width}px`, height: "auto", visibility: "hidden", "white-space": content.multiline ? controlStyle.whiteSpace : "pre" })) mirror.style.setProperty(key, value, "important");
+    mirror.textContent = content.text;
+    doc.body.append(mirror);
+    try {
+      const range = doc.createRange();
+      range.selectNodeContents(mirror);
+      const box = range.getBoundingClientRect(), lineBox = mirror.getBoundingClientRect();
+      const verticalOffset = content.multiline ? 0 : Math.max(0, (height - lineBox.height) / 2);
+      return {
+        x: rect.x + border.left + padding.left + (content.multiline ? 0 : box.x - lineBox.x),
+        y: rect.y + border.top + padding.top + verticalOffset + box.y - lineBox.y,
+        width: content.multiline ? width : box.width,
+        height: Math.max(box.height, number(style.lineHeight, number(style.fontSize, 16)))
+      };
+    } finally {
+      mirror.remove();
+    }
+  }
+
   // src/parser.ts
   var TEXT_TAGS = /* @__PURE__ */ new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "strong", "small", "a", "em", "b", "i", "li", "pre", "code"]);
   var OMIT_TAGS = /* @__PURE__ */ new Set(["head", "style", "script", "link", "meta", "title", "noscript", "template", "br"]);
@@ -694,7 +734,11 @@
       const rect = bounds(el.getBoundingClientRect());
       if (rect.width === 0 && rect.height === 0 && !el.children.length) return [];
       const name = layerName(el);
-      const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el);
+      const hasFormContent = TEXT_TAGS.has(el.localName) && [...el.querySelectorAll("input, textarea, select")].some((child) => {
+        const box = child.getBoundingClientRect();
+        return readFormContent(child) !== null && (box.width > 0 || box.height > 0) && !["hidden", "collapse"].includes(computed(child).visibility);
+      });
+      const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el) && !hasFormContent;
       const node = {
         type: el.localName === "svg" ? "SVG" : el.localName === "img" ? "IMAGE" : isText ? "TEXT" : "FRAME",
         tagName: el.localName,
@@ -740,6 +784,7 @@
         const content = view.getComputedStyle(el, pseudo).content;
         if (content && !["none", "normal", '""'].includes(content)) warn("PSEUDO_ELEMENT", name, `${pseudo} \uC0DD\uC131 \uCF58\uD150\uCE20\uB294 \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.`);
       }
+      const formContent = readFormContent(el);
       if (node.type === "TEXT") {
         const range = doc.createRange();
         range.selectNodeContents(el);
@@ -764,6 +809,29 @@
           node.text = void 0;
           count++;
         }
+      } else if (formContent !== null) {
+        const content = formContent;
+        node.layout.direction = "NONE";
+        node.size.heightMode = "FIXED";
+        if (content.text && count < LIMITS.nodes && depth < LIMITS.depth) {
+          const contentStyle = content.placeholder ? view.getComputedStyle(el, "::placeholder") : style;
+          content.text = transformText(content.text, contentStyle.textTransform);
+          const textRect = measureFormText(el, rect, contentStyle, content);
+          const child = {
+            type: "TEXT",
+            tagName: "#text",
+            name: `${name} / text`,
+            text: content.text,
+            rect: textRect,
+            size: { width: textRect.width, height: textRect.height, widthMode: content.multiline ? "FIXED" : "HUG", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
+            layout: { ...node.layout, display: "inline", direction: "NONE", padding: zero(), margin: zero(), absolute: false, position: "static", grow: 0, order: 0, alignSelf: "auto", wrap: false, zIndex: null },
+            style: { ...readStyle(contentStyle), background: null, backgroundImage: void 0, shadow: void 0, opacity: content.placeholder ? number(contentStyle.opacity, 1) : 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            source: { selector: `${selector(el)} / text`, id: "", classNames: [], synthetic: true },
+            children: []
+          };
+          node.children = [child];
+          count++;
+        } else if (content.text) warn("TREE_LIMIT", name, "\uB178\uB4DC \uC218 \uB610\uB294 \uC911\uCCA9 \uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C control \uD14D\uC2A4\uD2B8\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
       } else if (node.type === "SVG") {
         try {
           node.svg = serializeSVG(el);

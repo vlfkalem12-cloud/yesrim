@@ -6,6 +6,7 @@ import { optimizeEmptyWrappers } from './optimizer';
 import { serializeSVG } from './svg';
 import { collectCSSVariableNames, readCSSVariables } from './css-variables';
 import { allowedAsset, collectImages, resolveLocalAsset } from './assets';
+import { measureFormText, readFormContent } from './form-controls';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
@@ -154,7 +155,11 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     const rect = bounds(el.getBoundingClientRect());
     if (rect.width === 0 && rect.height === 0 && !el.children.length) return [];
     const name = layerName(el);
-    const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el);
+    const hasFormContent = TEXT_TAGS.has(el.localName) && [...el.querySelectorAll('input, textarea, select')].some(child => {
+      const box = child.getBoundingClientRect();
+      return readFormContent(child) !== null && (box.width > 0 || box.height > 0) && !['hidden', 'collapse'].includes(computed(child).visibility);
+    });
+    const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el) && !hasFormContent;
     const node: ParsedNode = {
       type: el.localName === 'svg' ? 'SVG' : el.localName === 'img' ? 'IMAGE' : isText ? 'TEXT' : 'FRAME', tagName: el.localName, name, rect,
       layout: readLayout(style, el), size: inferSizing(el, style, el.parentElement ? computed(el.parentElement) : null, rect.width, rect.height),
@@ -188,6 +193,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       const content = view.getComputedStyle(el, pseudo).content;
       if (content && !['none', 'normal', '""'].includes(content)) warn('PSEUDO_ELEMENT', name, `${pseudo} 생성 콘텐츠는 생략했습니다.`);
     }
+    const formContent = readFormContent(el);
     if (node.type === 'TEXT') {
       const range = doc.createRange(); range.selectNodeContents(el);
       node.size.widthMode = inferTextWidth(node.size, style, node.layout, range);
@@ -204,6 +210,24 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === 'HUG' ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
       }
+    } else if (formContent !== null) {
+      const content = formContent;
+      // Retain the control's measured box; its native value is not a DOM child.
+      node.layout.direction = 'NONE';
+      node.size.heightMode = 'FIXED';
+      if (content.text && count < LIMITS.nodes && depth < LIMITS.depth) {
+        const contentStyle = content.placeholder ? view.getComputedStyle(el, '::placeholder') : style;
+        content.text = transformText(content.text, contentStyle.textTransform);
+        const textRect = measureFormText(el, rect, contentStyle, content);
+        const child: ParsedNode = {
+          type: 'TEXT', tagName: '#text', name: `${name} / text`, text: content.text, rect: textRect,
+          size: { width: textRect.width, height: textRect.height, widthMode: content.multiline ? 'FIXED' : 'HUG', heightMode: 'HUG', authoredWidth: 'auto', authoredHeight: 'auto' },
+          layout: { ...node.layout, display: 'inline', direction: 'NONE', padding: zero(), margin: zero(), absolute: false, position: 'static', grow: 0, order: 0, alignSelf: 'auto', wrap: false, zIndex: null },
+          style: { ...readStyle(contentStyle), background: null, backgroundImage: undefined, shadow: undefined, opacity: content.placeholder ? number(contentStyle.opacity, 1) : 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+          source: { selector: `${selector(el)} / text`, id: '', classNames: [], synthetic: true }, children: []
+        };
+        node.children = [child]; count++;
+      } else if (content.text) warn('TREE_LIMIT', name, '노드 수 또는 중첩 깊이 제한으로 control 텍스트를 생략했습니다.');
     } else if (node.type === 'SVG') {
       try { node.svg = serializeSVG(el); }
       catch (error) { warn('SVG_SERIALIZE', name, errorMessage(error)); }

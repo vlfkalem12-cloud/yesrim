@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Form Control Content Regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font: 16px/24px Inter, sans-serif; color: #172033; }
+  main { display: flex; flex-direction: column; gap: 20px; width: 680px; }
+  .form-grid { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
+  input, textarea, select { width: 100%; border: 2px solid #c6cede; border-radius: 6px; padding: 8px 12px; background: #fff; color: #172033; font: 16px/24px Inter, sans-serif; }
+  input, select { height: 44px; }
+  textarea { height: 100px; resize: none; }
+  input::placeholder, textarea::placeholder { color: #778899; opacity: .6; }
+  .actions { display: flex; align-items: center; gap: 12px; }
+  .actions input { width: 20px; height: 20px; padding: 0; }
+  button { padding: 8px 16px; border: 1px solid #8090a0; border-radius: 6px; font: inherit; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 8px; border: 1px solid #ccddee; text-align: left; }
+  .card { position: relative; padding: 16px; border: 1px solid #ccddee; border-radius: 8px; }
+  .badge { position: absolute; right: 12px; top: 12px; background: #dbeafe; padding: 2px 8px; }
+</style>
+<main>
+  <h1 id="form-title">폼 표시 내용 테스트</h1>
+  <div class="form-grid">
+    <input id="family-name" value="김" placeholder="성 입력">
+    <input id="name-placeholder" value="" placeholder="이름을 입력하세요">
+    <input id="empty-input">
+    <input id="zero-input" type="number" value="0" placeholder="수량">
+    <textarea id="message">첫 번째 줄
+두 번째 줄</textarea>
+    <textarea id="message-placeholder" placeholder="메시지를 입력하세요"></textarea>
+    <textarea id="empty-textarea"></textarea>
+    <select id="selected-city"><option value="seoul">서울</option><option value="busan" selected>부산</option><option value="jeju">제주</option></select>
+    <select id="default-city"><option>대전</option><option>광주</option></select>
+    <select id="option-label"><option label="화면에 표시되는 이름" selected>내부 option 텍스트</option><option>다른 옵션</option></select>
+    <select id="empty-select"><option selected></option><option>선택되지 않음</option></select>
+    <label id="nested-label">성명 <span><input id="labeled-input" value="박"></span></label>
+  </div>
+  <div class="actions">
+    <input id="checkbox" type="checkbox" value="체크 값" checked><label>동의</label>
+    <input id="radio" type="radio" value="라디오 값" checked><label>선택</label>
+    <input id="input-button" type="button" value="기존 Input Button">
+    <button id="save-button"><strong>저장</strong></button>
+  </div>
+  <table id="summary-table"><thead><tr><th>항목</th><th>상태</th></tr></thead><tbody><tr><td>입력 내용</td><td>유지</td></tr></tbody></table>
+  <div class="card"><span class="badge">NEW</span><p id="neighbor-text">기존 Layout과 Typography 유지</p><img id="neighbor-image" width="24" height="24" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="></div>
+</main>
+</html>

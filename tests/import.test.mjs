@@ -41,6 +41,75 @@ async function convert(doc, options) {
 const find = (root, name) => flatten(root).find(node => node.name === name);
 const parsedNodes = root => [root, ...root.children.flatMap(parsedNodes)];
 
+test('Form controls preserve value, placeholder and selected option as editable Frame + Text', async () => {
+  const doc = await parse(await readFile('test/form-controls-regression.html', 'utf8'));
+  const { frame, report } = await convert(doc);
+  const contents = {
+    'family-name': '김', 'name-placeholder': '이름을 입력하세요', 'zero-input': '0',
+    message: '첫 번째 줄\n두 번째 줄', 'message-placeholder': '메시지를 입력하세요',
+    'selected-city': '부산', 'default-city': '대전', 'option-label': '화면에 표시되는 이름', 'labeled-input': '박'
+  };
+  for (const [name, text] of Object.entries(contents)) {
+    const control = find(frame, name);
+    assert.equal(control.type, 'FRAME', name);
+    assert.deepEqual(control.children.map(child => [child.type, child.characters]), [['TEXT', text]], name);
+    assert.equal(control.children[0].getPluginData('html-absolute'), '', name);
+    assert.ok(control.children[0].x >= 14, `${name}: border and padding retained`);
+    assert.ok(control.children[0].y >= 10, `${name}: inner text stays within padding`);
+    assert.equal(control.strokeTopWeight, 2);
+    assert.equal(control.topLeftRadius, 6);
+  }
+  for (const name of ['empty-input', 'empty-textarea', 'empty-select']) assert.equal(find(frame, name).children.length, 0, name);
+  const placeholder = find(frame, 'name-placeholder').children[0];
+  assert.deepEqual(placeholder.fills[0].color, { r: 119 / 255, g: 136 / 255, b: 153 / 255 });
+  assert.equal(placeholder.opacity, .6);
+  assert.equal(find(frame, 'family-name').children[0].textAutoResize, 'WIDTH_AND_HEIGHT');
+  assert.equal(find(frame, 'message').children[0].textAutoResize, 'HEIGHT');
+  assert.ok(!flatten(frame).some(node => node.type === 'TEXT' && ['서울', '제주', '성 입력', '내부 option 텍스트', '선택되지 않음'].includes(node.characters)));
+  assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+});
+
+test('Form content reads live DOM properties instead of initial value attributes and textarea textContent', async () => {
+  const page = await browser.newPage();
+  let doc;
+  try {
+    await page.goto(base); await page.addScriptTag({ content: parserBundle });
+    doc = JSON.parse(await page.evaluate(async () => {
+      const rendered = await Parser.renderHTML('<style>body{margin:0}input,textarea,select{font:16px/24px Inter;width:220px}</style><main><input id="live-input" value="old" placeholder="fallback"><textarea id="live-textarea">old textarea</textarea><select id="live-select"><option>현재 선택</option><option selected>초기 선택</option></select><input id="cleared-input" value="old" placeholder="대체 텍스트"><textarea id="cleared-textarea" placeholder="빈 메모">old content</textarea></main>', 1440, 900, document.getElementById('host'));
+      try {
+        const dom = rendered.document;
+        dom.getElementById('live-input').value = '현재 김';
+        dom.getElementById('live-textarea').value = '현재 메모\n두 줄';
+        dom.getElementById('live-select').selectedIndex = 0;
+        dom.getElementById('cleared-input').value = '';
+        dom.getElementById('cleared-textarea').value = '';
+        return JSON.stringify(await Parser.parseRenderedHTML(rendered, { viewport: 1440, viewportHeight: 900, autoLayout: true, styles: true }));
+      } finally { rendered.dispose(); }
+    }));
+  } finally { await page.close(); }
+  const { frame } = await convert(doc);
+  for (const [name, value] of [['live-input', '현재 김'], ['live-textarea', '현재 메모\n두 줄'], ['live-select', '현재 선택'], ['cleared-input', '대체 텍스트'], ['cleared-textarea', '빈 메모']]) assert.deepEqual(find(frame, name).children.map(child => child.characters), [value], name);
+});
+
+test('Form content changes retain checkbox, radio, button and neighboring Grid, Flex, Table, Absolute and Image behavior', async () => {
+  const html = await readFile('test/form-controls-regression.html', 'utf8');
+  for (const options of [{}, { autoLayout: false, styles: false }]) {
+    const doc = await parse(html, options);
+    const { frame, report } = await convert(doc);
+    for (const name of ['checkbox', 'radio', 'input-button']) assert.equal(find(frame, name).children.length, 0, name);
+    assert.deepEqual(flatten(find(frame, 'save-button')).filter(node => node.type === 'TEXT').map(node => node.characters), ['저장']);
+    assert.deepEqual(flatten(find(frame, 'summary-table')).filter(node => node.type === 'TEXT').map(node => node.characters), ['항목', '상태', '입력 내용', '유지']);
+    assert.equal(find(frame, 'form-grid').layoutMode, options.autoLayout === false ? 'NONE' : 'VERTICAL');
+    assert.equal(find(frame, 'actions').layoutMode, options.autoLayout === false ? 'NONE' : 'HORIZONTAL');
+    assert.equal(find(frame, 'badge').getPluginData('html-absolute'), 'true');
+    assert.equal(find(frame, 'neighbor-text').characters, '기존 Layout과 Typography 유지');
+    assert.equal(find(frame, 'neighbor-image').fills[0].type, 'IMAGE');
+    assert.deepEqual(find(frame, 'family-name').children.map(node => node.characters), ['김']);
+    assert.equal(report.total, flatten(frame).length);
+    assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+  }
+});
+
 async function parseWithBrowserRects(html, selectors) {
   const page = await browser.newPage();
   try {

@@ -50,6 +50,8 @@ Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 �
 
 렌더링 수정 확인에는 `test/rendering-regression.html`을 사용하세요. `individual-border`, `shadow-card`, `minmax-box`, `overflow-inner`의 strong / p / span / 직접 텍스트와 중첩 Block, Absolute Frame 내부의 Block / Flex 자식, gradient 앞뒤에 배치된 URL 이미지가 검사 대상입니다. 일반 Block은 고정 Frame 안에 브라우저 측정 좌표를 부모 기준으로 배치하며, 텍스트 크기와 최상위 viewport 크기가 확정된 뒤 좌표를 적용합니다. `Background Image Test` / `NEW`처럼 폭 제약이 없는 한 줄 텍스트는 Auto Layout 밖에서도 Hug로 처리합니다. 명시적인 width / min-max / Fill / 양쪽 Absolute 고정 또는 실제 줄바꿈이 있는 텍스트는 폭 제약을 유지합니다. Auto Layout 크기 속성 설정이 실패하더라도 생성한 노드와 자식 구조를 삭제하지 않습니다.
 
+폼 내용 확인에는 `test/form-controls-regression.html`을 사용하세요. input value `김`, 빈 value의 placeholder, textarea의 두 줄 내용, 선택된 option 및 label 속성, 빈 control과 중첩 label을 확인할 수 있습니다. checkbox / radio / button과 주변 Grid / Flex / Table / Absolute Badge / Image도 함께 배치했습니다.
+
 Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기본 ON, Debug Mode는 기본 OFF입니다. Debug Mode를 켜면 `card [div.card]`처럼 레이어 이름에 HTML selector가 추가됩니다. Images를 끄면 이미지 bytes 수집과 Image Fill 생성을 생략하고 `img` 영역의 빈 Rectangle을 유지합니다. HTML 치수 측정 단계에서는 원본 이미지가 로딩될 수 있습니다. Inline SVG Vector 변환은 유지됩니다.
 
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
@@ -63,6 +65,7 @@ src/code.ts            메시지 처리, 진행 상태, 오류·취소
 src/ui.html            파일 업로드, viewport, 옵션, 결과 UI
 src/ui.ts              FileReader, UI ↔ main 통신, JSON 다운로드
 src/parser.ts          DOMParser, sandbox 렌더링, computed CSS → JSON
+src/form-controls.ts   현재 value / placeholder / 선택된 option 및 텍스트 치수
 src/sizing.ts          부모·Flex·CSS 크기와 min/max → Fixed / Fill / Hug
 src/grid.ts            기본 Grid → 세로·가로 Auto Layout 중첩
 src/assets.ts          이미지·배경 이미지 로딩, 상대 경로 연결, 캐시
@@ -76,6 +79,7 @@ src/utils.ts           색상·숫자·여백·timeout 처리
 examples/mvp.html      요청의 MVP 테스트 HTML
 test/phase2-test.html  2차 기능과 실패 복구 테스트 HTML
 test/rendering-regression.html  Block / Absolute / 다중 배경 렌더링 재현 HTML
+test/form-controls-regression.html  Form Control 내용과 주변 Layout 회귀 HTML
 tests/                 Chromium 파싱·UI 및 Figma API 모의 테스트
 ```
 
@@ -86,6 +90,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - `.html` / `.htm` 클릭 업로드와 Drag & Drop, 최대 5MB.
 - DOM 계층과 id → 첫 번째 class → tag 우선순위 레이어 이름. 장식 없는 단일 body wrapper는 최상위 Imported HTML로 통합합니다. 별도 optimizer는 치수와 위치가 같은 익명 단일 wrapper만 보수적으로 제거합니다.
 - 일반 컨테이너와 button은 Frame, h1~h6 / p / span / label / strong / small 등은 Text. 배경·padding·border가 있는 Text는 Frame 안에 Text를 배치합니다. 컨테이너의 직접 text node도 별도로 생성합니다.
+- text / search / email / url / tel / number input과 textarea는 현재 DOM value → placeholder → 빈 control 순으로 처리합니다. select는 현재 선택된 option의 표시 이름을 사용합니다. Control Frame의 측정 크기·border·padding을 유지하고 내부에 편집 가능한 Text를 배치하며, placeholder 색상·opacity와 textarea 줄바꿈을 반영합니다. label / span 안의 중첩 control도 유지합니다. checkbox / radio / button의 변환 경로는 유지합니다.
 - Flex row / column → 가로 / 세로 Auto Layout. reverse 방향과 CSS order를 반영합니다.
 - `gap`, 네 방향 padding, justify start / center / end / space-between, align start / center / end 및 cross-axis stretch.
 - Typed OM으로 `auto` / `%` / px를 구분하고 측정 치수, 부모의 Flex 흐름, grow / shrink / basis와 min/max로 Fixed / Fill / Hug를 결정합니다. `flex:1`과 `width:100%`는 Auto Layout 부모에서 Fill을 사용합니다. 부모 Hug와 자식 Fill이 순환하면 부모의 측정 치수를 고정하고 경고합니다. min/max는 지원되는 Auto Layout 노드에 적용하며 그 밖에는 측정 크기와 경고를 유지합니다.
@@ -140,4 +145,6 @@ npx playwright install chromium
 
 Lifecycle 검증은 실제 iframe UI와 Main 번들을 연결하여 A → B → C, 동일 파일 재선택, Drag & Drop, 파일 읽기·파싱·Main 생성 실패 후 재시도, 보고서 표시 실패, 이전 요청의 늦은 응답, 중복 요청 및 알림 실패를 검사합니다.
 
-전체 38개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+Form Control 검증은 value / placeholder 우선순위, 빈 control, textarea 줄바꿈, 선택된 option의 label, 초기 HTML 속성과 다른 현재 DOM value / selectedIndex, 중첩 label, 기존 checkbox / radio / button 및 주변 Layout을 검사합니다. Auto Layout과 CSS 스타일을 끈 경우도 확인합니다.
+
+전체 41개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
