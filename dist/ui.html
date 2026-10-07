@@ -700,10 +700,17 @@
       if (style.cssFloat !== "none") warn("FLOAT", name, "float\uB294 \uCE21\uC815\uB41C \uC704\uCE58\uB9CC \uC720\uC9C0\uD569\uB2C8\uB2E4.");
       if (style.backgroundImage !== "none") {
         const layers = splitCSSList(style.backgroundImage);
-        const image = layers[0].match(/^url\(["']?(.*?)["']?\)$/)?.[1];
-        if (image) node.style.backgroundImage = { key: "", src: image, alt: "background", fit: style.backgroundSize.split(",")[0].trim(), position: style.backgroundPosition, repeat: style.backgroundRepeat };
-        else warn("BACKGROUND_IMAGE", name, "\uADF8\uB77C\uB370\uC774\uC158 \uBC30\uACBD\uC740 \uB2E8\uC0C9 \uBC30\uACBD\uC73C\uB85C \uC720\uC9C0\uD569\uB2C8\uB2E4.");
-        if (layers.length > 1) warn("BACKGROUND_LAYERS", name, "\uB2E4\uC911 \uBC30\uACBD\uC740 \uCCAB \uBC88\uC9F8 \uB808\uC774\uC5B4\uB9CC \uAC00\uC838\uC635\uB2C8\uB2E4.");
+        const urls = layers.map((layer) => layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1]);
+        const imageIndex = urls.findIndex((url) => url !== void 0);
+        if (imageIndex >= 0) {
+          const layerValue = (value) => {
+            const values = splitCSSList(value);
+            return values[imageIndex % values.length];
+          };
+          node.style.backgroundImage = { key: "", src: urls[imageIndex], alt: "background", fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat) };
+        }
+        if (layers.some((layer, index) => !urls[index] && layer !== "none")) warn("BACKGROUND_IMAGE", name, imageIndex >= 0 ? "\uBBF8\uC9C0\uC6D0 gradient \uBC30\uACBD\uC740 \uC0DD\uB7B5\uD558\uACE0 URL \uC774\uBBF8\uC9C0 Fill\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4." : "\uBBF8\uC9C0\uC6D0 gradient \uBC30\uACBD\uC740 \uC0DD\uB7B5\uD558\uACE0 \uB2E8\uC0C9 \uBC30\uACBD\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4.");
+        if (layers.length > 1) warn("BACKGROUND_LAYERS", name, imageIndex >= 0 ? "\uB2E4\uC911 \uBC30\uACBD\uC740 \uCCAB \uBC88\uC9F8 URL \uC774\uBBF8\uC9C0 \uB808\uC774\uC5B4\uC640 \uBC30\uACBD\uC0C9\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4." : "\uB2E4\uC911 \uBC30\uACBD\uC758 \uBBF8\uC9C0\uC6D0 \uB808\uC774\uC5B4\uB97C \uC0DD\uB7B5\uD558\uACE0 \uBC30\uACBD\uC0C9\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4.");
       }
       if (style.boxShadow !== "none" && splitCSSList(style.boxShadow).length > 1) warn("MULTIPLE_SHADOWS", name, "\uB2E4\uC911 shadow\uB294 \uCCAB \uBC88\uC9F8 \uD6A8\uACFC\uB9CC \uBC18\uC601\uD569\uB2C8\uB2E4.");
       if (style.boxShadow !== "none" && !node.style.shadow) warn("BOX_SHADOW", name, "\uADF8\uB9BC\uC790 \uBB38\uBC95\uC744 \uD574\uC11D\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");

@@ -250,7 +250,12 @@
     }
     function applySizing(node, parsed, parent, absolute) {
       const autoParent = !!parent && parent.layoutMode !== "NONE" && !absolute;
-      const canHug = node.type === "TEXT" || node.type === "FRAME" && node.layoutMode !== "NONE";
+      const autoFrame = node.type === "FRAME" && node.layoutMode !== "NONE";
+      const canHug = node.type === "TEXT" || autoFrame;
+      if (node.type === "TEXT") {
+        const intrinsic = parsed.size.widthMode === "HUG" && !absolute && (autoParent || ["nowrap", "pre"].includes(parsed.style.whiteSpace));
+        node.textAutoResize = !doc.options.autoLayout ? "NONE" : intrinsic ? "WIDTH_AND_HEIGHT" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
+      }
       const mode = (requested, horizontal) => {
         if (!doc.options.autoLayout) return "FIXED";
         if (requested === "FILL" && !autoParent) return "FIXED";
@@ -261,9 +266,13 @@
         }
         return requested;
       };
-      if (canHug || autoParent) {
-        node.layoutSizingHorizontal = mode(parsed.size.widthMode, true);
-        node.layoutSizingVertical = mode(parsed.size.heightMode, false);
+      if (autoFrame || autoParent) {
+        try {
+          node.layoutSizingHorizontal = mode(parsed.size.widthMode, true);
+          node.layoutSizingVertical = mode(parsed.size.heightMode, false);
+        } catch (error) {
+          warn("SIZING_API", parsed.name, `\uC77C\uBD80 Auto Layout \uD06C\uAE30 \uC124\uC815\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD588\uC9C0\uB9CC \uB178\uB4DC\uC640 \uC790\uC2DD \uAD6C\uC870\uB97C \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+        }
       }
       for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
         const value = parsed.size[key];
@@ -328,7 +337,6 @@
               text.textAlignHorizontal = parsed.style.textAlign === "center" ? "CENTER" : ["right", "end"].includes(parsed.style.textAlign) ? "RIGHT" : parsed.style.textAlign === "justify" ? "JUSTIFIED" : "LEFT";
               text.textDecoration = parsed.style.textDecoration.includes("underline") ? "UNDERLINE" : parsed.style.textDecoration.includes("line-through") ? "STRIKETHROUGH" : "NONE";
             }
-            text.textAutoResize = !doc.options.autoLayout ? "NONE" : parsed.size.widthMode === "HUG" && !parsed.layout.absolute ? "WIDTH_AND_HEIGHT" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
           }
         } else if (parsed.type === "SVG") {
           try {

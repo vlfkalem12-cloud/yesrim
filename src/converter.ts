@@ -194,7 +194,13 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   }
   function applySizing(node: EditableNode, parsed: ParsedNode, parent: FrameNode | undefined, absolute: boolean): void {
     const autoParent = !!parent && parent.layoutMode !== 'NONE' && !absolute;
-    const canHug = node.type === 'TEXT' || (node.type === 'FRAME' && node.layoutMode !== 'NONE');
+    const autoFrame = node.type === 'FRAME' && node.layoutMode !== 'NONE';
+    const canHug = node.type === 'TEXT' || autoFrame;
+    if (node.type === 'TEXT') {
+      // Normal Flow and absolute text retain measured width, independently of Auto Layout APIs.
+      const intrinsic = parsed.size.widthMode === 'HUG' && !absolute && (autoParent || ['nowrap', 'pre'].includes(parsed.style.whiteSpace));
+      node.textAutoResize = !doc.options.autoLayout ? 'NONE' : intrinsic ? 'WIDTH_AND_HEIGHT' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
+    }
     const mode = (requested: SizingMode, horizontal: boolean): SizingMode => {
       if (!doc.options.autoLayout) return 'FIXED';
       if (requested === 'FILL' && !autoParent) return 'FIXED';
@@ -205,10 +211,15 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       }
       return requested;
     };
-    // Only Auto Layout frames, their flow children, and text support these API properties.
-    if (canHug || autoParent) {
-      node.layoutSizingHorizontal = mode(parsed.size.widthMode, true);
-      node.layoutSizingVertical = mode(parsed.size.heightMode, false);
+    // Standalone text uses textAutoResize; avoid runtime-dependent Auto Layout setters there.
+    if (autoFrame || autoParent) {
+      try {
+        node.layoutSizingHorizontal = mode(parsed.size.widthMode, true);
+        node.layoutSizingVertical = mode(parsed.size.heightMode, false);
+      } catch (error) {
+        // An optional sizing property must not delete this node and its entire descendant tree.
+        warn('SIZING_API', parsed.name, `일부 Auto Layout 크기 설정을 적용하지 못했지만 노드와 자식 구조를 유지합니다: ${errorMessage(error)}`);
+      }
     }
     for (const key of ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'] as const) {
       const value = parsed.size[key];
@@ -265,8 +276,6 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
             text.textAlignHorizontal = parsed.style.textAlign === 'center' ? 'CENTER' : ['right', 'end'].includes(parsed.style.textAlign) ? 'RIGHT' : parsed.style.textAlign === 'justify' ? 'JUSTIFIED' : 'LEFT';
             text.textDecoration = parsed.style.textDecoration.includes('underline') ? 'UNDERLINE' : parsed.style.textDecoration.includes('line-through') ? 'STRIKETHROUGH' : 'NONE';
           }
-          // Fixed-width / Fill text wraps and hugs height. Explicit height preserves clipping boxes.
-          text.textAutoResize = !doc.options.autoLayout ? 'NONE' : parsed.size.widthMode === 'HUG' && !parsed.layout.absolute ? 'WIDTH_AND_HEIGHT' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
         }
       } else if (parsed.type === 'SVG') {
         try { if (!parsed.svg) throw new Error('SVG 데이터가 없습니다.'); node = figma.createNodeFromSvg(parsed.svg); node.setPluginData('html-type', 'svg'); }
@@ -309,6 +318,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       } else if (parent) parent.appendChild(node);
       place(node, parsed, marginWrapper ? undefined : parent, parentParsed);
       if (node.type === 'FRAME' && parsed.type === 'FRAME') {
+        // Every HTML frame recurses, including Normal Flow and absolute-positioned frames.
+        // Only ordering/placement depends on Auto Layout; child creation is unconditional.
         let children = [...parsed.children];
         if (node.layoutMode !== 'NONE') {
           children.sort((a, b) => a.layout.order - b.layout.order);

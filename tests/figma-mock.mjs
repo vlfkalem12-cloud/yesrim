@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, rejectStandaloneTextSizing = false, failSizingNames = [] } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -22,7 +22,10 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       setPluginData(key, value) { data.set(key, value); }, getPluginData(key) { return data.get(key) || ''; }
     };
     function sizing(value) {
+      if (failSizingNames.includes(node.name)) throw new Error('Simulated layout sizing failure');
       const autoParent = node.parent?.layoutMode && node.parent.layoutMode !== 'NONE' && node.layoutPositioning !== 'ABSOLUTE';
+      // Compatibility case: a runtime rejects layoutSizing on text outside Auto Layout.
+      if (rejectStandaloneTextSizing && type === 'TEXT' && !autoParent) throw new Error('Standalone text layout sizing unavailable');
       if (type !== 'TEXT' && node.layoutMode === 'NONE' && !autoParent) throw new Error('Sizing requires auto-layout frame or child');
       if (value === 'FILL' && !autoParent) throw new Error('Fill requires auto-layout parent');
       if (value === 'HUG' && type !== 'TEXT' && node.layoutMode === 'NONE') throw new Error('Hug requires text or auto-layout');

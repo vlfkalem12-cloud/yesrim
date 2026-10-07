@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Normal Flow / Absolute / Multiple Background Regression</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, "Noto Sans KR", sans-serif; color: #17243b; }
+    .page { display: flex; flex-direction: column; gap: 24px; padding: 32px; }
+    h1, p { margin: 0; }
+    .individual-border, .shadow-card, .minmax-box { width: 360px; padding: 16px; background: #f0f4fc; }
+    .individual-border { border-bottom: 3px solid #2563eb; }
+    .shadow-card { box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+    .minmax-box { min-width: 200px; max-width: 400px; }
+    .nested-block { margin-top: 12px; padding: 8px; background: #fff; }
+    .overflow-frame { width: 260px; height: 80px; overflow: hidden; background: #edf2fa; }
+    .overflow-inner { width: 400px; height: 140px; padding: 12px; }
+    .position-parent { position: relative; width: 640px; height: 280px; padding: 16px; background: #f0f4fc; }
+    .absolute-panel { position: absolute; top: 24px; right: 20px; width: 280px; padding: 16px; background: #fff; border: 1px solid #ccd5e1; }
+    .absolute-flex { position: absolute; bottom: 16px; left: 20px; display: flex; flex-direction: column; gap: 8px; width: 240px; padding: 12px; background: #e2eaf9; }
+    .absolute-caption { position: absolute; left: 20px; top: 48px; }
+    .multiple-background { width: 360px; height: 120px; padding: 16px; background-color: #dbeafe;
+      background-image: linear-gradient(rgba(0,0,0,.2), rgba(0,0,0,0)), url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==");
+      background-size: auto, contain; background-position: left top, center; background-repeat: repeat, no-repeat; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>Rendering Bug 재현 페이지</h1>
+    <div class="individual-border"><strong>Individual border title</strong><p>Block paragraph survives.</p><span>Inline span survives.</span></div>
+    <div class="shadow-card">Direct text before.<div class="nested-block"><strong>Nested strong</strong><p>Nested paragraph</p><span>Nested span</span></div>Direct text after.</div>
+    <div class="minmax-box"><strong>Min/max title</strong><p>Min/max paragraph</p><span>Min/max span</span></div>
+    <div class="overflow-frame"><div class="overflow-inner"><strong>Overflow title</strong><p>Overflow paragraph</p><span>Overflow span</span><div class="nested-block">Clipped descendant remains editable.</div></div></div>
+    <div class="position-parent"><p>Normal child inside relative parent.</p><span class="absolute-caption">Absolute text survives.</span>
+      <div class="absolute-panel"><strong>Absolute title</strong><p>Absolute paragraph</p><span>Absolute span</span><div class="nested-block">Absolute nested descendant.</div></div>
+      <div class="absolute-flex"><strong>Absolute flex title</strong><div class="nested-block"><p>Block inside absolute flex.</p></div></div>
+    </div>
+    <div class="multiple-background"><strong>Image under gradient</strong><p>URL Image Fill and children survive.</p></div>
+  </main>
+</body>
+</html>

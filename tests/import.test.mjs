@@ -280,7 +280,7 @@ test('large and deeply nested HTML stops at bounded editable tree limits', async
 test('phase 2 fixture preserves styles, vector SVG, Grid, constraints and diagnostic counts', async () => {
   const html = await readFile('test/phase2-test.html', 'utf8');
   const doc = await parse(html);
-  const { frame, report } = await convert(doc);
+  const { frame, report } = await convert(doc, { rejectStandaloneTextSizing: true });
   assert.equal(report.grid, 2);
   assert.equal(report.svg, 1);
   assert.equal(report.absolute, 2);
@@ -300,6 +300,8 @@ test('phase 2 fixture preserves styles, vector SVG, Grid, constraints and diagno
   assert.equal(styled.effects[0].radius, 12);
   assert.equal(styled.effects[0].offset.y, 4);
   assert.equal(styled.effects[0].color.a, .12);
+  assert.ok(flatten(styled).some(node => node.type === 'TEXT' && node.characters.includes('아래쪽 border만 3px')));
+  assert.ok(flatten(find(frame, 'top-badge')).some(node => node.type === 'TEXT' && node.characters === 'z-index 10'));
   assert.equal(find(frame, 'fixed-column').width, 240);
   assert.equal(find(frame, 'fill-column').layoutSizingHorizontal, 'FILL');
   assert.equal(find(frame, 'fill-column').minWidth, 160);
@@ -317,6 +319,98 @@ test('phase 2 fixture preserves styles, vector SVG, Grid, constraints and diagno
   assert.equal(report.frames, flatten(frame).filter(node => node.type === 'FRAME').length);
   assert.equal(Object.values(report.warningGroups).reduce((a, b) => a + b, 0), report.warnings.length);
   await writeFile('test-results/phase2-intermediate.json', JSON.stringify(doc, null, 2));
+});
+
+test('Normal Flow block frames retain all element and direct text descendants at measured coordinates', async () => {
+  const html = await readFile('test/rendering-regression.html', 'utf8');
+  for (const autoLayout of [true, false]) {
+    const doc = await parse(html, { autoLayout, optimizeWrappers: false });
+    const { frame, report } = await convert(doc, { rejectStandaloneTextSizing: true });
+    for (const name of ['individual-border', 'shadow-card', 'minmax-box', 'overflow-inner']) {
+      const source = parsedNodes(doc.root).find(node => node.name === name);
+      const target = find(frame, name);
+      assert.ok(source.children.length > 0, `${name}: DOM parsing retains children`);
+      assert.equal(target.layoutMode, 'NONE', `${name}: preserve Normal Flow`);
+      assert.deepEqual(flatten(target).filter(node => node.type === 'TEXT').map(node => node.characters), parsedNodes(source).filter(node => node.type === 'TEXT').map(node => node.text), name);
+      const checkChildren = (source, target) => {
+        assert.equal(target.children.length, source.children.length, source.name);
+        source.children.forEach((child, index) => {
+          const layer = target.children[index];
+          assert.equal(layer.name, child.name);
+          assert.equal(layer.x, child.rect.x - source.rect.x, `${child.name}: parent-relative x`);
+          assert.equal(layer.y, child.rect.y - source.rect.y, `${child.name}: parent-relative y`);
+          assert.equal(layer.width, child.size.width);
+          if (child.type === 'FRAME') checkChildren(child, layer);
+          else if (layer.type === 'TEXT' && autoLayout) assert.equal(layer.textAutoResize, 'HEIGHT');
+        });
+      };
+      checkChildren(source, target);
+    }
+    assert.equal(find(frame, 'overflow-frame').clipsContent, true);
+    assert.equal(find(frame, 'individual-border').strokeBottomWeight, 3);
+    assert.equal(find(frame, 'shadow-card').effects[0].type, 'DROP_SHADOW');
+    assert.equal(report.text, parsedNodes(doc.root).filter(node => node.type === 'TEXT').length);
+    assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+  }
+});
+
+test('Absolute frames recursively import both block and flex descendants without inheriting absolute positioning', async () => {
+  const doc = await parse(await readFile('test/rendering-regression.html', 'utf8'), { optimizeWrappers: false });
+  const { frame, report } = await convert(doc, { rejectStandaloneTextSizing: true });
+  const parent = find(frame, 'position-parent');
+  const panel = find(frame, 'absolute-panel');
+  const sourceParent = parsedNodes(doc.root).find(node => node.name === 'position-parent');
+  const sourcePanel = parsedNodes(doc.root).find(node => node.name === 'absolute-panel');
+  assert.equal(panel.parent, parent);
+  assert.equal(panel.x, sourcePanel.rect.x - sourceParent.rect.x);
+  assert.equal(panel.y, sourcePanel.rect.y - sourceParent.rect.y);
+  assert.deepEqual(panel.constraints, { horizontal: 'MAX', vertical: 'MIN' });
+  assert.deepEqual(flatten(panel).filter(node => node.type === 'TEXT').map(node => node.characters), ['Absolute title', 'Absolute paragraph', 'Absolute span', 'Absolute nested descendant.']);
+  assert.ok(panel.children.every(child => child.getPluginData('html-absolute') === ''));
+  const flex = find(frame, 'absolute-flex');
+  assert.equal(flex.layoutMode, 'VERTICAL');
+  assert.deepEqual(flatten(flex).filter(node => node.type === 'TEXT').map(node => node.characters), ['Absolute flex title', 'Block inside absolute flex.']);
+  assert.equal(find(frame, 'absolute-caption').characters, 'Absolute text survives.');
+  assert.equal(report.absolute, 3);
+  assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+});
+
+test('Optional sizing API failures retain the frame and its already-created descendants', async () => {
+  const doc = await parse('<style>body{margin:0}main{padding:12px}.nested-flex{display:flex;flex-direction:column;gap:8px}</style><main><div class="nested-flex"><strong>Retain title</strong><p>Retain paragraph</p></div><span>Retain sibling</span></main>');
+  const { frame, report } = await convert(doc, { failSizingNames: ['nested-flex'], rejectStandaloneTextSizing: true });
+  const target = find(frame, 'nested-flex');
+  assert.ok(target && !target.removed);
+  assert.deepEqual(flatten(target).filter(node => node.type === 'TEXT').map(node => node.characters), ['Retain title', 'Retain paragraph']);
+  assert.equal(find(frame, 'span').characters, 'Retain sibling');
+  assert.equal(report.text, 3);
+  assert.ok(report.warnings.some(warning => warning.code === 'SIZING_API' && warning.node === 'nested-flex'));
+  assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+});
+
+test('Multiple backgrounds preserve the first URL at any layer with its matching image settings and children', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  const backgrounds = [
+    [`linear-gradient(#fff, #000), url("${png}")`, 'auto, contain', 'left top, center', 'repeat, no-repeat', 'FIT'],
+    [`url("${png}"), linear-gradient(#fff, #000)`, 'cover, auto', 'center, left top', 'no-repeat, repeat', 'FILL'],
+    [`linear-gradient(#fff, #000), radial-gradient(#fff, #000), url("${png}")`, 'contain', 'center', 'no-repeat', 'FIT']
+  ];
+  for (const [background, size, position, repeat, scaleMode] of backgrounds) {
+    const doc = await parse(`<style>body{margin:0}main{display:flex}.bg{width:200px;height:100px;background-image:${background};background-size:${size};background-position:${position};background-repeat:${repeat}}</style><main><div class="bg"><strong>Keep title</strong><p>Keep paragraph</p></div></main>`);
+    const parsed = parsedNodes(doc.root).find(node => node.name === 'bg');
+    assert.equal(parsed.style.backgroundImage.src, png);
+    assert.equal(parsed.style.backgroundImage.fit, scaleMode === 'FIT' ? 'contain' : 'cover');
+    assert.equal(parsed.style.backgroundImage.repeat, 'no-repeat');
+    const { frame, report, images } = await convert(doc, { rejectStandaloneTextSizing: true });
+    const target = find(frame, 'bg');
+    assert.equal(target.fills[0].type, 'IMAGE');
+    assert.equal(target.fills[0].scaleMode, scaleMode);
+    assert.deepEqual(flatten(target).filter(node => node.type === 'TEXT').map(node => node.characters), ['Keep title', 'Keep paragraph']);
+    assert.equal(images.length, 1);
+    assert.equal(report.image, 1);
+    assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_IMAGE'));
+    assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_LAYERS'));
+    assert.ok(!report.warnings.some(warning => ['BACKGROUND_POSITION', 'BACKGROUND_REPEAT', 'NODE_FAILED'].includes(warning.code)));
+  }
 });
 
 test('basic Grid track patterns use editable rows with Fill fr cells and Fixed px cells', async () => {
@@ -421,7 +515,7 @@ test('text transforms, pre whitespace and wrapping width remain editable', async
   assert.equal(wrap.lineHeight.value, 24);
   const pre = find(frame, 'pre / text');
   assert.equal(pre.characters, 'first\n    second');
-  assert.equal(pre.layoutSizingHorizontal, 'HUG');
+  assert.equal(pre.textAutoResize, 'WIDTH_AND_HEIGHT');
   assert.equal(find(frame, 'caps').characters, 'Hello World');
   assert.equal(find(frame, 'caps').textDecoration, 'STRIKETHROUGH');
   assert.equal(report.text, 3);

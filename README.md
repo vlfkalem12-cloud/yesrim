@@ -46,6 +46,8 @@ Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 �
 
 `test/phase2-test.html`을 업로드하면 Grid, Image, inline SVG, Background Image, Fixed + Fill, Absolute·z-index, CSS Variable, 개별 border·radius, shadow, 한국어 줄바꿈, clipping, hidden 요소를 함께 확인할 수 있습니다. 실패 복구를 확인하기 위해 상대 경로 이미지 하나와 미지원 CSS 예제도 포함했습니다.
 
+렌더링 수정 확인에는 `test/rendering-regression.html`을 사용하세요. `individual-border`, `shadow-card`, `minmax-box`, `overflow-inner`의 strong / p / span / 직접 텍스트와 중첩 Block, Absolute Frame 내부의 Block / Flex 자식, gradient 앞뒤에 배치된 URL 이미지가 검사 대상입니다. 일반 Block은 고정 Frame 안에 브라우저 측정 좌표를 부모 기준으로 배치합니다. 독립 텍스트에는 `textAutoResize`를 사용하며, Auto Layout 크기 속성 설정이 실패하더라도 생성한 노드와 자식 구조를 삭제하지 않습니다.
+
 Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기본 ON, Debug Mode는 기본 OFF입니다. Debug Mode를 켜면 `card [div.card]`처럼 레이어 이름에 HTML selector가 추가됩니다. Images를 끄면 이미지 bytes 수집과 Image Fill 생성을 생략하고 `img` 영역의 빈 Rectangle을 유지합니다. HTML 치수 측정 단계에서는 원본 이미지가 로딩될 수 있습니다. Inline SVG Vector 변환은 유지됩니다.
 
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
@@ -71,6 +73,7 @@ src/converter.ts       JSON → Figma 노드, 폰트·이미지·Auto Layout
 src/utils.ts           색상·숫자·여백·timeout 처리
 examples/mvp.html      요청의 MVP 테스트 HTML
 test/phase2-test.html  2차 기능과 실패 복구 테스트 HTML
+test/rendering-regression.html  Block / Absolute / 다중 배경 렌더링 재현 HTML
 tests/                 Chromium 파싱·UI 및 Figma API 모의 테스트
 ```
 
@@ -92,7 +95,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - font family / size / weight / italic / line-height / letter-spacing / text-align / text-transform / underline / strikethrough / white-space. 줄바꿈 Text는 측정된 폭 또는 Fill 폭을 사용하고 높이는 자동 결정합니다. nowrap / pre는 줄바꿈을 강제하지 않습니다.
 - 사용 가능한 폰트를 조회하고 **로드를 완료한 뒤** 텍스트를 설정합니다. 한국어는 요청한 한국어 지원 폰트 → Pretendard → Noto Sans KR → 알려진 한국어 지원 폰트 순서로 대체하며 영문 전용 fallback을 사용하지 않습니다. 폰트 교체와 로드 실패를 보고하고 로드 결과를 캐시합니다.
 - `img`는 편집 가능한 Rectangle + Image Fill. HTTPS CORS 이미지와 `data:image`를 PNG bytes로 전달합니다. `contain`은 FIT, 나머지는 FILL로 근사합니다. 동일 URL의 이미지 데이터는 재사용합니다.
-- `background-image:url(...)`은 해당 Frame의 Image Fill로 변환합니다. cover / contain / center / no-repeat을 우선 지원하며 `img`와 같은 URL은 로딩·Figma Image hash를 재사용합니다.
+- `background-image:url(...)`은 해당 Frame의 Image Fill로 변환합니다. gradient와 섞인 다중 배경에서도 첫 번째 URL 이미지와 해당 레이어의 size / position / repeat을 유지하며 미지원 gradient는 경고합니다. cover / contain / center / no-repeat을 우선 지원하며 `img`와 같은 URL은 로딩·Figma Image hash를 재사용합니다.
 - Inline `<svg>`는 computed fill / stroke 등 스타일을 반영한 SVG를 `figma.createNodeFromSvg`로 전달하여 Vector를 유지합니다. 실패하면 placeholder Frame과 경고를 만들고 다른 요소를 계속 처리합니다.
 - CSS Variable은 최종 computed 값을 스타일에 적용하고 이름·값·scope를 JSON에 보관합니다. 실제 Figma Variable 생성은 후속 확장을 위한 범위입니다.
 - display:none / visibility:hidden 요소는 기본적으로 생략합니다. 복잡한 Grid와 줄바꿈 Flexbox는 경고와 함께 측정된 고정 좌표로 보존합니다.
@@ -131,4 +134,6 @@ npx playwright install chromium
 
 테스트는 실제 Chromium에서 MVP 예제·viewport·업로드 UI·스크립트 차단·computed CSS·이미지 bytes를 확인하고, Figma API 모의 환경에서 Auto Layout 속성·편집 가능한 Text·폰트 로딩 순서·실패 복구·main 통신·취소를 검사합니다. 2차 검증은 Grid 4개 패턴, SVG Vector 생성 호출, 상대 경로·배경 이미지 재사용, HTTPS 이미지 응답과 CORS 실패, Absolute·z-index, min/max, 색상·shadow, 한국어·white-space, 옵션·Debug·보고서, 500개 DOM 항목을 포함합니다. HTTPS 응답은 브라우저 테스트에서 재현하며 외부 사이트의 실제 서비스 상태는 검증하지 않습니다.
 
-전체 25개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 위 두 HTML 파일로 확인해야 합니다.
+렌더링 회귀 검증은 Normal Flow와 Absolute의 중첩 자식·텍스트·상대 좌표, Auto Layout 밖의 텍스트 크기 API 거부 상황, 선택적 크기 설정 실패 후 자식 보존, 다중 배경에서 URL 선택과 레이어별 설정을 검사합니다. API 거부·실패는 모의 환경에서 재현합니다.
+
+전체 29개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

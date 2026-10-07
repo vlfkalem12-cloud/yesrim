@@ -169,10 +169,15 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     if (style.cssFloat !== 'none') warn('FLOAT', name, 'float는 측정된 위치만 유지합니다.');
     if (style.backgroundImage !== 'none') {
       const layers = splitCSSList(style.backgroundImage);
-      const image = layers[0]!.match(/^url\(["']?(.*?)["']?\)$/)?.[1];
-      if (image) node.style.backgroundImage = { key: '', src: image, alt: 'background', fit: style.backgroundSize.split(',')[0]!.trim(), position: style.backgroundPosition, repeat: style.backgroundRepeat };
-      else warn('BACKGROUND_IMAGE', name, '그라데이션 배경은 단색 배경으로 유지합니다.');
-      if (layers.length > 1) warn('BACKGROUND_LAYERS', name, '다중 배경은 첫 번째 레이어만 가져옵니다.');
+      const urls = layers.map(layer => layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1]);
+      const imageIndex = urls.findIndex(url => url !== undefined);
+      if (imageIndex >= 0) {
+        // Background settings cycle independently when their lists are shorter than image layers.
+        const layerValue = (value: string) => { const values = splitCSSList(value); return values[imageIndex % values.length]!; };
+        node.style.backgroundImage = { key: '', src: urls[imageIndex]!, alt: 'background', fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat) };
+      }
+      if (layers.some((layer, index) => !urls[index] && layer !== 'none')) warn('BACKGROUND_IMAGE', name, imageIndex >= 0 ? '미지원 gradient 배경은 생략하고 URL 이미지 Fill을 유지합니다.' : '미지원 gradient 배경은 생략하고 단색 배경을 유지합니다.');
+      if (layers.length > 1) warn('BACKGROUND_LAYERS', name, imageIndex >= 0 ? '다중 배경은 첫 번째 URL 이미지 레이어와 배경색을 유지합니다.' : '다중 배경의 미지원 레이어를 생략하고 배경색을 유지합니다.');
     }
     if (style.boxShadow !== 'none' && splitCSSList(style.boxShadow).length > 1) warn('MULTIPLE_SHADOWS', name, '다중 shadow는 첫 번째 효과만 반영합니다.');
     if (style.boxShadow !== 'none' && !node.style.shadow) warn('BOX_SHADOW', name, '그림자 문법을 해석할 수 없습니다.');
