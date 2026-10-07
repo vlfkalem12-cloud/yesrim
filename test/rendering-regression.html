@@ -22,6 +22,10 @@
     .multiple-background { width: 360px; height: 120px; padding: 16px; background-color: #dbeafe;
       background-image: linear-gradient(rgba(0,0,0,.2), rgba(0,0,0,0)), url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==");
       background-size: auto, contain; background-position: left top, center; background-repeat: repeat, no-repeat; }
+    .intrinsic-labels { width: 360px; padding: 16px; background: #edf2fa; }
+    #new-label { padding: 4px 8px; background: #2563eb; color: #fff; }
+    #fixed-label { width: 180px; }
+    #limited-label { max-width: 160px; }
   </style>
 </head>
 <body>
@@ -32,10 +36,15 @@
     <div class="minmax-box"><strong>Min/max title</strong><p>Min/max paragraph</p><span>Min/max span</span></div>
     <div class="overflow-frame"><div class="overflow-inner"><strong>Overflow title</strong><p>Overflow paragraph</p><span>Overflow span</span><div class="nested-block">Clipped descendant remains editable.</div></div></div>
     <div class="position-parent"><p>Normal child inside relative parent.</p><span class="absolute-caption">Absolute text survives.</span>
-      <div class="absolute-panel"><strong>Absolute title</strong><p>Absolute paragraph</p><span>Absolute span</span><div class="nested-block">Absolute nested descendant.</div></div>
+      <div class="absolute-panel absolute-card"><strong>Absolute title</strong><p>Absolute paragraph</p><span>Absolute span</span><div class="nested-block">Absolute nested descendant.</div></div>
       <div class="absolute-flex"><strong>Absolute flex title</strong><div class="nested-block"><p>Block inside absolute flex.</p></div></div>
     </div>
     <div class="multiple-background"><strong>Image under gradient</strong><p>URL Image Fill and children survive.</p></div>
+    <div class="intrinsic-labels"><strong id="intrinsic-title">Background Image Test</strong><span id="new-label">NEW</span>
+      <div id="intrinsic-direct">Background Image Test</div><p id="single-line-block">Background Image Test</p>
+      <p id="fixed-label">Fixed width text</p><p id="limited-label">Maximum width stays constrained</p>
+      <span id="wrapped-inline">This inline text wraps across several browser lines inside its narrow parent and must retain its measured wrapping width.</span>
+    </div>
   </main>
 </body>
 </html>

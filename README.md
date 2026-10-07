@@ -46,7 +46,7 @@ Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 �
 
 `test/phase2-test.html`을 업로드하면 Grid, Image, inline SVG, Background Image, Fixed + Fill, Absolute·z-index, CSS Variable, 개별 border·radius, shadow, 한국어 줄바꿈, clipping, hidden 요소를 함께 확인할 수 있습니다. 실패 복구를 확인하기 위해 상대 경로 이미지 하나와 미지원 CSS 예제도 포함했습니다.
 
-렌더링 수정 확인에는 `test/rendering-regression.html`을 사용하세요. `individual-border`, `shadow-card`, `minmax-box`, `overflow-inner`의 strong / p / span / 직접 텍스트와 중첩 Block, Absolute Frame 내부의 Block / Flex 자식, gradient 앞뒤에 배치된 URL 이미지가 검사 대상입니다. 일반 Block은 고정 Frame 안에 브라우저 측정 좌표를 부모 기준으로 배치합니다. 독립 텍스트에는 `textAutoResize`를 사용하며, Auto Layout 크기 속성 설정이 실패하더라도 생성한 노드와 자식 구조를 삭제하지 않습니다.
+렌더링 수정 확인에는 `test/rendering-regression.html`을 사용하세요. `individual-border`, `shadow-card`, `minmax-box`, `overflow-inner`의 strong / p / span / 직접 텍스트와 중첩 Block, Absolute Frame 내부의 Block / Flex 자식, gradient 앞뒤에 배치된 URL 이미지가 검사 대상입니다. 일반 Block은 고정 Frame 안에 브라우저 측정 좌표를 부모 기준으로 배치하며, 텍스트 크기와 최상위 viewport 크기가 확정된 뒤 좌표를 적용합니다. `Background Image Test` / `NEW`처럼 폭 제약이 없는 한 줄 텍스트는 Auto Layout 밖에서도 Hug로 처리합니다. 명시적인 width / min-max / Fill / 양쪽 Absolute 고정 또는 실제 줄바꿈이 있는 텍스트는 폭 제약을 유지합니다. Auto Layout 크기 속성 설정이 실패하더라도 생성한 노드와 자식 구조를 삭제하지 않습니다.
 
 Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기본 ON, Debug Mode는 기본 OFF입니다. Debug Mode를 켜면 `card [div.card]`처럼 레이어 이름에 HTML selector가 추가됩니다. Images를 끄면 이미지 bytes 수집과 Image Fill 생성을 생략하고 `img` 영역의 빈 Rectangle을 유지합니다. HTML 치수 측정 단계에서는 원본 이미지가 로딩될 수 있습니다. Inline SVG Vector 변환은 유지됩니다.
 
@@ -134,6 +134,6 @@ npx playwright install chromium
 
 테스트는 실제 Chromium에서 MVP 예제·viewport·업로드 UI·스크립트 차단·computed CSS·이미지 bytes를 확인하고, Figma API 모의 환경에서 Auto Layout 속성·편집 가능한 Text·폰트 로딩 순서·실패 복구·main 통신·취소를 검사합니다. 2차 검증은 Grid 4개 패턴, SVG Vector 생성 호출, 상대 경로·배경 이미지 재사용, HTTPS 이미지 응답과 CORS 실패, Absolute·z-index, min/max, 색상·shadow, 한국어·white-space, 옵션·Debug·보고서, 500개 DOM 항목을 포함합니다. HTTPS 응답은 브라우저 테스트에서 재현하며 외부 사이트의 실제 서비스 상태는 검증하지 않습니다.
 
-렌더링 회귀 검증은 Normal Flow와 Absolute의 중첩 자식·텍스트·상대 좌표, Auto Layout 밖의 텍스트 크기 API 거부 상황, 선택적 크기 설정 실패 후 자식 보존, 다중 배경에서 URL 선택과 레이어별 설정을 검사합니다. API 거부·실패는 모의 환경에서 재현합니다.
+렌더링 회귀 검증은 Normal Flow와 Absolute의 중첩 자식·텍스트·상대 좌표, Auto Layout 밖의 텍스트 크기 API 거부 상황, 선택적 크기 설정 실패 후 자식 보존, 다중 배경에서 URL 선택과 레이어별 설정을 검사합니다. 마지막 Layout 검증은 별도로 측정한 브라우저 좌표와 최종 자식 좌표를 비교하고, 무제약 한 줄·직접 텍스트·장식된 텍스트의 Hug, 빈 래퍼 제거 후 Hug 유지, 실제 줄바꿈·폭 제약 유지, Hug 크기 변경 후 Absolute right / bottom 고정을 확인합니다. API 거부·실패와 크기 설정에 따른 위치·폭 변화는 모의 환경에서 재현합니다.
 
-전체 29개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+전체 32개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

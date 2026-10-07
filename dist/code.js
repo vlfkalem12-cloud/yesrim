@@ -166,6 +166,7 @@
     const fonts = new FontResolver(warn);
     await fonts.initialize();
     const imageHashes = /* @__PURE__ */ new Map();
+    const placements = [];
     let root;
     function imagePaint(image, name) {
       try {
@@ -253,8 +254,8 @@
       const autoFrame = node.type === "FRAME" && node.layoutMode !== "NONE";
       const canHug = node.type === "TEXT" || autoFrame;
       if (node.type === "TEXT") {
-        const intrinsic = parsed.size.widthMode === "HUG" && !absolute && (autoParent || ["nowrap", "pre"].includes(parsed.style.whiteSpace));
-        node.textAutoResize = !doc.options.autoLayout ? "NONE" : intrinsic ? "WIDTH_AND_HEIGHT" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
+        const intrinsic = parsed.size.widthMode === "HUG";
+        node.textAutoResize = intrinsic ? "WIDTH_AND_HEIGHT" : !doc.options.autoLayout ? "NONE" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
       }
       const mode = (requested, horizontal) => {
         if (!doc.options.autoLayout) return "FIXED";
@@ -303,6 +304,8 @@
         node.y = parsed.rect.y - parentParsed.rect.y;
         if (parsed.layout.absolute && parsed.layout.offsets) {
           const offsets = parsed.layout.offsets;
+          if (offsets.left === "auto" && offsets.right !== "auto") node.x += parsed.rect.width - node.width;
+          if (offsets.top === "auto" && offsets.bottom !== "auto") node.y += parsed.rect.height - node.height;
           node.constraints = { horizontal: offsets.left !== "auto" && offsets.right !== "auto" ? "STRETCH" : offsets.right !== "auto" ? "MAX" : "MIN", vertical: offsets.top !== "auto" && offsets.bottom !== "auto" ? "STRETCH" : offsets.bottom !== "auto" ? "MAX" : "MIN" };
         }
       }
@@ -395,7 +398,7 @@
           marginWrapper.layoutSizingVertical = parsed.size.heightMode === "FILL" ? "FILL" : "FIXED";
           countNode(marginWrapper);
         } else if (parent) parent.appendChild(node);
-        place(node, parsed, marginWrapper ? void 0 : parent, parentParsed);
+        if (parent && parent.layoutMode !== "NONE" && parsed.layout.absolute) node.layoutPositioning = "ABSOLUTE";
         if (node.type === "FRAME" && parsed.type === "FRAME") {
           let children = [...parsed.children];
           if (node.layoutMode !== "NONE") {
@@ -423,6 +426,7 @@
           if (parsed.size.widthMode === "HUG" && node.layoutSizingHorizontal !== "FILL") marginWrapper.layoutSizingHorizontal = "HUG";
           if (parsed.size.heightMode === "HUG" && node.layoutSizingVertical !== "FILL") marginWrapper.layoutSizingVertical = "HUG";
         }
+        if (!marginWrapper && parent && parentParsed && (parent.layoutMode === "NONE" || parsed.layout.absolute)) placements.push({ node, parsed, parent, parentParsed });
         countNode(node);
         if (report.total % 25 === 0) {
           onProgress(report.total);
@@ -441,7 +445,8 @@
       if (cancelled2()) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
       created.name = `Imported HTML${doc.options.debug && doc.root.source ? ` [${doc.root.source.selector}]` : ""}`;
       if (created.layoutMode !== "NONE") created.layoutSizingHorizontal = "FIXED";
-      created.resize(doc.options.viewport, clamp(created.height, 0.01));
+      created.resizeWithoutConstraints(doc.options.viewport, clamp(created.height, 0.01));
+      for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
       created.x = figma.viewport.center.x - created.width / 2;
       created.y = figma.viewport.center.y - created.height / 2;
       figma.currentPage.selection = [created];

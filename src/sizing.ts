@@ -1,4 +1,4 @@
-import type { ParsedSize, SizingMode } from './types';
+import type { ParsedLayout, ParsedSize, SizingMode } from './types';
 import { number } from './utils';
 
 /** Preserve auto/%/fit-content using Typed OM; fall back to accessible stylesheet declarations. */
@@ -43,4 +43,25 @@ export function inferSizing(el: Element, style: CSSStyleDeclaration, parentStyle
   const constraint = (value: string) => /^\d*\.?\d+px$/.test(value) ? Math.max(0, number(value)) : null;
   return { width, height, authoredWidth, authoredHeight, widthMode: mode('width', authoredWidth, width), heightMode: mode('height', authoredHeight, height),
     minWidth: constraint(style.minWidth), maxWidth: constraint(style.maxWidth), minHeight: constraint(style.minHeight), maxHeight: constraint(style.maxHeight) };
+}
+
+/** Inline fragments on the same browser line overlap vertically; wrapped lines do not. */
+export function isSingleTextLine(range: Range): boolean {
+  let top = -Infinity, bottom = Infinity, visible = false;
+  for (const rect of range.getClientRects()) {
+    if (!rect.width || !rect.height) continue;
+    visible = true; top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
+    if (top >= bottom) return false;
+  }
+  return visible;
+}
+
+/** Let unconstrained one-line text use its Figma font's intrinsic width, including in block frames. */
+export function inferTextWidth(size: ParsedSize, style: CSSStyleDeclaration, layout: ParsedLayout, range: Range): SizingMode {
+  if (size.widthMode === 'FILL' && !layout.absolute) return 'FILL';
+  if (size.authoredWidth !== 'auto') return size.widthMode;
+  if (style.maxWidth !== 'none' || (size.minWidth || 0) > 0 || !['auto', 'content'].includes(style.flexBasis)) return 'FIXED';
+  if (layout.absolute && layout.offsets.left !== 'auto' && layout.offsets.right !== 'auto') return 'FIXED';
+  if (!['left', 'start'].includes(style.textAlign)) return 'FIXED';
+  return ['nowrap', 'pre'].includes(style.whiteSpace) || isSingleTextLine(range) ? 'HUG' : 'FIXED';
 }

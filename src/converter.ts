@@ -120,6 +120,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   const fonts = new FontResolver(warn);
   await fonts.initialize();
   const imageHashes = new Map<string, string>();
+  const placements: { node: EditableNode; parsed: ParsedNode; parent: FrameNode; parentParsed: ParsedNode }[] = [];
   let root: FrameNode | undefined;
   function imagePaint(image: ParsedImage, name: string): ImagePaint | null {
     try {
@@ -197,9 +198,9 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     const autoFrame = node.type === 'FRAME' && node.layoutMode !== 'NONE';
     const canHug = node.type === 'TEXT' || autoFrame;
     if (node.type === 'TEXT') {
-      // Normal Flow and absolute text retain measured width, independently of Auto Layout APIs.
-      const intrinsic = parsed.size.widthMode === 'HUG' && !absolute && (autoParent || ['nowrap', 'pre'].includes(parsed.style.whiteSpace));
-      node.textAutoResize = !doc.options.autoLayout ? 'NONE' : intrinsic ? 'WIDTH_AND_HEIGHT' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
+      // Text auto width is independent of whether its parent uses Auto Layout.
+      const intrinsic = parsed.size.widthMode === 'HUG';
+      node.textAutoResize = intrinsic ? 'WIDTH_AND_HEIGHT' : !doc.options.autoLayout ? 'NONE' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
     }
     const mode = (requested: SizingMode, horizontal: boolean): SizingMode => {
       if (!doc.options.autoLayout) return 'FIXED';
@@ -244,6 +245,9 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       node.y = parsed.rect.y - parentParsed.rect.y;
       if (parsed.layout.absolute && parsed.layout.offsets) {
         const offsets = parsed.layout.offsets;
+        // Hug text can change size with the loaded Figma font; retain authored right/bottom anchors.
+        if (offsets.left === 'auto' && offsets.right !== 'auto') node.x += parsed.rect.width - node.width;
+        if (offsets.top === 'auto' && offsets.bottom !== 'auto') node.y += parsed.rect.height - node.height;
         node.constraints = { horizontal: offsets.left !== 'auto' && offsets.right !== 'auto' ? 'STRETCH' : offsets.right !== 'auto' ? 'MAX' : 'MIN', vertical: offsets.top !== 'auto' && offsets.bottom !== 'auto' ? 'STRETCH' : offsets.bottom !== 'auto' ? 'MAX' : 'MIN' };
       }
     }
@@ -316,7 +320,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         marginWrapper.layoutSizingVertical = parsed.size.heightMode === 'FILL' ? 'FILL' : 'FIXED';
         countNode(marginWrapper);
       } else if (parent) parent.appendChild(node);
-      place(node, parsed, marginWrapper ? undefined : parent, parentParsed);
+      // Absolute children must leave their parent's flow before their own descendants are created.
+      if (parent && parent.layoutMode !== 'NONE' && parsed.layout.absolute) node.layoutPositioning = 'ABSOLUTE';
       if (node.type === 'FRAME' && parsed.type === 'FRAME') {
         // Every HTML frame recurses, including Normal Flow and absolute-positioned frames.
         // Only ordering/placement depends on Auto Layout; child creation is unconditional.
@@ -346,6 +351,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         if (parsed.size.widthMode === 'HUG' && node.layoutSizingHorizontal !== 'FILL') marginWrapper.layoutSizingHorizontal = 'HUG';
         if (parsed.size.heightMode === 'HUG' && node.layoutSizingVertical !== 'FILL') marginWrapper.layoutSizingVertical = 'HUG';
       }
+      if (!marginWrapper && parent && parentParsed && (parent.layoutMode === 'NONE' || parsed.layout.absolute)) placements.push({ node, parsed, parent, parentParsed });
       countNode(node);
       if (report.total % 25 === 0) {
         onProgress(report.total);
@@ -364,7 +370,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (cancelled()) throw new Error('변환을 취소했습니다.');
     created.name = `Imported HTML${doc.options.debug && doc.root.source ? ` [${doc.root.source.selector}]` : ''}`;
     if (created.layoutMode !== 'NONE') created.layoutSizingHorizontal = 'FIXED';
-    created.resize(doc.options.viewport, clamp(created.height, 0.01));
+    created.resizeWithoutConstraints(doc.options.viewport, clamp(created.height, 0.01));
+    // Sizing and reparenting can change node geometry. Apply browser-relative positions last,
+    // from outer frames to descendants, after the root viewport size is final.
+    for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
     created.x = figma.viewport.center.x - created.width / 2;
     created.y = figma.viewport.center.y - created.height / 2;
     figma.currentPage.selection = [created];

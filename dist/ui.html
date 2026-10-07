@@ -245,6 +245,25 @@
       maxHeight: constraint(style.maxHeight)
     };
   }
+  function isSingleTextLine(range) {
+    let top = -Infinity, bottom = Infinity, visible = false;
+    for (const rect of range.getClientRects()) {
+      if (!rect.width || !rect.height) continue;
+      visible = true;
+      top = Math.max(top, rect.top);
+      bottom = Math.min(bottom, rect.bottom);
+      if (top >= bottom) return false;
+    }
+    return visible;
+  }
+  function inferTextWidth(size, style, layout, range) {
+    if (size.widthMode === "FILL" && !layout.absolute) return "FILL";
+    if (size.authoredWidth !== "auto") return size.widthMode;
+    if (style.maxWidth !== "none" || (size.minWidth || 0) > 0 || !["auto", "content"].includes(style.flexBasis)) return "FIXED";
+    if (layout.absolute && layout.offsets.left !== "auto" && layout.offsets.right !== "auto") return "FIXED";
+    if (!["left", "start"].includes(style.textAlign)) return "FIXED";
+    return ["nowrap", "pre"].includes(style.whiteSpace) || isSingleTextLine(range) ? "HUG" : "FIXED";
+  }
 
   // src/grid.ts
   function parseGrid(node, style, element, warn) {
@@ -340,7 +359,7 @@
       parent2.children = parent2.children.map((node) => {
         while (eligible(node)) {
           const child = node.children[0];
-          child.size.widthMode = node.size.widthMode;
+          if (child.type !== "TEXT" || child.size.widthMode !== "HUG" || node.size.widthMode === "FILL") child.size.widthMode = node.size.widthMode;
           child.size.heightMode = node.size.heightMode;
           node = child;
         }
@@ -722,14 +741,15 @@
         if (content && !["none", "normal", '""'].includes(content)) warn("PSEUDO_ELEMENT", name, `${pseudo} \uC0DD\uC131 \uCF58\uD150\uCE20\uB294 \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.`);
       }
       if (node.type === "TEXT") {
+        const range = doc.createRange();
+        range.selectNodeContents(el);
+        node.size.widthMode = inferTextWidth(node.size, style, node.layout, range);
         node.text = text(el);
         node.text = transformText(node.text, style.textTransform);
         if (el.children.length) warn("INLINE_TEXT", name, "\uC5EC\uB7EC inline \uD14D\uC2A4\uD2B8 \uC2A4\uD0C0\uC77C\uC744 \uBD80\uBAA8\uC758 \uC2A4\uD0C0\uC77C\uB85C \uD1B5\uD569\uD588\uC2B5\uB2C8\uB2E4.");
         const noWrap = ["nowrap", "pre"].includes(style.whiteSpace) && node.size.widthMode !== "HUG";
         if ((node.style.background?.a || node.style.backgroundImage || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some((v) => v > 0) || Object.values(node.layout.padding).some((v) => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
           node.type = "FRAME";
-          const range = doc.createRange();
-          range.selectNodeContents(el);
           const child = {
             ...node,
             type: "TEXT",
@@ -739,7 +759,7 @@
             layout: { ...node.layout, direction: "NONE", padding: zero(), margin: zero(), absolute: false },
             children: []
           };
-          child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap ? "HUG" : "FIXED", heightMode: "HUG" };
+          child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === "HUG" ? "HUG" : "FIXED", heightMode: "HUG" };
           node.children = [child];
           node.text = void 0;
           count++;
@@ -792,7 +812,7 @@
             name: `${layerName(el)} / text`,
             text: value,
             rect,
-            size: { width: rect.width, height: rect.height, widthMode: "FIXED", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
+            size: { width: rect.width, height: rect.height, widthMode: isSingleTextLine(range) || ["nowrap", "pre"].includes(style.whiteSpace) ? "HUG" : "FIXED", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
             layout: { ...readLayout(style), display: "inline", direction: "NONE", padding: zero(), margin: zero(), absolute: false, grow: 0, order: 0, alignSelf: "auto", wrap: false },
             style: { ...readStyle(style), background: null, backgroundImage: void 0, shadow: void 0, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
             source: { selector: `${selector(el)} / text`, id: "", classNames: [], synthetic: true },

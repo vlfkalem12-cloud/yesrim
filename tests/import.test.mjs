@@ -41,6 +41,26 @@ async function convert(doc, options) {
 const find = (root, name) => flatten(root).find(node => node.name === name);
 const parsedNodes = root => [root, ...root.children.flatMap(parsedNodes)];
 
+async function parseWithBrowserRects(html, selectors) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(base); await page.addScriptTag({ content: parserBundle });
+    return JSON.parse(await page.evaluate(async ({ html, selectors }) => {
+      const rendered = await Parser.renderHTML(html, 1440, 900, document.getElementById('host'));
+      try {
+        const measurements = Object.fromEntries(selectors.map(selector => {
+          const element = rendered.document.querySelector(selector), rect = element.getBoundingClientRect();
+          return [selector, { x: rect.x, y: rect.y, width: rect.width, height: rect.height, children: [...element.children].map(child => {
+            const box = child.getBoundingClientRect(); return { name: child.id || child.classList[0] || child.localName, x: box.x - rect.x, y: box.y - rect.y, width: box.width, height: box.height };
+          }) }];
+        }));
+        const doc = await Parser.parseRenderedHTML(rendered, { viewport: 1440, viewportHeight: 900, autoLayout: true, styles: true });
+        return JSON.stringify({ doc, measurements });
+      } finally { rendered.dispose(); }
+    }, { html, selectors }));
+  } finally { await page.close(); }
+}
+
 test('MVP fixture: computed CSS → JSON → editable Figma frames and text', async () => {
   const doc = await parse(sample);
   assert.equal(doc.root.name, 'Imported HTML');
@@ -341,7 +361,7 @@ test('Normal Flow block frames retain all element and direct text descendants at
           assert.equal(layer.y, child.rect.y - source.rect.y, `${child.name}: parent-relative y`);
           assert.equal(layer.width, child.size.width);
           if (child.type === 'FRAME') checkChildren(child, layer);
-          else if (layer.type === 'TEXT' && autoLayout) assert.equal(layer.textAutoResize, 'HEIGHT');
+          else if (layer.type === 'TEXT' && autoLayout && child.size.widthMode === 'FIXED') assert.equal(layer.textAutoResize, 'HEIGHT');
         });
       };
       checkChildren(source, target);
@@ -352,6 +372,61 @@ test('Normal Flow block frames retain all element and direct text descendants at
     assert.equal(report.text, parsedNodes(doc.root).filter(node => node.type === 'TEXT').length);
     assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
   }
+});
+
+test('Final Normal Flow child positions match independent browser measurements after text geometry changes', async () => {
+  const cases = [
+    ['.individual-border', 'individual-border'], ['.shadow-card .nested-block', 'shadow-card'],
+    ['.minmax-box', 'minmax-box'], ['.absolute-card', 'absolute-panel']
+  ];
+  const { doc, measurements } = await parseWithBrowserRects(await readFile('test/rendering-regression.html', 'utf8'), cases.map(([selector]) => selector));
+  const { frame, report } = await convert(doc, { rejectStandaloneTextSizing: true, textSizingShift: { x: 9, y: -11 } });
+  for (const [selector, name] of cases) {
+    const target = selector.includes('.nested-block') ? find(find(frame, name), 'nested-block') : find(frame, name);
+    const expected = measurements[selector].children;
+    expected.forEach((child, index) => {
+      assert.equal(target.children[index].x, child.x, `${selector} / ${child.name}: final x`);
+      assert.equal(target.children[index].y, child.y, `${selector} / ${child.name}: final y`);
+      if (index) assert.ok(target.children[index].y >= target.children[index - 1].y + target.children[index - 1].height, `${selector}: vertical children do not overlap`);
+    });
+  }
+  assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+});
+
+test('Unconstrained single-line inline, direct and decorated text hugs width while wrapping and explicit constraints remain fixed', async () => {
+  const doc = await parse(await readFile('test/rendering-regression.html', 'utf8'));
+  const { frame, report } = await convert(doc, { rejectStandaloneTextSizing: true });
+  for (const name of ['intrinsic-title', 'new-label / text', 'intrinsic-direct / text', 'single-line-block']) {
+    const source = parsedNodes(doc.root).find(node => node.name === name), target = find(frame, name);
+    assert.equal(source.size.widthMode, 'HUG', name);
+    assert.equal(target.textAutoResize, 'WIDTH_AND_HEIGHT', name);
+  }
+  assert.equal(find(frame, 'intrinsic-title').characters, 'Background Image Test');
+  assert.equal(find(frame, 'new-label / text').characters, 'NEW');
+  for (const name of ['fixed-label', 'limited-label', 'wrapped-inline']) {
+    const source = parsedNodes(doc.root).find(node => node.name === name), target = find(frame, name);
+    assert.equal(source.size.widthMode, 'FIXED', name);
+    assert.equal(target.width, source.size.width, name);
+    assert.equal(target.textAutoResize, 'HEIGHT', name);
+  }
+  assert.equal(find(frame, 'fixed-label').width, 180);
+  assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
+});
+
+test('Auto-width absolute labels retain right and bottom anchors after intrinsic font width changes', async () => {
+  const html = '<style>body{margin:0}main{display:flex;flex-direction:column}.parent{position:relative;width:320px;height:120px}.badge{position:absolute;right:16px;bottom:12px}.stretch{position:absolute;left:12px;right:12px;top:10px}</style><main><div class="parent"><span class="badge">NEW</span><span class="stretch">Keep both edges constrained</span></div></main>';
+  const doc = await parse(html);
+  const { frame, report } = await convert(doc, { rejectStandaloneTextSizing: true, textSizingShift: { x: 9, y: -11 }, intrinsicWidthScale: 1.25 });
+  const parent = find(frame, 'parent'), badge = find(frame, 'badge'), stretch = find(frame, 'stretch');
+  assert.equal(badge.textAutoResize, 'WIDTH_AND_HEIGHT');
+  assert.equal(parent.width - badge.x - badge.width, 16);
+  assert.equal(parent.height - badge.y - badge.height, 12);
+  assert.deepEqual(badge.constraints, { horizontal: 'MAX', vertical: 'MAX' });
+  assert.equal(stretch.textAutoResize, 'HEIGHT');
+  assert.equal(stretch.x, 12);
+  assert.equal(stretch.width, 296);
+  assert.deepEqual(stretch.constraints, { horizontal: 'STRETCH', vertical: 'MIN' });
+  assert.equal(report.warnings.filter(warning => warning.code === 'NODE_FAILED').length, 0);
 });
 
 test('Absolute frames recursively import both block and flex descendants without inheriting absolute positioning', async () => {
@@ -501,9 +576,11 @@ test('wrapper optimization is conservative and debug names retain source selecto
   const optimized = await parse(html, { optimizeWrappers: true, debug: true });
   assert.ok(parsedNodes(optimized.root).length < parsedNodes(plain.root).length);
   assert.ok(parsedNodes(optimized.root).some(node => node.name === 'styled'));
+  assert.equal(parsedNodes(optimized.root).find(node => node.type === 'TEXT' && node.text === 'Hello').size.widthMode, 'HUG', 'removing a wrapper preserves intrinsic text width');
   const { frame } = await convert(optimized);
   assert.ok(flatten(frame).some(node => node.name === 'styled [div.styled.extra.classes]'));
   assert.ok(flatten(frame).some(node => node.type === 'TEXT' && node.characters === 'Hello'));
+  assert.equal(flatten(frame).find(node => node.type === 'TEXT' && node.characters === 'Hello').textAutoResize, 'WIDTH_AND_HEIGHT');
 });
 
 test('text transforms, pre whitespace and wrapping width remain editable', async () => {

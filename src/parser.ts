@@ -1,6 +1,6 @@
 import { IMPORT_DEFAULTS, LIMITS, type Bounds, type ConversionWarning, type ImportOptions, type LocalAssets, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedStyle } from './types';
 import { clamp, errorMessage, isViewportDimension, number, parseColor, parseShadow, readInsets, splitCSSList, withTimeout } from './utils';
-import { authoredDimension, inferSizing } from './sizing';
+import { authoredDimension, inferSizing, inferTextWidth, isSingleTextLine } from './sizing';
 import { buildGridRows, parseGrid } from './grid';
 import { optimizeEmptyWrappers } from './optimizer';
 import { serializeSVG } from './svg';
@@ -189,6 +189,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       if (content && !['none', 'normal', '""'].includes(content)) warn('PSEUDO_ELEMENT', name, `${pseudo} 생성 콘텐츠는 생략했습니다.`);
     }
     if (node.type === 'TEXT') {
+      const range = doc.createRange(); range.selectNodeContents(el);
+      node.size.widthMode = inferTextWidth(node.size, style, node.layout, range);
       node.text = text(el as HTMLElement);
       node.text = transformText(node.text, style.textTransform);
       if (el.children.length) warn('INLINE_TEXT', name, '여러 inline 텍스트 스타일을 부모의 스타일로 통합했습니다.');
@@ -196,11 +198,10 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       if ((node.style.background?.a || node.style.backgroundImage || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some(v => v > 0) || Object.values(node.layout.padding).some(v => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
         // Keep decorated text editable, with a frame carrying its box styling.
         node.type = 'FRAME';
-        const range = doc.createRange(); range.selectNodeContents(el);
         const child: ParsedNode = { ...node, type: 'TEXT', name: `${name} / text`, rect: bounds(range.getBoundingClientRect()),
           style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
           layout: { ...node.layout, direction: 'NONE', padding: zero(), margin: zero(), absolute: false }, children: [] };
-        child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap ? 'HUG' : 'FIXED', heightMode: 'HUG' };
+        child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === 'HUG' ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
       }
     } else if (node.type === 'SVG') {
@@ -236,7 +237,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         const value = transformText(preserve ? child.textContent : child.textContent.replace(/\s+/g, ' ').trim(), style.textTransform);
         if (!rect.width && !rect.height) continue;
         children.push({ type: 'TEXT', tagName: '#text', name: `${layerName(el)} / text`, text: value, rect,
-          size: { width: rect.width, height: rect.height, widthMode: 'FIXED', heightMode: 'HUG', authoredWidth: 'auto', authoredHeight: 'auto' },
+          size: { width: rect.width, height: rect.height, widthMode: isSingleTextLine(range) || ['nowrap', 'pre'].includes(style.whiteSpace) ? 'HUG' : 'FIXED', heightMode: 'HUG', authoredWidth: 'auto', authoredHeight: 'auto' },
           layout: { ...readLayout(style), display: 'inline', direction: 'NONE', padding: zero(), margin: zero(), absolute: false, grow: 0, order: 0, alignSelf: 'auto', wrap: false },
           style: { ...readStyle(style), background: null, backgroundImage: undefined, shadow: undefined, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
           source: { selector: `${selector(el)} / text`, id: '', classNames: [], synthetic: true }, children: [] });

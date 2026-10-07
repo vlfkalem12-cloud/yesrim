@@ -8,7 +8,9 @@ export function optimizeEmptyWrappers(root: ParsedNode): void {
     parent.children = parent.children.map(node => {
       while (eligible(node)) {
         const child = node.children[0]!;
-        child.size.widthMode = node.size.widthMode;
+        // A plain block wrapper's measured width is not a constraint on one-line text.
+        // Preserve a genuine Fill relationship when promoting its child into Auto Layout.
+        if (child.type !== 'TEXT' || child.size.widthMode !== 'HUG' || node.size.widthMode === 'FILL') child.size.widthMode = node.size.widthMode;
         child.size.heightMode = node.size.heightMode;
         node = child;
       }

@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, rejectStandaloneTextSizing = false, failSizingNames = [] } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1 } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -11,13 +11,14 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
   }
   function make(type) {
     const data = new Map();
-    let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName;
+    let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName, textAutoResize = 'NONE';
     const node = {
       id: String(nextId++), type, name: '', parent: undefined, children: [], removed: false, width: 100, height: 100, x: 0, y: 0,
       layoutMode: 'NONE', layoutPositioning: 'AUTO', fills: [], strokes: [], opacity: 1, textAutoResize: 'NONE',
       appendChild(child) { append(this, child); },
       insertChild(index, child) { append(this, child); this.children = this.children.filter(node => node !== child); this.children.splice(index, 0, child); },
       resize(width, height) { if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Invalid resize'); this.width = width; this.height = height; },
+      resizeWithoutConstraints(width, height) { this.resize(width, height); },
       remove() { this.removed = true; for (const child of [...this.children]) child.remove(); if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
       setPluginData(key, value) { data.set(key, value); }, getPluginData(key) { return data.get(key) || ''; }
     };
@@ -31,6 +32,14 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       if (value === 'HUG' && type !== 'TEXT' && node.layoutMode === 'NONE') throw new Error('Hug requires text or auto-layout');
     }
     Object.defineProperties(node, {
+      textAutoResize: { get: () => textAutoResize, set: value => {
+        textAutoResize = value;
+        // Controlled geometry changes ensure the converter applies coordinates after text sizing.
+        if (type === 'TEXT' && value !== 'NONE') {
+          if (textSizingShift) { node.x += textSizingShift.x; node.y += textSizingShift.y; }
+          if (value === 'WIDTH_AND_HEIGHT') node.width *= intrinsicWidthScale;
+        }
+      } },
       layoutSizingHorizontal: { get: () => horizontal, set: value => { sizing(value); horizontal = value; } },
       layoutSizingVertical: { get: () => vertical, set: value => { sizing(value); vertical = value; } },
       fontName: { get: () => fontName, set: value => { if (!loaded.has(`${value.family}|${value.style}`)) throw new Error('Font not loaded'); fontName = value; } },
