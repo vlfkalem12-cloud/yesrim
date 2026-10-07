@@ -23,7 +23,8 @@
     .dimension { display: grid; gap: 6px; }
     input[aria-invalid="true"] { border-color: var(--figma-color-border-danger, #b13247); }
     #viewport-error { margin: 0; color: var(--figma-color-text-danger, #b13247); font-size: 11px; }
-    .options { display: flex; flex-direction: column; gap: 12px; margin: 18px 0 22px; }
+    .options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 22px; }
+    .asset-picker { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
     .check { display: flex; gap: 9px; align-items: center; cursor: pointer; }
     input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: #7160d8; }
     button { border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
@@ -58,6 +59,8 @@
     <span class="muted" id="fileinfo">드래그하거나 클릭하여 선택 · .html · 최대 5MB</span>
   </label>
   <input class="sr-only" type="file" id="file" accept=".html,.htm,text/html" aria-label="HTML 파일 선택">
+  <div class="asset-picker"><label class="secondary" for="asset-files">이미지 파일 추가 (선택)</label><span class="muted" id="asset-count">상대 경로 이미지용</span></div>
+  <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">
   <div class="field">
     <label class="field-label" for="viewport">Viewport</label>
     <select id="viewport"><option value="1440">Desktop 1440</option><option value="1280">Desktop 1280</option><option value="768">Tablet 768</option><option value="375">Mobile 375</option><option value="custom">직접 입력</option></select>
@@ -71,12 +74,17 @@
   <div class="options">
     <label class="check"><input id="autolayout" type="checkbox" checked> Auto Layout 적용</label>
     <label class="check"><input id="styles" type="checkbox" checked> CSS 스타일 적용</label>
+    <label class="check"><input id="images" type="checkbox" checked> Images</label>
+    <label class="check"><input id="shadows" type="checkbox" checked> Shadows</label>
+    <label class="check"><input id="optimize" type="checkbox" checked> 빈 Wrapper 정리</label>
+    <label class="check"><input id="debug" type="checkbox"> Debug Mode</label>
   </div>
   <button id="convert" type="button" disabled>Figma로 변환</button>
   <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
   <p id="status" role="status" aria-live="polite"></p>
   <section id="report" hidden aria-label="변환 결과">
-    <div class="stats"><div class="stat"><strong id="total-count">0</strong><span>총 Node</span></div><div class="stat"><strong id="layout-count">0</strong><span>Auto Layout</span></div><div class="stat"><strong id="text-count">0</strong><span>Text</span></div><div class="stat"><strong id="image-count">0</strong><span>Image</span></div></div>
+    <div class="stats"><div class="stat"><strong id="total-count">0</strong><span>총 Node</span></div><div class="stat"><strong id="frame-count">0</strong><span>Frames</span></div><div class="stat"><strong id="text-count">0</strong><span>Text</span></div><div class="stat"><strong id="image-count">0</strong><span>Images</span></div><div class="stat"><strong id="layout-count">0</strong><span>Auto Layout</span></div><div class="stat"><strong id="grid-count">0</strong><span>Grid</span></div><div class="stat"><strong id="absolute-count">0</strong><span>Absolute</span></div><div class="stat"><strong id="svg-count">0</strong><span>SVG Vector</span></div></div>
+    <p class="muted" id="duration"></p>
     <details id="warning-details"><summary id="warning-summary">Warning 0</summary><ul id="warnings"></ul></details>
   </section>
   <div id="render-host"></div>

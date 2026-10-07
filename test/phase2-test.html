@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>HTML → Figma · Phase 2</title>
+  <style>
+    :root { --primary: #2563eb; --spacing-md: 16px; --surface: hsl(215 35% 96%); }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Pretendard, "Noto Sans KR", Arial, sans-serif; color: #17243b; }
+    .page { display: flex; flex-direction: column; gap: 32px; padding: 32px; }
+    section { display: flex; flex-direction: column; gap: var(--spacing-md); }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 20px; }
+    .grid-three { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 24px; row-gap: 16px; }
+    .grid-mixed { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
+    .card { display: flex; flex-direction: column; gap: 12px; padding: 20px; background: var(--surface); border: 1px solid #dae3f0; border-radius: 16px; }
+    .media-row { display: flex; align-items: center; gap: 16px; }
+    img { width: 120px; height: 80px; object-fit: contain; border-radius: 8px; }
+    .inline-icon { width: 64px; height: 64px; color: var(--primary); }
+    .background-demo { width: 360px; height: 140px; background: #ddd url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==") center/cover no-repeat; border-radius: 12px; }
+    .flex-demo { display: flex; gap: 20px; height: 140px; }
+    .fixed-column { width: 240px; flex-shrink: 0; padding: 16px; background: #e9f1fd; }
+    .fill-column { flex: 1; min-width: 160px; max-width: 1200px; padding: 16px; background: #f2f5fa; }
+    .position-demo { display: flex; position: relative; width: 600px; height: 180px; padding: 20px; background: #f1f4f9; border: 2px solid #ccd5e1; }
+    .top-badge { position: absolute; top: 16px; right: 16px; z-index: 10; width: 80px; height: 36px; background: var(--primary); color: white; padding: 8px; }
+    .under-badge { position: absolute; top: 24px; right: 24px; z-index: 1; width: 90px; height: 40px; background: #e1a634; }
+    .styled-card { width: 360px; padding: var(--spacing-md); background: rgba(255,255,255,.9); border-bottom: 3px solid #2563eb; border-radius: 16px 16px 0 0; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+    .wrapping { width: 320px; line-height: 24px; font-size: 16px; font-weight: 500; letter-spacing: .2px; text-align: left; }
+    .uppercase { text-transform: uppercase; font-style: italic; text-decoration: underline; }
+    .preformatted { width: 200px; white-space: pre; font-size: 14px; }
+    .clipped { display: flex; width: 260px; height: 80px; overflow: hidden; background: #f0f4fc; }
+    .wide-child { width: 400px; height: 100px; flex-shrink: 0; background: rgba(37,99,235,.2); }
+    .opacity-parent { display: flex; padding: 12px; opacity: .5; background: #f0f4fc; }
+    .opacity-child { opacity: .4; }
+    .hidden { display: none; }
+    .invisible { visibility: hidden; }
+    .grid-complex { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .span-two { grid-column: span 2; }
+    .unsupported { backdrop-filter: blur(4px); }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>2차 변환 검증 페이지</h1>
+    <section><h2>01 · Grid: 3열 / 행·열 간격</h2><div class="grid-three"><article class="card"><h2>편집 가능한 카드 A</h2><p>Grid → Auto Layout rows</p></article><article class="card"><h2>카드 B</h2><p>간격 24 / 16px</p></article><article class="card"><h2>카드 C</h2><p>벡터와 텍스트를 유지합니다.</p></article><article class="card"><h2>카드 D</h2><p>마지막 행의 빈 열도 유지합니다.</p></article></div></section>
+    <section><h2>02 · Grid: Fixed 200px + 1fr</h2><div class="grid-mixed"><div class="card">Fixed track</div><div class="card">Fractional track</div></div></section>
+    <section><h2>03 · Image / SVG / Background Image</h2><div class="media-row"><img id="data-image" alt="Data PNG" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="><svg class="inline-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="4" width="56" height="56" rx="12" fill="currentColor"/><path d="M19 33l9 9 18-20" fill="none" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg><img id="missing-image" src="images/banner.png" alt="로컬 이미지를 추가하지 않으면 placeholder"></div><div class="background-demo"></div></section>
+    <section><h2>04 · Fixed + Fill / Flex Grow / Min-Max</h2><div class="flex-demo"><aside class="fixed-column">Fixed 240px</aside><article class="fill-column">flex:1 → Fill Container, min-width 160px</article></div></section>
+    <section><h2>05 · Absolute top/right / z-index</h2><div class="position-demo"><p>부모 Frame 기준 위치</p><div class="top-badge">z-index 10</div><div class="under-badge"></div></div></section>
+    <section><h2>06 · CSS Variable / Border / Radius / Shadow</h2><div class="styled-card"><p>--spacing-md:16px · 아래쪽 border만 3px</p></div></section>
+    <section><h2>07 · Text Wrapping / Korean Fallback</h2><p class="wrapping">HTML에서 측정한 너비와 line-height를 유지하며 편집 가능한 한글 텍스트를 생성합니다. Pretendard가 없다면 Noto Sans KR을 우선 사용합니다.</p><p class="uppercase">editable text, italic and underline</p><p class="preformatted">first line
+    indentation preserved</p></section>
+    <section><h2>08 · Overflow Hidden / Opacity</h2><div class="clipped"><div class="wide-child"></div></div><div class="opacity-parent"><span class="opacity-child">부모 .5 × 자식 .4, 각 노드에 한 번씩 적용</span></div><p class="hidden">생성하면 안 되는 display:none</p><p class="invisible">생성하면 안 되는 visibility:hidden</p></section>
+    <section><h2>09 · Grid Fallback / Unsupported CSS</h2><div class="grid-complex"><div class="span-two">복잡한 span은 Warning과 고정 Frame</div><span>A</span><span>B</span></div><div class="unsupported">backdrop-filter Warning</div></section>
+    <section><h2>10 · Empty Wrapper Optimization</h2><div><div><p style="margin:0">익명 wrapper만 정리합니다.</p></div></div><div class="card active selected hover"><p>레이어 이름은 card</p></div></section>
+  </main>
+</body>
+</html>

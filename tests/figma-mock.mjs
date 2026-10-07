@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }], failFonts = [], failText = '' } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -16,6 +16,7 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       id: String(nextId++), type, name: '', parent: undefined, children: [], removed: false, width: 100, height: 100, x: 0, y: 0,
       layoutMode: 'NONE', layoutPositioning: 'AUTO', fills: [], strokes: [], opacity: 1, textAutoResize: 'NONE',
       appendChild(child) { append(this, child); },
+      insertChild(index, child) { append(this, child); this.children = this.children.filter(node => node !== child); this.children.splice(index, 0, child); },
       resize(width, height) { if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Invalid resize'); this.width = width; this.height = height; },
       remove() { this.removed = true; for (const child of [...this.children]) child.remove(); if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
       setPluginData(key, value) { data.set(key, value); }, getPluginData(key) { return data.get(key) || ''; }
@@ -39,6 +40,7 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
     currentPage: page,
     viewport: { center: { x: 1000, y: 800 }, scrollAndZoomIntoView(nodes) { this.zoomed = nodes; } },
     createFrame: () => make('FRAME'), createText: () => make('TEXT'), createRectangle: () => make('RECTANGLE'),
+    createNodeFromSvg(svg) { if (failSvg || !svg.includes('<svg')) throw new Error('Unsupported SVG'); const frame = make('FRAME'); frame.appendChild(make('VECTOR')); return frame; },
     async listAvailableFontsAsync() { return fonts.map(fontName => ({ fontName })); },
     async loadFontAsync(font) { const key = `${font.family}|${font.style}`; fontLoads.push(key); if (failFonts.includes(font.family) || !fonts.some(f => f.family === font.family && f.style === font.style)) throw new Error('Unavailable font'); loaded.add(key); },
     createImage(bytes) { if (!bytes.length) throw new Error('Invalid image'); images.push(bytes); return { hash: `hash-${images.length}` }; },

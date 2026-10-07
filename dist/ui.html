@@ -23,7 +23,8 @@
     .dimension { display: grid; gap: 6px; }
     input[aria-invalid="true"] { border-color: var(--figma-color-border-danger, #b13247); }
     #viewport-error { margin: 0; color: var(--figma-color-text-danger, #b13247); font-size: 11px; }
-    .options { display: flex; flex-direction: column; gap: 12px; margin: 18px 0 22px; }
+    .options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 22px; }
+    .asset-picker { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
     .check { display: flex; gap: 9px; align-items: center; cursor: pointer; }
     input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: #7160d8; }
     button { border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
@@ -58,6 +59,8 @@
     <span class="muted" id="fileinfo">드래그하거나 클릭하여 선택 · .html · 최대 5MB</span>
   </label>
   <input class="sr-only" type="file" id="file" accept=".html,.htm,text/html" aria-label="HTML 파일 선택">
+  <div class="asset-picker"><label class="secondary" for="asset-files">이미지 파일 추가 (선택)</label><span class="muted" id="asset-count">상대 경로 이미지용</span></div>
+  <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">
   <div class="field">
     <label class="field-label" for="viewport">Viewport</label>
     <select id="viewport"><option value="1440">Desktop 1440</option><option value="1280">Desktop 1280</option><option value="768">Tablet 768</option><option value="375">Mobile 375</option><option value="custom">직접 입력</option></select>
@@ -71,12 +74,17 @@
   <div class="options">
     <label class="check"><input id="autolayout" type="checkbox" checked> Auto Layout 적용</label>
     <label class="check"><input id="styles" type="checkbox" checked> CSS 스타일 적용</label>
+    <label class="check"><input id="images" type="checkbox" checked> Images</label>
+    <label class="check"><input id="shadows" type="checkbox" checked> Shadows</label>
+    <label class="check"><input id="optimize" type="checkbox" checked> 빈 Wrapper 정리</label>
+    <label class="check"><input id="debug" type="checkbox"> Debug Mode</label>
   </div>
   <button id="convert" type="button" disabled>Figma로 변환</button>
   <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
   <p id="status" role="status" aria-live="polite"></p>
   <section id="report" hidden aria-label="변환 결과">
-    <div class="stats"><div class="stat"><strong id="total-count">0</strong><span>총 Node</span></div><div class="stat"><strong id="layout-count">0</strong><span>Auto Layout</span></div><div class="stat"><strong id="text-count">0</strong><span>Text</span></div><div class="stat"><strong id="image-count">0</strong><span>Image</span></div></div>
+    <div class="stats"><div class="stat"><strong id="total-count">0</strong><span>총 Node</span></div><div class="stat"><strong id="frame-count">0</strong><span>Frames</span></div><div class="stat"><strong id="text-count">0</strong><span>Text</span></div><div class="stat"><strong id="image-count">0</strong><span>Images</span></div><div class="stat"><strong id="layout-count">0</strong><span>Auto Layout</span></div><div class="stat"><strong id="grid-count">0</strong><span>Grid</span></div><div class="stat"><strong id="absolute-count">0</strong><span>Absolute</span></div><div class="stat"><strong id="svg-count">0</strong><span>SVG Vector</span></div></div>
+    <p class="muted" id="duration"></p>
     <details id="warning-details"><summary id="warning-summary">Warning 0</summary><ul id="warnings"></ul></details>
   </section>
   <div id="render-host"></div>
@@ -85,6 +93,7 @@
   // src/types.ts
   var LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3e3, depth: 80, loadMs: 8e3, dimension: 1e5 };
   var VIEWPORT = { width: 1440, height: 900, minDimension: 1, maxDimension: 1e4 };
+  var IMPORT_DEFAULTS = { images: true, shadows: true, optimizeWrappers: true, debug: false };
 
   // src/utils.ts
   function isViewportDimension(value) {
@@ -110,11 +119,54 @@
       if (!/^[\da-f]{6}([\da-f]{2})?$/i.test(hex)) return null;
       return { r: parseInt(hex.slice(0, 2), 16) / 255, g: parseInt(hex.slice(2, 4), 16) / 255, b: parseInt(hex.slice(4, 6), 16) / 255, a: hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1 };
     }
-    const match = value.match(/^rgba?\((.*)\)$/i);
+    const match = value.match(/^(?:rgba?|hsla?)\((.*)\)$/i);
     if (!match) return null;
     const values = match[1].replace(/\//g, " ").split(/[\s,]+/).filter(Boolean);
+    if (values.length < 3 || values.length > 4 || values.some((v) => !Number.isFinite(parseFloat(v)))) return null;
+    const alpha = clamp(number(values[3] ?? "1") / (values[3]?.endsWith("%") ? 100 : 1), 0, 1);
+    if (/^hsl/i.test(value)) {
+      const hue = values[0];
+      const degrees = number(hue) * (hue.endsWith("turn") ? 360 : hue.endsWith("rad") ? 180 / Math.PI : hue.endsWith("grad") ? 0.9 : 1);
+      const h = (degrees % 360 + 360) % 360 / 60;
+      const s = clamp(number(values[1]) / 100, 0, 1), l = clamp(number(values[2]) / 100, 0, 1);
+      const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(h % 2 - 1)), m = l - c / 2;
+      const channels = h < 1 ? [c, x, 0] : h < 2 ? [x, c, 0] : h < 3 ? [0, c, x] : h < 4 ? [0, x, c] : h < 5 ? [x, 0, c] : [c, 0, x];
+      return { r: channels[0] + m, g: channels[1] + m, b: channels[2] + m, a: alpha };
+    }
     const channel = (v) => clamp(number(v) / (v.endsWith("%") ? 100 : 255), 0, 1);
-    return { r: channel(values[0] ?? "0"), g: channel(values[1] ?? "0"), b: channel(values[2] ?? "0"), a: clamp(number(values[3] ?? "1") / (values[3]?.endsWith("%") ? 100 : 1), 0, 1) };
+    return { r: channel(values[0] ?? "0"), g: channel(values[1] ?? "0"), b: channel(values[2] ?? "0"), a: alpha };
+  }
+  function splitCSSList(value) {
+    const parts = [];
+    let depth = 0, quote = "", start = 0;
+    for (let i = 0; i < value.length; i++) {
+      const char = value[i];
+      if (quote) {
+        if (char === quote && value[i - 1] !== "\\") quote = "";
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+      if (char === "(") depth++;
+      else if (char === ")") depth--;
+      else if (char === "," && depth === 0) {
+        parts.push(value.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    parts.push(value.slice(start).trim());
+    return parts;
+  }
+  function parseShadow(value) {
+    if (!value || value === "none") return void 0;
+    const first = splitCSSList(value)[0];
+    const colorString = first.match(/(?:rgba?|hsla?)\([^)]*\)|#[\da-f]{3,8}/i)?.[0];
+    const color = colorString ? parseColor(colorString) : null;
+    const numbers = first.replace(colorString || "", "").replace(/\binset\b/g, "").trim().split(/\s+/).map((v) => number(v, NaN));
+    if (!color || numbers.length < 2 || numbers.some((v) => !Number.isFinite(v))) return void 0;
+    return { color, x: numbers[0], y: numbers[1], blur: Math.max(0, numbers[2] || 0), spread: numbers[3] || 0, inset: /\binset\b/.test(first) };
   }
   function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -130,14 +182,325 @@
     }
   }
 
+  // src/sizing.ts
+  function authoredDimension(el, property) {
+    const typed = el;
+    try {
+      const value = typed.computedStyleMap?.().get(property);
+      if (value) return value.toString();
+    } catch {
+    }
+    const inline = el.style?.getPropertyValue(property);
+    if (inline) return inline;
+    let declared = "";
+    const inspect = (rules) => {
+      for (const rule of [...rules]) {
+        if ("selectorText" in rule && "style" in rule) {
+          const css = rule;
+          try {
+            if (el.matches(css.selectorText) && css.style.getPropertyValue(property)) declared = css.style.getPropertyValue(property);
+          } catch {
+          }
+        } else if ("cssRules" in rule) {
+          if (rule.type === 4 && !el.ownerDocument.defaultView?.matchMedia(rule.conditionText).matches) continue;
+          inspect(rule.cssRules);
+        }
+      }
+    };
+    for (const sheet of [...el.ownerDocument.styleSheets]) {
+      try {
+        inspect(sheet.cssRules);
+      } catch {
+      }
+    }
+    return declared || "auto";
+  }
+  function inferSizing(el, style, parentStyle, width, height) {
+    const authoredWidth = authoredDimension(el, "width"), authoredHeight = authoredDimension(el, "height");
+    const parentFlex = !!parentStyle && ["flex", "inline-flex"].includes(parentStyle.display) && parentStyle.flexWrap === "nowrap";
+    const column = parentStyle?.flexDirection.startsWith("column");
+    const align = style.alignSelf === "auto" ? parentStyle?.alignItems : style.alignSelf;
+    const intrinsic = (value) => /^(auto|fit-content|max-content|min-content)/.test(value);
+    function mode(axis, authored, measured) {
+      const primary = axis === "width" ? !column : column;
+      if (parentFlex && (authored === "100%" || primary && number(style.flexGrow) > 0)) return "FILL";
+      if (parentFlex && !primary && authored === "auto" && ["stretch", "normal"].includes(align || "")) return "FILL";
+      if (parentFlex && primary && style.flexBasis !== "auto" && style.flexBasis !== "content") return "FIXED";
+      if (!intrinsic(authored)) return "FIXED";
+      if (axis === "width" && !parentFlex && !["inline", "inline-block", "inline-flex"].includes(style.display)) return "FIXED";
+      if (axis === "width" && style.whiteSpace !== "nowrap" && style.whiteSpace !== "pre" && measured > 0 && el.localName === "p") return "FIXED";
+      return "HUG";
+    }
+    const constraint = (value) => /^\d*\.?\d+px$/.test(value) ? Math.max(0, number(value)) : null;
+    return {
+      width,
+      height,
+      authoredWidth,
+      authoredHeight,
+      widthMode: mode("width", authoredWidth, width),
+      heightMode: mode("height", authoredHeight, height),
+      minWidth: constraint(style.minWidth),
+      maxWidth: constraint(style.maxWidth),
+      minHeight: constraint(style.minHeight),
+      maxHeight: constraint(style.maxHeight)
+    };
+  }
+
+  // src/grid.ts
+  function parseGrid(node, style, element, warn) {
+    const columns = style.gridTemplateColumns.split(/\s+/).filter(Boolean);
+    const declared = authoredDimension(element, "grid-template-columns").trim();
+    const repeat = declared.match(/^repeat\(\s*(\d+)\s*,\s*1fr\s*\)$/);
+    const tracks = repeat && Number(repeat[1]) <= 12 ? Array(Number(repeat[1])).fill("1fr") : declared.split(/\s+/);
+    const supportedTracks = tracks.length === columns.length && tracks.every((track) => track === "1fr" || /^\d+(?:\.\d+)?px$/.test(track));
+    const children = [...element.children].filter((child) => {
+      const css = element.ownerDocument.defaultView.getComputedStyle(child);
+      return css.display !== "none" && css.visibility !== "hidden" && !["absolute", "fixed"].includes(css.position);
+    });
+    const simple = supportedTracks && columns.length > 0 && columns.length <= 12 && columns.every((track) => /^\d+(?:\.\d+)?px$/.test(track)) && !style.gridAutoFlow.includes("column") && !style.gridAutoFlow.includes("dense") && children.every((child) => {
+      const css = element.ownerDocument.defaultView.getComputedStyle(child);
+      return [css.gridColumnStart, css.gridColumnEnd, css.gridRowStart, css.gridRowEnd].every((value) => value === "auto") && css.order === "0";
+    });
+    node.grid = { columns: columns.map((track) => number(track)), columnModes: tracks.map((track) => track === "1fr" ? "FILL" : "FIXED"), rowGap: number(style.rowGap), columnGap: number(style.columnGap), supported: simple };
+    if (!simple) {
+      node.layout.direction = "NONE";
+      node.size.widthMode = "FIXED";
+      node.size.heightMode = "FIXED";
+      warn("GRID_FALLBACK", node.name, "Grid\uC758 span\xB7\uBA85\uC2DC\uC801 placement\xB7dense\xB7\uBCF5\uC7A1\uD55C track\uC740 \uCE21\uC815\uD55C \uACE0\uC815 Frame\uC73C\uB85C \uC720\uC9C0\uD569\uB2C8\uB2E4.");
+    }
+  }
+  function buildGridRows(node) {
+    if (!node.grid?.supported) return;
+    const { columns, rowGap, columnGap } = node.grid;
+    const flow = node.children.filter((child) => !child.layout.absolute);
+    const absolute = node.children.filter((child) => child.layout.absolute);
+    const rows = [];
+    for (let start = 0; start < flow.length; start += columns.length) {
+      const items = flow.slice(start, start + columns.length);
+      const top = Math.min(...items.map((child) => child.rect.y - Math.max(0, child.layout.margin.top)));
+      const rowHeight = Math.max(...items.map((child) => child.rect.height + Math.max(0, child.layout.margin.top) + Math.max(0, child.layout.margin.bottom)));
+      const rowWidth = columns.reduce((a, b) => a + b, 0) + columnGap * (columns.length - 1);
+      const first = items[0];
+      const row = {
+        ...node,
+        name: `${node.name} / row ${rows.length + 1}`,
+        grid: void 0,
+        cssVariables: [],
+        source: { selector: `${node.source?.selector || node.name} / row`, id: "", classNames: [], synthetic: true },
+        rect: { x: first.rect.x - Math.max(0, first.layout.margin.left), y: top, width: rowWidth, height: rowHeight },
+        size: { width: rowWidth, height: rowHeight, authoredWidth: "100%", authoredHeight: "auto", widthMode: "FILL", heightMode: "FIXED" },
+        layout: {
+          ...node.layout,
+          display: "flex",
+          direction: "HORIZONTAL",
+          gap: columnGap,
+          reverse: false,
+          justify: "MIN",
+          align: "MIN",
+          padding: { top: 0, right: 0, bottom: 0, left: 0 },
+          margin: { top: 0, right: 0, bottom: 0, left: 0 },
+          absolute: false,
+          grow: 0,
+          zIndex: null
+        },
+        style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, shadow: void 0, clipsContent: false, borderWidths: { top: 0, right: 0, bottom: 0, left: 0 }, radii: [0, 0, 0, 0] },
+        children: []
+      };
+      row.children = columns.map((width, index) => {
+        const child = items[index];
+        const cell = {
+          ...row,
+          name: child ? `${child.name} / cell` : `${node.name} / empty cell ${index + 1}`,
+          source: { selector: `${child?.source?.selector || child?.name || node.name} / cell`, id: "", classNames: [], synthetic: true },
+          rect: { x: row.rect.x + columns.slice(0, index).reduce((a, b) => a + b, 0) + columnGap * index, y: top, width, height: rowHeight },
+          size: { width, height: rowHeight, authoredWidth: `${width}px`, authoredHeight: `${rowHeight}px`, widthMode: node.grid.columnModes?.[index] || "FIXED", heightMode: "FIXED" },
+          layout: { ...row.layout, direction: "VERTICAL", gap: 0 },
+          children: child ? [child] : []
+        };
+        if (child && (child.size.authoredWidth === "auto" || child.size.authoredWidth === "100%")) child.size.widthMode = "FILL";
+        if (child && child.size.authoredHeight === "auto" && child.rect.height >= rowHeight - 1 && !Object.values(child.layout.margin).some((v) => v)) child.size.heightMode = "FILL";
+        return cell;
+      });
+      rows.push(row);
+    }
+    node.layout.direction = "VERTICAL";
+    node.layout.gap = rowGap;
+    node.layout.align = "MIN";
+    node.layout.justify = "MIN";
+    node.layout.reverse = false;
+    node.layout.wrap = false;
+    node.children = [...rows, ...absolute];
+  }
+
+  // src/optimizer.ts
+  function optimizeEmptyWrappers(root) {
+    const stack = [root];
+    while (stack.length) {
+      const parent2 = stack.pop();
+      parent2.children = parent2.children.map((node) => {
+        while (eligible(node)) {
+          const child = node.children[0];
+          child.size.widthMode = node.size.widthMode;
+          child.size.heightMode = node.size.heightMode;
+          node = child;
+        }
+        return node;
+      });
+      stack.push(...parent2.children);
+    }
+  }
+  function eligible(node) {
+    const child = node.children[0];
+    if (!child || node.children.length !== 1 || node.type !== "FRAME" || node.grid || !node.source?.styleless || node.source.id || node.source.classNames.length || node.source.synthetic) return false;
+    if (node.layout.direction !== "NONE" || node.layout.position !== "static" || child.layout.absolute || node.style.clipsContent || node.style.opacity !== 1 || node.style.background?.a || node.style.backgroundImage || node.style.shadow) return false;
+    if (node.layout.grow || node.layout.order || node.layout.zIndex !== null || node.layout.basis !== "auto") return false;
+    if ((node.size.minWidth || 0) > 0 || (node.size.minHeight || 0) > 0 || node.size.maxWidth != null || node.size.maxHeight != null) return false;
+    if ([node.size.authoredWidth, node.size.authoredHeight, child.size.authoredWidth, child.size.authoredHeight].some((value) => value !== "auto")) return false;
+    if ([node.layout.padding, node.layout.margin, node.style.borderWidths].some((insets) => Object.values(insets).some((value) => value !== 0)) || node.style.radii.some((value) => value !== 0)) return false;
+    return Math.abs(node.rect.x - child.rect.x) < 0.5 && Math.abs(node.rect.y - child.rect.y) < 0.5 && Math.abs(node.rect.width - child.rect.width) < 0.5 && Math.abs(node.rect.height - child.rect.height) < 0.5;
+  }
+
+  // src/svg.ts
+  function serializeSVG(element) {
+    const view = element.ownerDocument.defaultView;
+    const originals = [element, ...element.querySelectorAll("*")];
+    if (originals.length > 1e3) throw new Error("SVG\uC758 \uB0B4\uBD80 \uC694\uC18C\uAC00 1,000\uAC1C \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
+    const clone = element.cloneNode(true);
+    const copies = [clone, ...clone.querySelectorAll("*")];
+    const properties = ["fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "opacity", "color", "font-family", "font-size", "font-weight", "stop-color", "stop-opacity", "clip-rule", "clip-path", "mask"];
+    originals.forEach((original, index) => {
+      const copy = copies[index];
+      if (["script", "foreignObject", "iframe", "animate", "animateTransform", "set"].includes(copy.localName)) {
+        copy.remove();
+        return;
+      }
+      const css = view.getComputedStyle(original);
+      if (css.display === "none" || css.visibility === "hidden") {
+        copy.remove();
+        return;
+      }
+      for (const attribute of [...copy.attributes]) {
+        if (/^on/i.test(attribute.name)) copy.removeAttribute(attribute.name);
+        if (["href", "xlink:href"].includes(attribute.name) && !attribute.value.startsWith("#")) copy.removeAttribute(attribute.name);
+      }
+      for (const property of properties) {
+        const value = css.getPropertyValue(property).replace(/url\(["']?[^)]*#([^"')]+)["']?\)/g, "url(#$1)");
+        if (value) copy.setAttribute(property, value);
+      }
+      copy.removeAttribute("class");
+      copy.removeAttribute("style");
+    });
+    const rect = element.getBoundingClientRect();
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", String(Math.max(0.01, rect.width)));
+    clone.setAttribute("height", String(Math.max(0.01, rect.height)));
+    clone.setAttribute("opacity", "1");
+    const result = new XMLSerializer().serializeToString(clone);
+    if (result.length > LIMITS.fileBytes) throw new Error("SVG \uB370\uC774\uD130\uAC00 \uB108\uBB34 \uD07D\uB2C8\uB2E4.");
+    return result;
+  }
+
+  // src/css-variables.ts
+  function collectCSSVariableNames(doc) {
+    const names = /* @__PURE__ */ new Set();
+    const read = (style) => {
+      for (const name of [...style]) if (name.startsWith("--")) names.add(name);
+    };
+    const visit = (rules) => {
+      for (const rule of [...rules]) {
+        if ("style" in rule) read(rule.style);
+        if ("cssRules" in rule) visit(rule.cssRules);
+      }
+    };
+    for (const sheet of [...doc.styleSheets]) {
+      try {
+        visit(sheet.cssRules);
+      } catch {
+      }
+    }
+    for (const element of doc.querySelectorAll("[style]")) read(element.style);
+    return [...names].slice(0, 100);
+  }
+  function readCSSVariables(style, names, scope) {
+    return names.map((name) => ({ name, value: style.getPropertyValue(name).trim(), scope })).filter((variable) => variable.value);
+  }
+
+  // src/assets.ts
+  var allowedAsset = (url) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
+  function resolveLocalAsset(url, files) {
+    if (/^[a-z][a-z\d+.-]*:/i.test(url) || url.startsWith("//")) return void 0;
+    let path;
+    try {
+      path = decodeURIComponent(url.split(/[?#]/)[0]).replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+    } catch {
+      return void 0;
+    }
+    const found = files[path] || files[path.split("/").pop()];
+    return found && allowedAsset(found) ? found : void 0;
+  }
+  async function collectImages(root, doc, options, assets, warn) {
+    if (options.images === false) return;
+    const stack = [root];
+    const requests = [];
+    while (stack.length) {
+      const node = stack.pop();
+      stack.push(...node.children);
+      if (node.image) requests.push({ image: node.image, name: node.name });
+      if (node.style.backgroundImage && options.styles) requests.push({ image: node.style.backgroundImage, name: node.name });
+    }
+    const cache = /* @__PURE__ */ new Map();
+    const existing = /* @__PURE__ */ new Map();
+    for (const img of doc.images) if (img.getAttribute("src")) existing.set(img.getAttribute("src"), img);
+    let totalBytes = 0, keyIndex = 0, nextRequest = 0;
+    async function load(src) {
+      if (!allowedAsset(src)) throw new Error("HTTPS \uB610\uB294 data:image URL\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uC0C1\uB300 \uACBD\uB85C \uC774\uBBF8\uC9C0\uB294 \uD30C\uC77C\uC744 \uCD94\uAC00\uD558\uC138\uC694.");
+      const img = existing.get(src) || doc.createElement("img");
+      if (!existing.has(src)) {
+        if (/^https:/i.test(src)) img.crossOrigin = "anonymous";
+        img.src = src;
+      }
+      try {
+        await withTimeout(img.decode(), LIMITS.loadMs, "\uC774\uBBF8\uC9C0 \uB85C\uB529 \uC2DC\uAC04 \uCD08\uACFC");
+      } catch (error) {
+        if (!existing.has(src)) img.src = "";
+        throw error;
+      }
+      if (!img.naturalWidth || !img.naturalHeight || img.naturalWidth * img.naturalHeight > 16e6) throw new Error("\uC774\uBBF8\uC9C0 \uCE58\uC218\uAC00 \uC5C6\uAC70\uB098 16MP \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
+      const canvas = doc.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("\uC774\uBBF8\uC9C0\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      context.drawImage(img, 0, 0);
+      const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("\uC774\uBBF8\uC9C0 \uBCC0\uD658 \uC2E4\uD328")), "image/png"));
+      if (blob.size > LIMITS.imageBytes || totalBytes + blob.size > LIMITS.assetBytes) throw new Error("\uC774\uBBF8\uC9C0 \uC6A9\uB7C9 \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
+      totalBytes += blob.size;
+      const key = `image-${++keyIndex}`;
+      assets[key] = [...new Uint8Array(await blob.arrayBuffer())];
+      return key;
+    }
+    async function worker() {
+      while (nextRequest < requests.length) {
+        const request = requests[nextRequest++];
+        if (!cache.has(request.image.src)) cache.set(request.image.src, load(request.image.src));
+        try {
+          request.image.key = await cache.get(request.image.src);
+        } catch (error) {
+          warn("IMAGE_LOAD", request.name, `Image Load Failed: ${request.image.src.slice(0, 180)} \u2014 ${errorMessage(error)}`);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, requests.length) }, () => worker()));
+  }
+
   // src/parser.ts
   var TEXT_TAGS = /* @__PURE__ */ new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "strong", "small", "a", "em", "b", "i", "li", "pre", "code"]);
   var OMIT_TAGS = /* @__PURE__ */ new Set(["head", "style", "script", "link", "meta", "title", "noscript", "template", "br"]);
-  var UNSUPPORTED_TAGS = /* @__PURE__ */ new Set(["canvas", "video", "audio", "iframe", "object", "embed", "svg"]);
+  var UNSUPPORTED_TAGS = /* @__PURE__ */ new Set(["canvas", "video", "audio", "iframe", "object", "embed"]);
   var zero = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
-  var allowedAsset = (url) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
-  var layerName = (el) => el.id || el.getAttribute("class")?.trim() || el.tagName.toLowerCase();
-  function sanitizeHTML(html2, warnings) {
+  var layerName = (el) => el.id || el.getAttribute("class")?.trim().split(/\s+/)[0] || el.tagName.toLowerCase();
+  var selector = (el) => `${el.localName}${el.id ? `#${el.id}` : ""}${[...el.classList].map((name) => `.${name}`).join("")}`;
+  function sanitizeHTML(html2, warnings, localAssets2) {
     const doc = new DOMParser().parseFromString(html2, "text/html");
     const warn = (code, node, message) => warnings.push({ code, node, message });
     const scripts = doc.querySelectorAll("script");
@@ -151,6 +514,12 @@
         if (/^on/i.test(attr.name) || ["srcdoc", "autofocus", "action", "formaction", "target", "ping", "contenteditable"].includes(attr.name)) el.removeAttribute(attr.name);
       }
       if (el.localName === "a") el.removeAttribute("href");
+      const resolveCSSAssets = (css) => css.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (original, _quote, url) => {
+        const resolved = resolveLocalAsset(url, localAssets2);
+        return resolved ? `url("${resolved}")` : original;
+      });
+      if (el.localName === "style") el.textContent = resolveCSSAssets(el.textContent || "");
+      if (el.hasAttribute("style")) el.setAttribute("style", resolveCSSAssets(el.getAttribute("style")));
       if (el.localName === "link") {
         const href = el.getAttribute("href") || "";
         if (el.getAttribute("rel") !== "stylesheet" || !/^https:\/\//i.test(href)) {
@@ -161,7 +530,12 @@
       if (el.localName === "img") {
         el.removeAttribute("srcset");
         el.removeAttribute("loading");
-        const src = el.getAttribute("src") || "";
+        const originalSrc = el.getAttribute("src") || "";
+        const src = resolveLocalAsset(originalSrc, localAssets2) || originalSrc;
+        if (src !== originalSrc) {
+          el.setAttribute("src", src);
+          el.setAttribute("data-original-src", originalSrc);
+        }
         if (!allowedAsset(src)) {
           warn("IMAGE_SOURCE", layerName(el), "\uC0C1\uB300 \uACBD\uB85C \uB610\uB294 HTTP \uC774\uBBF8\uC9C0\uB294 \uC5C5\uB85C\uB4DC\uD55C HTML\uB9CC\uC73C\uB85C \uBD88\uB7EC\uC62C \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
           el.setAttribute("data-original-src", src);
@@ -178,7 +552,7 @@
     doc.head.append(stable);
     return "<!doctype html>" + doc.documentElement.outerHTML;
   }
-  async function renderHTML(html2, viewport2, viewportHeight2, host) {
+  async function renderHTML(html2, viewport2, viewportHeight2, host, localAssets2 = {}) {
     if (!isViewportDimension(viewport2) || !isViewportDimension(viewportHeight2)) throw new Error("Viewport \uB108\uBE44\uC640 \uB192\uC774\uB294 1~10,000px\uC758 \uC815\uC218\uB85C \uC785\uB825\uD558\uC138\uC694.");
     const warnings = [];
     const iframe = document.createElement("iframe");
@@ -186,7 +560,7 @@
     iframe.setAttribute("sandbox", "allow-same-origin");
     iframe.setAttribute("aria-hidden", "true");
     Object.assign(iframe.style, { position: "absolute", left: "-120000px", top: "0", width: `${viewport2}px`, height: `${viewportHeight2}px`, border: "0", pointerEvents: "none" });
-    iframe.srcdoc = sanitizeHTML(html2, warnings);
+    iframe.srcdoc = sanitizeHTML(html2, warnings, localAssets2);
     const loaded = new Promise((resolve) => iframe.addEventListener("load", () => resolve(), { once: true }));
     host.append(iframe);
     try {
@@ -210,58 +584,6 @@
     }
     return { iframe, document: doc, warnings, dispose: () => iframe.remove() };
   }
-  function authoredDimension(el, property, style) {
-    const typed = el;
-    try {
-      const value = typed.computedStyleMap?.().get(property);
-      if (value) return value.toString();
-    } catch {
-    }
-    const inline = el.style?.getPropertyValue(property);
-    if (inline) return inline;
-    let declared = "";
-    const inspect = (rules) => {
-      for (const rule of Array.from(rules)) {
-        if ("selectorText" in rule && "style" in rule) {
-          const css = rule;
-          try {
-            if (el.matches(css.selectorText) && css.style.getPropertyValue(property)) declared = css.style.getPropertyValue(property);
-          } catch {
-          }
-        } else if ("cssRules" in rule) {
-          const group = rule;
-          if ("conditionText" in rule && rule.type === 4 && !el.ownerDocument.defaultView?.matchMedia(rule.conditionText).matches) continue;
-          inspect(group.cssRules);
-        }
-      }
-    };
-    for (const sheet of Array.from(el.ownerDocument.styleSheets)) {
-      try {
-        inspect(sheet.cssRules);
-      } catch {
-      }
-    }
-    return declared || "auto";
-  }
-  function inferSizing(el, style, parentStyle, width, height) {
-    const authoredWidth = authoredDimension(el, "width", style);
-    const authoredHeight = authoredDimension(el, "height", style);
-    const parentFlex = !!parentStyle && ["flex", "inline-flex"].includes(parentStyle.display) && parentStyle.flexWrap === "nowrap";
-    const parentColumn = parentStyle?.flexDirection.startsWith("column");
-    const align = style.alignSelf === "auto" ? parentStyle?.alignItems : style.alignSelf;
-    const auto = (v) => v === "auto" || v.includes("fit-content") || v.includes("max-content") || v.includes("min-content");
-    const mode = (dimension, value) => {
-      if (value === "100%" && parentFlex) return "FILL";
-      if (parentFlex && number(style.flexGrow) > 0 && (dimension === "width" ? !parentColumn : parentColumn)) return "FILL";
-      if (auto(value)) {
-        if (parentFlex && (dimension === "width" ? parentColumn : !parentColumn) && (align === "stretch" || align === "normal")) return "FILL";
-        if (dimension === "width" && !parentFlex && !["inline", "inline-block", "inline-flex"].includes(style.display)) return "FIXED";
-        return "HUG";
-      }
-      return "FIXED";
-    };
-    return { width, height, widthMode: mode("width", authoredWidth), heightMode: mode("height", authoredHeight), authoredWidth, authoredHeight };
-  }
   function readStyle(style) {
     const radius = (key) => number(style.getPropertyValue(key));
     return {
@@ -280,10 +602,12 @@
       textAlign: style.textAlign,
       textDecoration: style.textDecorationLine,
       whiteSpace: style.whiteSpace,
-      clipsContent: ["hidden", "clip"].includes(style.overflowX) || ["hidden", "clip"].includes(style.overflowY)
+      clipsContent: ["hidden", "clip", "auto", "scroll"].includes(style.overflowX) || ["hidden", "clip", "auto", "scroll"].includes(style.overflowY),
+      shadow: parseShadow(style.boxShadow),
+      textTransform: style.textTransform
     };
   }
-  function readLayout(style) {
+  function readLayout(style, element) {
     const flex = ["flex", "inline-flex"].includes(style.display);
     const column = style.flexDirection.startsWith("column");
     const reverse = style.flexDirection.endsWith("reverse");
@@ -303,28 +627,38 @@
       position: style.position,
       absolute: style.position === "absolute" || style.position === "fixed",
       grow: number(style.flexGrow),
+      shrink: number(style.flexShrink, 1),
+      basis: style.flexBasis,
+      zIndex: style.zIndex === "auto" ? null : number(style.zIndex),
+      offsets: {
+        top: element ? authoredDimension(element, "top") : style.top,
+        right: element ? authoredDimension(element, "right") : style.right,
+        bottom: element ? authoredDimension(element, "bottom") : style.bottom,
+        left: element ? authoredDimension(element, "left") : style.left
+      },
       alignSelf: style.alignSelf,
       order: number(style.order),
       wrap: flex && style.flexWrap !== "nowrap"
     };
   }
-  function parseGrid(node, warn) {
-    node.layout.direction = "NONE";
-    node.size.widthMode = "FIXED";
-    node.size.heightMode = "FIXED";
-    warn("CSS_GRID", node.name, "CSS Grid\uB97C \uACE0\uC815 \uC704\uCE58 Frame\uC73C\uB85C \uBCC0\uD658\uD588\uC2B5\uB2C8\uB2E4.");
-  }
   async function parseRenderedHTML(rendered, options) {
+    options = { ...IMPORT_DEFAULTS, ...options };
     const doc = rendered.document;
     const view = doc.defaultView;
     const warnings = [...rendered.warnings];
     const assets = {};
+    const variableNames = collectCSSVariableNames(doc);
+    const computedCache = /* @__PURE__ */ new WeakMap();
+    const computed = (el) => {
+      if (!computedCache.has(el)) computedCache.set(el, view.getComputedStyle(el));
+      return computedCache.get(el);
+    };
     const warn = (code, node, message) => {
       if (warnings.length < 500) warnings.push({ code, node, message });
     };
     let count = 0;
     const bounds = (rect) => ({ x: rect.left, y: rect.top, width: clamp(rect.width), height: clamp(rect.height) });
-    const hasBlockChildren = (el) => [...el.children].some((child) => !["inline", "inline-block", "contents", "none"].includes(view.getComputedStyle(child).display) || ["img", "svg"].includes(child.localName));
+    const hasBlockChildren = (el) => [...el.children].some((child) => !["inline", "inline-block", "contents", "none"].includes(computed(child).display) || ["img", "svg"].includes(child.localName));
     const text = (el) => el.innerText || el.textContent || "";
     function parse(el, depth) {
       if (OMIT_TAGS.has(el.localName)) return [];
@@ -332,7 +666,7 @@
         warn("TREE_LIMIT", layerName(el), "\uB178\uB4DC \uC218 \uB610\uB294 \uC911\uCCA9 \uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C \uC77C\uBD80 \uC694\uC18C\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
         return [];
       }
-      const style = view.getComputedStyle(el);
+      const style = computed(el);
       if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return [];
       if (style.display === "contents") {
         warn("DISPLAY_CONTENTS", layerName(el), "display:contents \uC694\uC18C\uC758 \uC790\uC2DD\uB4E4\uC744 \uBD80\uBAA8\uC5D0 \uBC30\uCE58\uD588\uC2B5\uB2C8\uB2E4.");
@@ -343,14 +677,16 @@
       const name = layerName(el);
       const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el);
       const node = {
-        type: el.localName === "img" ? "IMAGE" : isText ? "TEXT" : "FRAME",
+        type: el.localName === "svg" ? "SVG" : el.localName === "img" ? "IMAGE" : isText ? "TEXT" : "FRAME",
         tagName: el.localName,
         name,
         rect,
-        layout: readLayout(style),
-        size: inferSizing(el, style, el.parentElement ? view.getComputedStyle(el.parentElement) : null, rect.width, rect.height),
+        layout: readLayout(style, el),
+        size: inferSizing(el, style, el.parentElement ? computed(el.parentElement) : null, rect.width, rect.height),
         style: readStyle(style),
-        children: []
+        children: [],
+        source: { selector: selector(el), id: el.id, classNames: [...el.classList], styleless: !el.hasAttribute("style") },
+        cssVariables: readCSSVariables(style, variableNames, selector(el))
       };
       count++;
       if (node.layout.absolute) warn("ABSOLUTE_ELEMENT", name, "\uC808\uB300 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
@@ -359,11 +695,19 @@
         node.size.heightMode = "FIXED";
         warn("FLEX_WRAP", name, "\uC5EC\uB7EC \uC904 Flexbox\uB294 \uCE21\uC815\uB41C \uACE0\uC815 \uC704\uCE58\uB85C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4.");
       }
-      if (style.display.includes("grid")) parseGrid(node, warn);
+      if (style.display.includes("grid")) parseGrid(node, style, el, warn);
       if (style.transform !== "none") warn("TRANSFORM", name, "CSS transform\uC740 \uCE21\uC815\uB41C \uACBD\uACC4 \uC0C1\uC790\uB85C \uB2E8\uC21C\uD654\uD588\uC2B5\uB2C8\uB2E4.");
       if (style.cssFloat !== "none") warn("FLOAT", name, "float\uB294 \uCE21\uC815\uB41C \uC704\uCE58\uB9CC \uC720\uC9C0\uD569\uB2C8\uB2E4.");
-      if (style.backgroundImage !== "none") warn("BACKGROUND_IMAGE", name, "\uBC30\uACBD \uC774\uBBF8\uC9C0\xB7\uADF8\uB77C\uB370\uC774\uC158\uC740 MVP\uC5D0\uC11C \uC0C9\uC0C1\uC73C\uB85C \uB2E8\uC21C\uD654\uD569\uB2C8\uB2E4.");
-      if (style.boxShadow !== "none") warn("BOX_SHADOW", name, "\uADF8\uB9BC\uC790\uB294 MVP\uC5D0\uC11C \uC0DD\uB7B5\uD569\uB2C8\uB2E4.");
+      if (style.backgroundImage !== "none") {
+        const layers = splitCSSList(style.backgroundImage);
+        const image = layers[0].match(/^url\(["']?(.*?)["']?\)$/)?.[1];
+        if (image) node.style.backgroundImage = { key: "", src: image, alt: "background", fit: style.backgroundSize.split(",")[0].trim(), position: style.backgroundPosition, repeat: style.backgroundRepeat };
+        else warn("BACKGROUND_IMAGE", name, "\uADF8\uB77C\uB370\uC774\uC158 \uBC30\uACBD\uC740 \uB2E8\uC0C9 \uBC30\uACBD\uC73C\uB85C \uC720\uC9C0\uD569\uB2C8\uB2E4.");
+        if (layers.length > 1) warn("BACKGROUND_LAYERS", name, "\uB2E4\uC911 \uBC30\uACBD\uC740 \uCCAB \uBC88\uC9F8 \uB808\uC774\uC5B4\uB9CC \uAC00\uC838\uC635\uB2C8\uB2E4.");
+      }
+      if (style.boxShadow !== "none" && splitCSSList(style.boxShadow).length > 1) warn("MULTIPLE_SHADOWS", name, "\uB2E4\uC911 shadow\uB294 \uCCAB \uBC88\uC9F8 \uD6A8\uACFC\uB9CC \uBC18\uC601\uD569\uB2C8\uB2E4.");
+      if (style.boxShadow !== "none" && !node.style.shadow) warn("BOX_SHADOW", name, "\uADF8\uB9BC\uC790 \uBB38\uBC95\uC744 \uD574\uC11D\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      if (style.getPropertyValue("backdrop-filter") && style.getPropertyValue("backdrop-filter") !== "none") warn("UNSUPPORTED_CSS", name, `Unsupported: backdrop-filter (${selector(el)})`);
       if (["space-around", "space-evenly"].includes(style.justifyContent)) warn("JUSTIFY_CONTENT", name, `${style.justifyContent}\uB97C \uC2DC\uC791 \uC815\uB82C\uB85C \uB2E8\uC21C\uD654\uD569\uB2C8\uB2E4.`);
       if (style.alignItems.includes("baseline")) warn("BASELINE", name, "baseline \uC815\uB82C\uC744 \uC2DC\uC791 \uC815\uB82C\uB85C \uB2E8\uC21C\uD654\uD569\uB2C8\uB2E4.");
       for (const pseudo of ["::before", "::after"]) {
@@ -372,10 +716,10 @@
       }
       if (node.type === "TEXT") {
         node.text = text(el);
-        if (style.textTransform === "uppercase") node.text = node.text.toUpperCase();
-        if (style.textTransform === "lowercase") node.text = node.text.toLowerCase();
+        node.text = transformText(node.text, style.textTransform);
         if (el.children.length) warn("INLINE_TEXT", name, "\uC5EC\uB7EC inline \uD14D\uC2A4\uD2B8 \uC2A4\uD0C0\uC77C\uC744 \uBD80\uBAA8\uC758 \uC2A4\uD0C0\uC77C\uB85C \uD1B5\uD569\uD588\uC2B5\uB2C8\uB2E4.");
-        if ((node.style.background?.a || Object.values(node.style.borderWidths).some((v) => v > 0) || Object.values(node.layout.padding).some((v) => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
+        const noWrap = ["nowrap", "pre"].includes(style.whiteSpace) && node.size.widthMode !== "HUG";
+        if ((node.style.background?.a || node.style.backgroundImage || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some((v) => v > 0) || Object.values(node.layout.padding).some((v) => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
           node.type = "FRAME";
           const range = doc.createRange();
           range.selectNodeContents(el);
@@ -384,14 +728,20 @@
             type: "TEXT",
             name: `${name} / text`,
             rect: bounds(range.getBoundingClientRect()),
-            style: { ...node.style, opacity: 1, background: null, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, shadow: void 0, borderWidths: zero(), radii: [0, 0, 0, 0] },
             layout: { ...node.layout, direction: "NONE", padding: zero(), margin: zero(), absolute: false },
             children: []
           };
-          child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: "FIXED", heightMode: "HUG" };
+          child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap ? "HUG" : "FIXED", heightMode: "HUG" };
           node.children = [child];
           node.text = void 0;
           count++;
+        }
+      } else if (node.type === "SVG") {
+        try {
+          node.svg = serializeSVG(el);
+        } catch (error) {
+          warn("SVG_SERIALIZE", name, errorMessage(error));
         }
       } else if (node.type === "IMAGE") {
         const img = el;
@@ -400,6 +750,15 @@
         warn("UNSUPPORTED_ELEMENT", name, `${el.localName}\uC740 \uD3B8\uC9D1 \uAC00\uB2A5\uD55C \uBE48 Frame\uC73C\uB85C \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.`);
       } else {
         node.children = parseChildren(el, depth);
+      }
+      const gridRows = node.grid ? Math.ceil(node.children.filter((child) => !child.layout.absolute).length / node.grid.columns.length) : 0;
+      const gridExtras = node.grid ? gridRows * (node.grid.columns.length + 1) : 0;
+      if (node.grid?.supported && options.autoLayout && count + gridExtras < LIMITS.nodes && depth < LIMITS.depth - 2) {
+        buildGridRows(node);
+        count += gridExtras;
+      } else if (node.grid?.supported && options.autoLayout) {
+        node.grid.supported = false;
+        warn("GRID_FALLBACK", name, "\uB178\uB4DC/\uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C Grid \uD589 \uC0DD\uC131\uC744 \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
       }
       if (!options.autoLayout) node.layout.direction = "NONE";
       return [node];
@@ -416,9 +775,9 @@
           const range = doc.createRange();
           range.selectNode(child);
           const rect = bounds(range.getBoundingClientRect());
-          const style = view.getComputedStyle(el);
+          const style = computed(el);
           const preserve = ["pre", "pre-wrap", "break-spaces"].includes(style.whiteSpace);
-          const value = preserve ? child.textContent : child.textContent.replace(/\s+/g, " ").trim();
+          const value = transformText(preserve ? child.textContent : child.textContent.replace(/\s+/g, " ").trim(), style.textTransform);
           if (!rect.width && !rect.height) continue;
           children.push({
             type: "TEXT",
@@ -428,7 +787,8 @@
             rect,
             size: { width: rect.width, height: rect.height, widthMode: "FIXED", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
             layout: { ...readLayout(style), display: "inline", direction: "NONE", padding: zero(), margin: zero(), absolute: false, grow: 0, order: 0, alignSelf: "auto", wrap: false },
-            style: { ...readStyle(style), background: null, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            style: { ...readStyle(style), background: null, backgroundImage: void 0, shadow: void 0, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            source: { selector: `${selector(el)} / text`, id: "", classNames: [], synthetic: true },
             children: []
           });
           count++;
@@ -439,7 +799,7 @@
     const body = parse(doc.body, 0)[0];
     if (!body) throw new Error("\uBCC0\uD658\uD560 \uC218 \uC788\uB294 \uD45C\uC2DC \uC694\uC18C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
     const bodyStyle = view.getComputedStyle(doc.body);
-    const collapse = body.children.length === 1 && body.children[0].type === "FRAME" && !body.children[0].layout.absolute && Object.values(body.children[0].layout.margin).every((v) => v === 0) && bodyStyle.backgroundColor === "rgba(0, 0, 0, 0)" && bodyStyle.display === "block" && Object.values(body.layout.padding).every((v) => v === 0) && Object.values(body.layout.margin).every((v) => v === 0) && Object.values(body.style.borderWidths).every((v) => v === 0) && body.style.opacity === 1;
+    const collapse = body.children.length === 1 && body.children[0].type === "FRAME" && !body.children[0].layout.absolute && Object.values(body.children[0].layout.margin).every((v) => v === 0) && bodyStyle.backgroundColor === "rgba(0, 0, 0, 0)" && bodyStyle.display === "block" && Object.values(body.layout.padding).every((v) => v === 0) && Object.values(body.layout.margin).every((v) => v === 0) && Object.values(body.style.borderWidths).every((v) => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.clipsContent;
     const root = collapse ? body.children[0] : body;
     if (!collapse) {
       root.rect.x = 0;
@@ -458,6 +818,11 @@
     root.layout.margin = zero();
     root.size.width = options.viewport;
     root.size.widthMode = "FIXED";
+    if (root.size.minWidth != null && root.size.minWidth > options.viewport || root.size.maxWidth != null && root.size.maxWidth < options.viewport) {
+      warn("VIEWPORT_CONSTRAINT", root.name, "\uCD5C\uC0C1\uC704 Frame\uC740 \uC785\uB825\uD55C viewport \uD3ED\uC744 \uC6B0\uC120\uD558\uBBC0\uB85C \uCDA9\uB3CC\uD558\uB294 min/max-width\uB97C \uD574\uC81C\uD588\uC2B5\uB2C8\uB2E4.");
+      root.size.minWidth = null;
+      root.size.maxWidth = null;
+    }
     const descendants = [root];
     let contentBottom = root.rect.y + root.rect.height;
     while (descendants.length) {
@@ -473,49 +838,18 @@
       const htmlBackground = parseColor(view.getComputedStyle(doc.documentElement).backgroundColor);
       if (htmlBackground && !root.style.background?.a) root.style.background = htmlBackground;
     }
-    await collectImages(root, doc, assets, warn);
-    return { version: 1, root, options, assets, warnings };
+    if (options.optimizeWrappers) optimizeEmptyWrappers(root);
+    await collectImages(root, doc, options, assets, warn);
+    return { version: 1, root, options, assets, warnings, cssVariables: readCSSVariables(computed(doc.documentElement), variableNames, ":root") };
   }
-  async function collectImages(root, doc, assets, warn) {
-    const stack = [root];
-    const cache = /* @__PURE__ */ new Map();
-    let totalBytes = 0;
-    while (stack.length) {
-      const node = stack.pop();
-      stack.push(...node.children);
-      if (!node.image) continue;
-      const src = node.image.src;
-      if (cache.has(src)) {
-        node.image.key = cache.get(src);
-        continue;
-      }
-      try {
-        if (!allowedAsset(src)) throw new Error("HTTPS \uB610\uB294 data:image URL\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
-        const img = [...doc.images].find((image) => image.getAttribute("src") === src);
-        if (!img) throw new Error("\uC774\uBBF8\uC9C0 \uC694\uC18C\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
-        await withTimeout(img.decode(), LIMITS.loadMs, "\uC774\uBBF8\uC9C0 \uB85C\uB529 \uC2DC\uAC04 \uCD08\uACFC");
-        if (!img.naturalWidth || !img.naturalHeight || img.naturalWidth * img.naturalHeight > 16e6) throw new Error("\uC774\uBBF8\uC9C0 \uCE58\uC218\uAC00 \uC5C6\uAC70\uB098 16MP \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
-        const canvas = doc.createElement("canvas");
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("\uC774\uBBF8\uC9C0\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
-        context.drawImage(img, 0, 0);
-        const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("\uC774\uBBF8\uC9C0 \uBCC0\uD658 \uC2E4\uD328")), "image/png"));
-        if (blob.size > LIMITS.imageBytes || totalBytes + blob.size > LIMITS.assetBytes) throw new Error("\uC774\uBBF8\uC9C0 \uB370\uC774\uD130 \uC6A9\uB7C9 \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
-        totalBytes += blob.size;
-        const key = `image-${cache.size + 1}`;
-        assets[key] = [...new Uint8Array(await blob.arrayBuffer())];
-        cache.set(src, key);
-        node.image.key = key;
-      } catch (error) {
-        cache.set(src, "");
-        warn("IMAGE_LOAD", node.name, `${node.image.alt || "\uC774\uBBF8\uC9C0"}\uB97C placeholder\uB85C \uB300\uCCB4\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
-      }
-    }
+  function transformText(text, transform) {
+    if (transform === "uppercase") return text.toUpperCase();
+    if (transform === "lowercase") return text.toLowerCase();
+    if (transform === "capitalize") return text.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
+    return text;
   }
-  async function parseHTML(html2, options, host) {
-    const rendered = await renderHTML(html2, options.viewport, options.viewportHeight, host);
+  async function parseHTML(html2, options, host, localAssets2 = {}) {
+    const rendered = await renderHTML(html2, options.viewport, options.viewportHeight, host, localAssets2);
     try {
       return await parseRenderedHTML(rendered, options);
     } finally {
@@ -539,6 +873,12 @@
   var viewportHeight = get("viewport-height");
   var autoLayout = get("autolayout");
   var styles = get("styles");
+  var images = get("images");
+  var shadows = get("shadows");
+  var optimize = get("optimize");
+  var debug = get("debug");
+  var assetFiles = get("asset-files");
+  var localAssets = {};
   var html = null;
   var parsed = null;
   var busy = false;
@@ -574,6 +914,7 @@
     busy = value;
     validateViewport();
     input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
+    images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
     dropzone.setAttribute("aria-disabled", String(value));
     cancel.hidden = !value;
     if (!value) cancel.disabled = false;
@@ -624,6 +965,43 @@
   input.addEventListener("change", () => {
     void selectFile(input.files?.[0]);
   });
+  assetFiles.addEventListener("change", async () => {
+    if (busy || !assetFiles.files?.length) return;
+    const files = [...assetFiles.files];
+    if (files.length > 100 || files.some((file) => file.size > LIMITS.imageBytes) || files.reduce((sum, file) => sum + file.size, 0) > LIMITS.assetBytes) {
+      status("\uC774\uBBF8\uC9C0\uB294 \uD30C\uC77C\uB2F9 4MB, \uCD1D 16MB, \uCD5C\uB300 100\uAC1C\uAE4C\uC9C0 \uCD94\uAC00\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
+      return;
+    }
+    cancelled = false;
+    setBusy(true);
+    try {
+      const entries = await Promise.all(files.map(async (file) => {
+        const data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("\uC774\uBBF8\uC9C0 \uC77D\uAE30 \uC2E4\uD328"));
+          reader.onerror = () => reject(new Error("\uC774\uBBF8\uC9C0 \uC77D\uAE30 \uC2E4\uD328"));
+          reader.readAsDataURL(file);
+        });
+        if (!/^data:image\//i.test(data)) throw new Error(`${file.name}\uC740 \uC9C0\uC6D0\uD558\uB294 \uC774\uBBF8\uC9C0 \uD30C\uC77C\uC774 \uC544\uB2D9\uB2C8\uB2E4.`);
+        return { path: file.webkitRelativePath || file.name, basename: file.name, data };
+      }));
+      if (cancelled) return;
+      localAssets = {};
+      const duplicates = new Set(entries.filter((entry) => entries.filter((other) => other.basename === entry.basename).length > 1).map((entry) => entry.basename));
+      for (const entry of entries) {
+        if (!duplicates.has(entry.path)) localAssets[entry.path] = entry.data;
+        if (!duplicates.has(entry.basename)) localAssets[entry.basename] = entry.data;
+      }
+      get("asset-count").textContent = `${files.length}\uAC1C \uC120\uD0DD`;
+      status(duplicates.size ? `\uC774\uB984\uC774 \uC911\uBCF5\uB41C \uC774\uBBF8\uC9C0 ${[...duplicates].join(", ")}\uB294 \uACBD\uB85C\uAC00 \uC77C\uCE58\uD560 \uB54C\uB9CC \uC0AC\uC6A9\uD569\uB2C8\uB2E4.` : "\uC774\uBBF8\uC9C0\uB97C \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4. HTML \uBCC0\uD658 \uC2DC \uC0C1\uB300 \uACBD\uB85C\uC5D0 \uC801\uC6A9\uD569\uB2C8\uB2E4.");
+    } catch (error) {
+      status(errorMessage(error), "error");
+    } finally {
+      cancelled = false;
+      setBusy(false);
+      assetFiles.value = "";
+    }
+  });
   dropzone.addEventListener("keydown", (event) => {
     if (!busy && ["Enter", " "].includes(event.key)) {
       event.preventDefault();
@@ -656,7 +1034,16 @@
     json.hidden = true;
     status("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026");
     try {
-      parsed = await parseHTML(html, { viewport: viewportWidth.valueAsNumber, viewportHeight: viewportHeight.valueAsNumber, autoLayout: autoLayout.checked, styles: styles.checked }, get("render-host"));
+      parsed = await parseHTML(html, {
+        viewport: viewportWidth.valueAsNumber,
+        viewportHeight: viewportHeight.valueAsNumber,
+        autoLayout: autoLayout.checked,
+        styles: styles.checked,
+        images: images.checked,
+        shadows: shadows.checked,
+        optimizeWrappers: optimize.checked,
+        debug: debug.checked
+      }, get("render-host"), localAssets);
       if (cancelled) {
         status("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
         setBusy(false);
@@ -690,21 +1077,24 @@
   });
   function showReport(report) {
     get("report").hidden = false;
-    for (const [id, value] of [["total-count", report.total], ["layout-count", report.autoLayout], ["text-count", report.text], ["image-count", report.image]]) get(id).textContent = String(value);
+    for (const [id, value] of [["total-count", report.total], ["frame-count", report.frames], ["layout-count", report.autoLayout], ["text-count", report.text], ["image-count", report.image], ["grid-count", report.grid], ["absolute-count", report.absolute], ["svg-count", report.svg]]) get(id).textContent = String(value);
+    get("duration").textContent = `Figma \uB178\uB4DC \uC0DD\uC131: ${(report.durationMs / 1e3).toFixed(2)}\uCD08`;
     get("warning-summary").textContent = `Warning ${report.warnings.length}`;
     const list = get("warnings");
     list.replaceChildren();
-    const groups = /* @__PURE__ */ new Map();
-    for (const warning of report.warnings) groups.set(warning.code, (groups.get(warning.code) ?? 0) + 1);
-    for (const [code, count] of groups) {
-      const li = document.createElement("li");
-      li.textContent = `${code}: ${count}`;
-      list.append(li);
-    }
-    for (const warning of report.warnings) {
-      const li = document.createElement("li");
-      li.textContent = `${warning.node} \u2014 ${warning.message}`;
-      list.append(li);
+    for (const [category, count] of Object.entries(report.warningGroups)) {
+      const group = document.createElement("li");
+      const title = document.createElement("strong");
+      title.textContent = `${category}: ${count}`;
+      group.append(title);
+      const items = document.createElement("ul");
+      for (const warning of report.warnings.filter((warning2) => warning2.category === category)) {
+        const li = document.createElement("li");
+        li.textContent = `${warning.element || warning.node} \u2014 ${warning.code}: ${warning.message}`;
+        items.append(li);
+      }
+      group.append(items);
+      list.append(group);
     }
     get("warning-details").hidden = report.warnings.length === 0;
   }

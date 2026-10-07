@@ -1,14 +1,20 @@
-import { LIMITS, type Bounds, type ConversionWarning, type ImportOptions, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedSize, type ParsedStyle, type SizingMode } from './types';
-import { clamp, errorMessage, isViewportDimension, number, parseColor, readInsets, withTimeout } from './utils';
+import { IMPORT_DEFAULTS, LIMITS, type Bounds, type ConversionWarning, type ImportOptions, type LocalAssets, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedStyle } from './types';
+import { clamp, errorMessage, isViewportDimension, number, parseColor, parseShadow, readInsets, splitCSSList, withTimeout } from './utils';
+import { authoredDimension, inferSizing } from './sizing';
+import { buildGridRows, parseGrid } from './grid';
+import { optimizeEmptyWrappers } from './optimizer';
+import { serializeSVG } from './svg';
+import { collectCSSVariableNames, readCSSVariables } from './css-variables';
+import { allowedAsset, collectImages, resolveLocalAsset } from './assets';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
-const UNSUPPORTED_TAGS = new Set(['canvas', 'video', 'audio', 'iframe', 'object', 'embed', 'svg']);
+const UNSUPPORTED_TAGS = new Set(['canvas', 'video', 'audio', 'iframe', 'object', 'embed']);
 const zero = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
-const allowedAsset = (url: string) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
-const layerName = (el: Element) => el.id || el.getAttribute('class')?.trim() || el.tagName.toLowerCase();
+const layerName = (el: Element) => el.id || el.getAttribute('class')?.trim().split(/\s+/)[0] || el.tagName.toLowerCase();
+const selector = (el: Element) => `${el.localName}${el.id ? `#${el.id}` : ''}${[...el.classList].map(name => `.${name}`).join('')}`;
 
-function sanitizeHTML(html: string, warnings: ConversionWarning[]): string {
+function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: LocalAssets): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const warn = (code: string, node: string, message: string) => warnings.push({ code, node, message });
   const scripts = doc.querySelectorAll('script');
@@ -22,6 +28,12 @@ function sanitizeHTML(html: string, warnings: ConversionWarning[]): string {
       if (/^on/i.test(attr.name) || ['srcdoc', 'autofocus', 'action', 'formaction', 'target', 'ping', 'contenteditable'].includes(attr.name)) el.removeAttribute(attr.name);
     }
     if (el.localName === 'a') el.removeAttribute('href');
+    const resolveCSSAssets = (css: string) => css.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (original: string, _quote: string, url: string) => {
+      const resolved = resolveLocalAsset(url, localAssets);
+      return resolved ? `url("${resolved}")` : original;
+    });
+    if (el.localName === 'style') el.textContent = resolveCSSAssets(el.textContent || '');
+    if (el.hasAttribute('style')) el.setAttribute('style', resolveCSSAssets(el.getAttribute('style')!));
     if (el.localName === 'link') {
       const href = el.getAttribute('href') || '';
       if (el.getAttribute('rel') !== 'stylesheet' || !/^https:\/\//i.test(href)) {
@@ -32,7 +44,9 @@ function sanitizeHTML(html: string, warnings: ConversionWarning[]): string {
     if (el.localName === 'img') {
       el.removeAttribute('srcset');
       el.removeAttribute('loading');
-      const src = el.getAttribute('src') || '';
+      const originalSrc = el.getAttribute('src') || '';
+      const src = resolveLocalAsset(originalSrc, localAssets) || originalSrc;
+      if (src !== originalSrc) { el.setAttribute('src', src); el.setAttribute('data-original-src', originalSrc); }
       if (!allowedAsset(src)) {
         warn('IMAGE_SOURCE', layerName(el), '상대 경로 또는 HTTP 이미지는 업로드한 HTML만으로 불러올 수 없습니다.');
         el.setAttribute('data-original-src', src);
@@ -52,7 +66,7 @@ function sanitizeHTML(html: string, warnings: ConversionWarning[]): string {
 }
 
 export interface RenderedHTML { iframe: HTMLIFrameElement; document: Document; warnings: ConversionWarning[]; dispose: () => void }
-export async function renderHTML(html: string, viewport: number, viewportHeight: number, host: HTMLElement): Promise<RenderedHTML> {
+export async function renderHTML(html: string, viewport: number, viewportHeight: number, host: HTMLElement, localAssets: LocalAssets = {}): Promise<RenderedHTML> {
   if (!isViewportDimension(viewport) || !isViewportDimension(viewportHeight)) throw new Error('Viewport 너비와 높이는 1~10,000px의 정수로 입력하세요.');
   const warnings: ConversionWarning[] = [];
   const iframe = document.createElement('iframe');
@@ -61,7 +75,7 @@ export async function renderHTML(html: string, viewport: number, viewportHeight:
   iframe.setAttribute('aria-hidden', 'true');
   // Do not use display:none: the browser must lay out the document at its selected viewport width.
   Object.assign(iframe.style, { position: 'absolute', left: '-120000px', top: '0', width: `${viewport}px`, height: `${viewportHeight}px`, border: '0', pointerEvents: 'none' });
-  iframe.srcdoc = sanitizeHTML(html, warnings);
+  iframe.srcdoc = sanitizeHTML(html, warnings, localAssets);
   const loaded = new Promise<void>(resolve => iframe.addEventListener('load', () => resolve(), { once: true }));
   host.append(iframe);
   try {
@@ -80,51 +94,6 @@ export async function renderHTML(html: string, viewport: number, viewportHeight:
   return { iframe, document: doc, warnings, dispose: () => iframe.remove() };
 }
 
-/** Typed OM keeps percentages and auto keywords that getComputedStyle() resolves to pixels. */
-function authoredDimension(el: Element, property: 'width' | 'height', style: CSSStyleDeclaration): string {
-  const typed = el as Element & { computedStyleMap?: () => { get: (key: string) => { toString(): string } | undefined } };
-  try { const value = typed.computedStyleMap?.().get(property); if (value) return value.toString(); } catch { /* Older browsers use the cascade fallback below. */ }
-  const inline = (el as HTMLElement).style?.getPropertyValue(property);
-  if (inline) return inline;
-  // Read local rules if Typed OM is unavailable. Cross-origin stylesheets may be opaque.
-  let declared = '';
-  const inspect = (rules: CSSRuleList) => {
-    for (const rule of Array.from(rules)) {
-      if ('selectorText' in rule && 'style' in rule) {
-        const css = rule as CSSStyleRule;
-        try { if (el.matches(css.selectorText) && css.style.getPropertyValue(property)) declared = css.style.getPropertyValue(property); } catch { /* unsupported selector */ }
-      } else if ('cssRules' in rule) {
-        const group = rule as CSSGroupingRule;
-        if ('conditionText' in rule && rule.type === 4 && !el.ownerDocument.defaultView?.matchMedia((rule as CSSMediaRule).conditionText).matches) continue;
-        inspect(group.cssRules);
-      }
-    }
-  };
-  for (const sheet of Array.from(el.ownerDocument.styleSheets)) { try { inspect(sheet.cssRules); } catch { /* CORS */ } }
-  return declared || 'auto';
-}
-
-function inferSizing(el: Element, style: CSSStyleDeclaration, parentStyle: CSSStyleDeclaration | null, width: number, height: number): ParsedSize {
-  const authoredWidth = authoredDimension(el, 'width', style);
-  const authoredHeight = authoredDimension(el, 'height', style);
-  const parentFlex = !!parentStyle && ['flex', 'inline-flex'].includes(parentStyle.display) && parentStyle.flexWrap === 'nowrap';
-  const parentColumn = parentStyle?.flexDirection.startsWith('column');
-  const align = style.alignSelf === 'auto' ? parentStyle?.alignItems : style.alignSelf;
-  const auto = (v: string) => v === 'auto' || v.includes('fit-content') || v.includes('max-content') || v.includes('min-content');
-  const mode = (dimension: 'width' | 'height', value: string): SizingMode => {
-    if (value === '100%' && parentFlex) return 'FILL';
-    if (parentFlex && number(style.flexGrow) > 0 && (dimension === 'width' ? !parentColumn : parentColumn)) return 'FILL';
-    if (auto(value)) {
-      if (parentFlex && (dimension === 'width' ? parentColumn : !parentColumn) && (align === 'stretch' || align === 'normal')) return 'FILL';
-      // Block elements with auto width fill their containing block, even without Auto Layout.
-      if (dimension === 'width' && !parentFlex && !['inline', 'inline-block', 'inline-flex'].includes(style.display)) return 'FIXED';
-      return 'HUG';
-    }
-    return 'FIXED';
-  };
-  return { width, height, widthMode: mode('width', authoredWidth), heightMode: mode('height', authoredHeight), authoredWidth, authoredHeight };
-}
-
 function readStyle(style: CSSStyleDeclaration): ParsedStyle {
   const radius = (key: string) => number(style.getPropertyValue(key));
   return {
@@ -134,11 +103,12 @@ function readStyle(style: CSSStyleDeclaration): ParsedStyle {
     opacity: clamp(number(style.opacity, 1), 0, 1), fontFamily: style.fontFamily, fontSize: clamp(number(style.fontSize, 16), 1, 1000),
     fontWeight: number(style.fontWeight, 400), fontStyle: style.fontStyle, lineHeight: style.lineHeight === 'normal' ? null : number(style.lineHeight),
     letterSpacing: number(style.letterSpacing), textAlign: style.textAlign, textDecoration: style.textDecorationLine, whiteSpace: style.whiteSpace,
-    clipsContent: ['hidden', 'clip'].includes(style.overflowX) || ['hidden', 'clip'].includes(style.overflowY)
+    clipsContent: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX) || ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY),
+    shadow: parseShadow(style.boxShadow), textTransform: style.textTransform
   };
 }
 
-function readLayout(style: CSSStyleDeclaration): ParsedLayout {
+function readLayout(style: CSSStyleDeclaration, element?: Element): ParsedLayout {
   const flex = ['flex', 'inline-flex'].includes(style.display);
   const column = style.flexDirection.startsWith('column');
   const reverse = style.flexDirection.endsWith('reverse');
@@ -149,32 +119,33 @@ function readLayout(style: CSSStyleDeclaration): ParsedLayout {
     display: style.display, direction: flex ? (column ? 'VERTICAL' : 'HORIZONTAL') : 'NONE', reverse, justify, align: align(style.alignItems),
     stretch: style.alignItems === 'stretch' || style.alignItems === 'normal', gap: Math.max(0, number(column ? style.rowGap : style.columnGap)),
     padding: readInsets(style, 'padding'), margin: readInsets(style, 'margin'), position: style.position,
-    absolute: style.position === 'absolute' || style.position === 'fixed', grow: number(style.flexGrow), alignSelf: style.alignSelf,
+    absolute: style.position === 'absolute' || style.position === 'fixed', grow: number(style.flexGrow), shrink: number(style.flexShrink, 1), basis: style.flexBasis,
+    zIndex: style.zIndex === 'auto' ? null : number(style.zIndex), offsets: {
+      top: element ? authoredDimension(element, 'top') : style.top, right: element ? authoredDimension(element, 'right') : style.right,
+      bottom: element ? authoredDimension(element, 'bottom') : style.bottom, left: element ? authoredDimension(element, 'left') : style.left
+    }, alignSelf: style.alignSelf,
     order: number(style.order), wrap: flex && style.flexWrap !== 'nowrap'
   };
 }
 
-export function parseGrid(node: ParsedNode, warn: (code: string, name: string, message: string) => void): void {
-  node.layout.direction = 'NONE';
-  node.size.widthMode = 'FIXED';
-  node.size.heightMode = 'FIXED';
-  warn('CSS_GRID', node.name, 'CSS Grid를 고정 위치 Frame으로 변환했습니다.');
-}
-
 export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportOptions): Promise<ParsedDocument> {
+  options = { ...IMPORT_DEFAULTS, ...options };
   const doc = rendered.document;
   const view = doc.defaultView!;
   const warnings = [...rendered.warnings];
   const assets: Record<string, number[]> = {};
+  const variableNames = collectCSSVariableNames(doc);
+  const computedCache = new WeakMap<Element, CSSStyleDeclaration>();
+  const computed = (el: Element) => { if (!computedCache.has(el)) computedCache.set(el, view.getComputedStyle(el)); return computedCache.get(el)!; };
   const warn = (code: string, node: string, message: string) => { if (warnings.length < 500) warnings.push({ code, node, message }); };
   let count = 0;
   const bounds = (rect: DOMRect): Bounds => ({ x: rect.left, y: rect.top, width: clamp(rect.width), height: clamp(rect.height) });
-  const hasBlockChildren = (el: Element) => [...el.children].some(child => !['inline', 'inline-block', 'contents', 'none'].includes(view.getComputedStyle(child).display) || ['img', 'svg'].includes(child.localName));
+  const hasBlockChildren = (el: Element) => [...el.children].some(child => !['inline', 'inline-block', 'contents', 'none'].includes(computed(child).display) || ['img', 'svg'].includes(child.localName));
   const text = (el: HTMLElement) => el.innerText || el.textContent || '';
   function parse(el: Element, depth: number): ParsedNode[] {
     if (OMIT_TAGS.has(el.localName)) return [];
     if (count >= LIMITS.nodes || depth > LIMITS.depth) { warn('TREE_LIMIT', layerName(el), '노드 수 또는 중첩 깊이 제한으로 일부 요소를 생략했습니다.'); return []; }
-    const style = view.getComputedStyle(el);
+    const style = computed(el);
     if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return [];
     if (style.display === 'contents') {
       warn('DISPLAY_CONTENTS', layerName(el), 'display:contents 요소의 자식들을 부모에 배치했습니다.');
@@ -185,18 +156,27 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     const name = layerName(el);
     const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el);
     const node: ParsedNode = {
-      type: el.localName === 'img' ? 'IMAGE' : isText ? 'TEXT' : 'FRAME', tagName: el.localName, name, rect,
-      layout: readLayout(style), size: inferSizing(el, style, el.parentElement ? view.getComputedStyle(el.parentElement) : null, rect.width, rect.height),
-      style: readStyle(style), children: []
+      type: el.localName === 'svg' ? 'SVG' : el.localName === 'img' ? 'IMAGE' : isText ? 'TEXT' : 'FRAME', tagName: el.localName, name, rect,
+      layout: readLayout(style, el), size: inferSizing(el, style, el.parentElement ? computed(el.parentElement) : null, rect.width, rect.height),
+      style: readStyle(style), children: [], source: { selector: selector(el), id: el.id, classNames: [...el.classList], styleless: !el.hasAttribute('style') },
+      cssVariables: readCSSVariables(style, variableNames, selector(el))
     };
     count++;
     if (node.layout.absolute) warn('ABSOLUTE_ELEMENT', name, '절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
     if (node.layout.wrap) { node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED'; warn('FLEX_WRAP', name, '여러 줄 Flexbox는 측정된 고정 위치로 유지했습니다.'); }
-    if (style.display.includes('grid')) parseGrid(node, warn);
+    if (style.display.includes('grid')) parseGrid(node, style, el, warn);
     if (style.transform !== 'none') warn('TRANSFORM', name, 'CSS transform은 측정된 경계 상자로 단순화했습니다.');
     if (style.cssFloat !== 'none') warn('FLOAT', name, 'float는 측정된 위치만 유지합니다.');
-    if (style.backgroundImage !== 'none') warn('BACKGROUND_IMAGE', name, '배경 이미지·그라데이션은 MVP에서 색상으로 단순화합니다.');
-    if (style.boxShadow !== 'none') warn('BOX_SHADOW', name, '그림자는 MVP에서 생략합니다.');
+    if (style.backgroundImage !== 'none') {
+      const layers = splitCSSList(style.backgroundImage);
+      const image = layers[0]!.match(/^url\(["']?(.*?)["']?\)$/)?.[1];
+      if (image) node.style.backgroundImage = { key: '', src: image, alt: 'background', fit: style.backgroundSize.split(',')[0]!.trim(), position: style.backgroundPosition, repeat: style.backgroundRepeat };
+      else warn('BACKGROUND_IMAGE', name, '그라데이션 배경은 단색 배경으로 유지합니다.');
+      if (layers.length > 1) warn('BACKGROUND_LAYERS', name, '다중 배경은 첫 번째 레이어만 가져옵니다.');
+    }
+    if (style.boxShadow !== 'none' && splitCSSList(style.boxShadow).length > 1) warn('MULTIPLE_SHADOWS', name, '다중 shadow는 첫 번째 효과만 반영합니다.');
+    if (style.boxShadow !== 'none' && !node.style.shadow) warn('BOX_SHADOW', name, '그림자 문법을 해석할 수 없습니다.');
+    if (style.getPropertyValue('backdrop-filter') && style.getPropertyValue('backdrop-filter') !== 'none') warn('UNSUPPORTED_CSS', name, `Unsupported: backdrop-filter (${selector(el)})`);
     if (['space-around', 'space-evenly'].includes(style.justifyContent)) warn('JUSTIFY_CONTENT', name, `${style.justifyContent}를 시작 정렬로 단순화합니다.`);
     if (style.alignItems.includes('baseline')) warn('BASELINE', name, 'baseline 정렬을 시작 정렬로 단순화합니다.');
     for (const pseudo of ['::before', '::after']) {
@@ -205,19 +185,22 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     }
     if (node.type === 'TEXT') {
       node.text = text(el as HTMLElement);
-      if (style.textTransform === 'uppercase') node.text = node.text.toUpperCase();
-      if (style.textTransform === 'lowercase') node.text = node.text.toLowerCase();
+      node.text = transformText(node.text, style.textTransform);
       if (el.children.length) warn('INLINE_TEXT', name, '여러 inline 텍스트 스타일을 부모의 스타일로 통합했습니다.');
-      if ((node.style.background?.a || Object.values(node.style.borderWidths).some(v => v > 0) || Object.values(node.layout.padding).some(v => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
+      const noWrap = ['nowrap', 'pre'].includes(style.whiteSpace) && node.size.widthMode !== 'HUG';
+      if ((node.style.background?.a || node.style.backgroundImage || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some(v => v > 0) || Object.values(node.layout.padding).some(v => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
         // Keep decorated text editable, with a frame carrying its box styling.
         node.type = 'FRAME';
         const range = doc.createRange(); range.selectNodeContents(el);
         const child: ParsedNode = { ...node, type: 'TEXT', name: `${name} / text`, rect: bounds(range.getBoundingClientRect()),
-          style: { ...node.style, opacity: 1, background: null, borderWidths: zero(), radii: [0, 0, 0, 0] },
+          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
           layout: { ...node.layout, direction: 'NONE', padding: zero(), margin: zero(), absolute: false }, children: [] };
-        child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: 'FIXED', heightMode: 'HUG' };
+        child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
       }
+    } else if (node.type === 'SVG') {
+      try { node.svg = serializeSVG(el); }
+      catch (error) { warn('SVG_SERIALIZE', name, errorMessage(error)); }
     } else if (node.type === 'IMAGE') {
       const img = el as HTMLImageElement;
       node.image = { key: '', src: img.getAttribute('src') || img.getAttribute('data-original-src') || '', alt: img.alt, fit: style.objectFit };
@@ -226,6 +209,12 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     } else {
       node.children = parseChildren(el, depth);
     }
+    const gridRows = node.grid ? Math.ceil(node.children.filter(child => !child.layout.absolute).length / node.grid.columns.length) : 0;
+    const gridExtras = node.grid ? gridRows * (node.grid.columns.length + 1) : 0;
+    if (node.grid?.supported && options.autoLayout && count + gridExtras < LIMITS.nodes && depth < LIMITS.depth - 2) {
+      buildGridRows(node); count += gridExtras;
+    }
+    else if (node.grid?.supported && options.autoLayout) { node.grid.supported = false; warn('GRID_FALLBACK', name, '노드/깊이 제한으로 Grid 행 생성을 생략했습니다.'); }
     if (!options.autoLayout) node.layout.direction = 'NONE';
     return [node];
   }
@@ -237,14 +226,15 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       else if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim() && count < LIMITS.nodes) {
         const range = doc.createRange(); range.selectNode(child);
         const rect = bounds(range.getBoundingClientRect());
-        const style = view.getComputedStyle(el);
+        const style = computed(el);
         const preserve = ['pre', 'pre-wrap', 'break-spaces'].includes(style.whiteSpace);
-        const value = preserve ? child.textContent : child.textContent.replace(/\s+/g, ' ').trim();
+        const value = transformText(preserve ? child.textContent : child.textContent.replace(/\s+/g, ' ').trim(), style.textTransform);
         if (!rect.width && !rect.height) continue;
         children.push({ type: 'TEXT', tagName: '#text', name: `${layerName(el)} / text`, text: value, rect,
           size: { width: rect.width, height: rect.height, widthMode: 'FIXED', heightMode: 'HUG', authoredWidth: 'auto', authoredHeight: 'auto' },
           layout: { ...readLayout(style), display: 'inline', direction: 'NONE', padding: zero(), margin: zero(), absolute: false, grow: 0, order: 0, alignSelf: 'auto', wrap: false },
-          style: { ...readStyle(style), background: null, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] }, children: [] });
+          style: { ...readStyle(style), background: null, backgroundImage: undefined, shadow: undefined, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+          source: { selector: `${selector(el)} / text`, id: '', classNames: [], synthetic: true }, children: [] });
         count++;
       }
     }
@@ -257,7 +247,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   const collapse = body.children.length === 1 && body.children[0]!.type === 'FRAME' && !body.children[0]!.layout.absolute &&
     Object.values(body.children[0]!.layout.margin).every(v => v === 0) && bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
     bodyStyle.display === 'block' && Object.values(body.layout.padding).every(v => v === 0) && Object.values(body.layout.margin).every(v => v === 0) &&
-    Object.values(body.style.borderWidths).every(v => v === 0) && body.style.opacity === 1;
+    Object.values(body.style.borderWidths).every(v => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.clipsContent;
   const root = collapse ? body.children[0]! : body;
   if (!collapse) {
     // The imported viewport starts at document (0,0); CSS body's outside margins still occupy space.
@@ -274,6 +264,10 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   root.layout.margin = zero();
   root.size.width = options.viewport;
   root.size.widthMode = 'FIXED';
+  if ((root.size.minWidth != null && root.size.minWidth > options.viewport) || (root.size.maxWidth != null && root.size.maxWidth < options.viewport)) {
+    warn('VIEWPORT_CONSTRAINT', root.name, '최상위 Frame은 입력한 viewport 폭을 우선하므로 충돌하는 min/max-width를 해제했습니다.');
+    root.size.minWidth = null; root.size.maxWidth = null;
+  }
   const descendants = [root];
   let contentBottom = root.rect.y + root.rect.height;
   while (descendants.length) {
@@ -290,45 +284,20 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     const htmlBackground = parseColor(view.getComputedStyle(doc.documentElement).backgroundColor);
     if (htmlBackground && !root.style.background?.a) root.style.background = htmlBackground;
   }
-  await collectImages(root, doc, assets, warn);
-  return { version: 1, root, options, assets, warnings };
+  if (options.optimizeWrappers) optimizeEmptyWrappers(root);
+  await collectImages(root, doc, options, assets, warn);
+  return { version: 1, root, options, assets, warnings, cssVariables: readCSSVariables(computed(doc.documentElement), variableNames, ':root') };
 }
 
-async function collectImages(root: ParsedNode, doc: Document, assets: Record<string, number[]>, warn: (code: string, node: string, message: string) => void): Promise<void> {
-  const stack = [root];
-  const cache = new Map<string, string>();
-  let totalBytes = 0;
-  while (stack.length) {
-    const node = stack.pop()!; stack.push(...node.children);
-    if (!node.image) continue;
-    const src = node.image.src;
-    if (cache.has(src)) { node.image.key = cache.get(src)!; continue; }
-    try {
-      if (!allowedAsset(src)) throw new Error('HTTPS 또는 data:image URL이 필요합니다.');
-      const img = [...doc.images].find(image => image.getAttribute('src') === src);
-      if (!img) throw new Error('이미지 요소를 찾을 수 없습니다.');
-      await withTimeout(img.decode(), LIMITS.loadMs, '이미지 로딩 시간 초과');
-      if (!img.naturalWidth || !img.naturalHeight || img.naturalWidth * img.naturalHeight > 16000000) throw new Error('이미지 치수가 없거나 16MP 제한을 초과했습니다.');
-      const canvas = doc.createElement('canvas');
-      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('이미지를 읽을 수 없습니다.');
-      context.drawImage(img, 0, 0);
-      const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('이미지 변환 실패')), 'image/png'));
-      if (blob.size > LIMITS.imageBytes || totalBytes + blob.size > LIMITS.assetBytes) throw new Error('이미지 데이터 용량 제한을 초과했습니다.');
-      totalBytes += blob.size;
-      const key = `image-${cache.size + 1}`;
-      assets[key] = [...new Uint8Array(await blob.arrayBuffer())];
-      cache.set(src, key); node.image.key = key;
-    } catch (error) {
-      cache.set(src, '');
-      warn('IMAGE_LOAD', node.name, `${node.image.alt || '이미지'}를 placeholder로 대체합니다: ${errorMessage(error)}`);
-    }
-  }
+function transformText(text: string, transform: string): string {
+  if (transform === 'uppercase') return text.toUpperCase();
+  if (transform === 'lowercase') return text.toLowerCase();
+  if (transform === 'capitalize') return text.replace(/\b\p{L}/gu, letter => letter.toUpperCase());
+  return text;
 }
 
-export async function parseHTML(html: string, options: ImportOptions, host: HTMLElement): Promise<ParsedDocument> {
-  const rendered = await renderHTML(html, options.viewport, options.viewportHeight, host);
+export async function parseHTML(html: string, options: ImportOptions, host: HTMLElement, localAssets: LocalAssets = {}): Promise<ParsedDocument> {
+  const rendered = await renderHTML(html, options.viewport, options.viewportHeight, host, localAssets);
   try { return await parseRenderedHTML(rendered, options); }
   finally { rendered.dispose(); }
 }

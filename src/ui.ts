@@ -1,5 +1,5 @@
 import { parseHTML } from './parser';
-import { LIMITS, VIEWPORT, type ConversionReport, type MainMessage, type ParsedDocument, type UIMessage } from './types';
+import { LIMITS, VIEWPORT, type ConversionReport, type LocalAssets, type MainMessage, type ParsedDocument, type UIMessage } from './types';
 import { errorMessage, isViewportDimension } from './utils';
 
 function get<T extends HTMLElement>(id: string): T {
@@ -17,6 +17,12 @@ const viewportWidth = get<HTMLInputElement>('viewport-width');
 const viewportHeight = get<HTMLInputElement>('viewport-height');
 const autoLayout = get<HTMLInputElement>('autolayout');
 const styles = get<HTMLInputElement>('styles');
+const images = get<HTMLInputElement>('images');
+const shadows = get<HTMLInputElement>('shadows');
+const optimize = get<HTMLInputElement>('optimize');
+const debug = get<HTMLInputElement>('debug');
+const assetFiles = get<HTMLInputElement>('asset-files');
+let localAssets: LocalAssets = {};
 let html: string | null = null;
 let parsed: ParsedDocument | null = null;
 let busy = false;
@@ -49,6 +55,7 @@ function setBusy(value: boolean): void {
   busy = value;
   validateViewport();
   input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
+  images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
   dropzone.setAttribute('aria-disabled', String(value));
   cancel.hidden = !value;
   if (!value) cancel.disabled = false;
@@ -82,6 +89,28 @@ async function selectFile(file: File | undefined): Promise<void> {
   finally { cancelled = false; setBusy(false); input.value = ''; }
 }
 input.addEventListener('change', () => { void selectFile(input.files?.[0]); });
+assetFiles.addEventListener('change', async () => {
+  if (busy || !assetFiles.files?.length) return;
+  const files = [...assetFiles.files];
+  if (files.length > 100 || files.some(file => file.size > LIMITS.imageBytes) || files.reduce((sum, file) => sum + file.size, 0) > LIMITS.assetBytes) { status('이미지는 파일당 4MB, 총 16MB, 최대 100개까지 추가할 수 있습니다.', 'error'); return; }
+  cancelled = false; setBusy(true);
+  try {
+    const entries = await Promise.all(files.map(async file => {
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('이미지 읽기 실패')); reader.onerror = () => reject(new Error('이미지 읽기 실패')); reader.readAsDataURL(file);
+      });
+      if (!/^data:image\//i.test(data)) throw new Error(`${file.name}은 지원하는 이미지 파일이 아닙니다.`);
+      return { path: file.webkitRelativePath || file.name, basename: file.name, data };
+    }));
+    if (cancelled) return;
+    localAssets = {};
+    const duplicates = new Set(entries.filter(entry => entries.filter(other => other.basename === entry.basename).length > 1).map(entry => entry.basename));
+    for (const entry of entries) { if (!duplicates.has(entry.path)) localAssets[entry.path] = entry.data; if (!duplicates.has(entry.basename)) localAssets[entry.basename] = entry.data; }
+    get('asset-count').textContent = `${files.length}개 선택`;
+    status(duplicates.size ? `이름이 중복된 이미지 ${[...duplicates].join(', ')}는 경로가 일치할 때만 사용합니다.` : '이미지를 추가했습니다. HTML 변환 시 상대 경로에 적용합니다.');
+  } catch (error) { status(errorMessage(error), 'error'); }
+  finally { cancelled = false; setBusy(false); assetFiles.value = ''; }
+});
 dropzone.addEventListener('keydown', event => { if (!busy && ['Enter', ' '].includes(event.key)) { event.preventDefault(); input.click(); } });
 dropzone.addEventListener('click', event => { if (busy) event.preventDefault(); });
 for (const type of ['dragenter', 'dragover']) dropzone.addEventListener(type, event => { event.preventDefault(); if (!busy) dropzone.classList.add('drag'); });
@@ -98,7 +127,8 @@ convert.addEventListener('click', async () => {
   cancelled = false; parsed = null; setBusy(true); get('report').hidden = true; json.hidden = true;
   status('HTML을 렌더링하고 레이아웃을 분석합니다…');
   try {
-    parsed = await parseHTML(html, { viewport: viewportWidth.valueAsNumber, viewportHeight: viewportHeight.valueAsNumber, autoLayout: autoLayout.checked, styles: styles.checked }, get('render-host'));
+    parsed = await parseHTML(html, { viewport: viewportWidth.valueAsNumber, viewportHeight: viewportHeight.valueAsNumber, autoLayout: autoLayout.checked, styles: styles.checked,
+      images: images.checked, shadows: shadows.checked, optimizeWrappers: optimize.checked, debug: debug.checked }, get('render-host'), localAssets);
     if (cancelled) { status('변환을 취소했습니다.'); setBusy(false); return; }
     console.info('HTML → Figma intermediate document', parsed);
     json.hidden = false;
@@ -115,13 +145,19 @@ json.addEventListener('click', () => {
 });
 function showReport(report: ConversionReport): void {
   get('report').hidden = false;
-  for (const [id, value] of [['total-count', report.total], ['layout-count', report.autoLayout], ['text-count', report.text], ['image-count', report.image]] as const) get(id).textContent = String(value);
+  for (const [id, value] of [['total-count', report.total], ['frame-count', report.frames], ['layout-count', report.autoLayout], ['text-count', report.text], ['image-count', report.image], ['grid-count', report.grid], ['absolute-count', report.absolute], ['svg-count', report.svg]] as const) get(id).textContent = String(value);
+  get('duration').textContent = `Figma 노드 생성: ${(report.durationMs / 1000).toFixed(2)}초`;
   get('warning-summary').textContent = `Warning ${report.warnings.length}`;
   const list = get('warnings'); list.replaceChildren();
-  const groups = new Map<string, number>();
-  for (const warning of report.warnings) groups.set(warning.code, (groups.get(warning.code) ?? 0) + 1);
-  for (const [code, count] of groups) { const li = document.createElement('li'); li.textContent = `${code}: ${count}`; list.append(li); }
-  for (const warning of report.warnings) { const li = document.createElement('li'); li.textContent = `${warning.node} — ${warning.message}`; list.append(li); }
+  for (const [category, count] of Object.entries(report.warningGroups)) {
+    const group = document.createElement('li');
+    const title = document.createElement('strong'); title.textContent = `${category}: ${count}`; group.append(title);
+    const items = document.createElement('ul');
+    for (const warning of report.warnings.filter(warning => warning.category === category)) {
+      const li = document.createElement('li'); li.textContent = `${warning.element || warning.node} — ${warning.code}: ${warning.message}`; items.append(li);
+    }
+    group.append(items); list.append(group);
+  }
   get('warning-details').hidden = report.warnings.length === 0;
 }
 window.addEventListener('message', (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
