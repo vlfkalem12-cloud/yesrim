@@ -36,6 +36,8 @@ npm run dev
 5. Layers에서 `header → nav`, `hero → button`, `card-list → card` 구조를 펼칩니다. Text 내용, Auto Layout 방향·gap·padding, 카드 배경·border·radius를 직접 편집해 보세요. 텍스트의 기본 CSS margin을 표현하기 위해 일부 `/ margin` Frame이 추가됩니다.
 6. UI에서 실제 생성된 Nodes / Frames / Text / Images / Auto Layout / Grid / Absolute / SVG 수와 생성 시간을 확인합니다. Warning은 Fonts / Images / Unsupported CSS / Grid Fallback 등으로 묶이며 해당 HTML 요소가 표시됩니다. **JSON 저장**은 변환에 사용한 중간 데이터를 저장합니다. 플러그인 UI 콘솔에도 동일한 데이터가 출력됩니다.
 
+변환 상태는 idle → converting → success / error로 관리합니다. 생성 완료 또는 오류 후 Loading이 종료되고 파일 선택·Convert·Drag & Drop이 다시 활성화됩니다. 같은 HTML 파일도 연속으로 선택하거나 바로 다시 변환할 수 있으며 플러그인을 닫을 필요가 없습니다. 새 HTML 파일을 선택하면 idle 상태로 초기화됩니다. 완료 보고서 표시 오류가 있어도 다음 변환은 가능합니다.
+
 Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 있습니다. 기본값은 1440 × 900px입니다. 기존 Desktop 1440 / Desktop 1280 / Tablet 768 / Mobile 375 프리셋도 사용할 수 있으며, 프리셋을 선택하면 높이는 900px로 설정됩니다. 값을 수정하면 직접 입력 모드로 전환됩니다.
 
 입력한 너비·높이에서 실제 HTML을 렌더링하므로 CSS media query와 `vw` / `vh`가 반영됩니다. 생성되는 최상위 Frame의 너비는 입력값으로 고정하고, **Frame 높이는 콘텐츠에 따라 자동 결정**합니다. 입력한 높이는 HTML을 측정할 때의 viewport 높이입니다. 빈 값, 0, 음수, 소수, 범위 초과는 변환 전에 차단합니다.
@@ -136,4 +138,6 @@ npx playwright install chromium
 
 렌더링 회귀 검증은 Normal Flow와 Absolute의 중첩 자식·텍스트·상대 좌표, Auto Layout 밖의 텍스트 크기 API 거부 상황, 선택적 크기 설정 실패 후 자식 보존, 다중 배경에서 URL 선택과 레이어별 설정을 검사합니다. 마지막 Layout 검증은 별도로 측정한 브라우저 좌표와 최종 자식 좌표를 비교하고, 무제약 한 줄·직접 텍스트·장식된 텍스트의 Hug, 빈 래퍼 제거 후 Hug 유지, 실제 줄바꿈·폭 제약 유지, Hug 크기 변경 후 Absolute right / bottom 고정을 확인합니다. API 거부·실패와 크기 설정에 따른 위치·폭 변화는 모의 환경에서 재현합니다.
 
-전체 32개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+Lifecycle 검증은 실제 iframe UI와 Main 번들을 연결하여 A → B → C, 동일 파일 재선택, Drag & Drop, 파일 읽기·파싱·Main 생성 실패 후 재시도, 보고서 표시 실패, 이전 요청의 늦은 응답, 중복 요청 및 알림 실패를 검사합니다.
+
+전체 38개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

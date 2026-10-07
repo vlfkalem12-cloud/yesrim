@@ -100,10 +100,11 @@ export interface ConversionReport {
   warnings: ConversionWarning[];
 }
 export type UIMessage = { type: 'CREATE_FIGMA'; requestId: string; payload: ParsedDocument } | { type: 'CANCEL' };
+export type ConversionStatus = 'idle' | 'converting' | 'success' | 'error';
 export type MainMessage =
   | { type: 'PROGRESS'; requestId: string; count: number }
-  | { type: 'COMPLETE'; requestId: string; report: ConversionReport }
-  | { type: 'ERROR'; requestId: string; message: string };
+  | { type: 'CONVERSION_COMPLETE'; requestId: string; payload: { success: true; report: ConversionReport } }
+  | { type: 'CONVERSION_ERROR'; requestId: string; payload: { success: false; message: string } };
 export const LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3000, depth: 80, loadMs: 8000, dimension: 100000 } as const;
 export const VIEWPORT = { width: 1440, height: 900, minDimension: 1, maxDimension: 10000 } as const;
 export const IMPORT_DEFAULTS = { images: true, shadows: true, optimizeWrappers: true, debug: false } as const;

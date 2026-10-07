@@ -113,7 +113,7 @@ test('real UI: file upload, mobile viewport, conversion message and report rende
     assert.equal(message.payload.root.size.width, 375);
     assert.equal(message.payload.options.viewportHeight, 900);
     const { report } = await convert(message.payload);
-    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'COMPLETE', requestId, report } }, '*'), { requestId: message.requestId, report });
+    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
     await page.waitForFunction(() => document.getElementById('status').dataset.state === 'success');
     assert.equal(await page.locator('#text-count').textContent(), '2');
     assert.ok(await page.locator('#convert').isEnabled());
@@ -160,7 +160,7 @@ test('custom viewport inputs drive CSS viewport units, media queries and Figma w
     const { frame, report } = await convert(doc);
     assert.equal(frame.width, 1111);
     assert.equal(report.warnings.filter(w => w.code === 'NODE_FAILED').length, 0);
-    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'COMPLETE', requestId, report } }, '*'), { requestId: message.requestId, report });
+    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
     await page.waitForFunction(() => !document.getElementById('viewport-width').disabled);
     await page.locator('#viewport').selectOption('1280');
     assert.equal(await page.locator('#viewport-width').inputValue(), '1280');
@@ -281,9 +281,10 @@ test('plugin main entry receives CREATE_FIGMA and returns the completed report',
   mock.figma.ui.postMessage = message => sent.push(message);
   runInNewContext(await readFile('dist/code.js', 'utf8'), { figma: mock.figma, __html__: '<html></html>', setTimeout, Uint8Array, console });
   await mock.figma.ui.onmessage({ type: 'CREATE_FIGMA', requestId: 'main-entry', payload: await parse(sample) });
-  assert.equal(sent.at(-1).type, 'COMPLETE');
+  assert.equal(sent.at(-1).type, 'CONVERSION_COMPLETE');
   assert.equal(sent.at(-1).requestId, 'main-entry');
-  assert.equal(sent.at(-1).report.text, 13);
+  assert.equal(sent.at(-1).payload.success, true);
+  assert.equal(sent.at(-1).payload.report.text, 13);
   assert.equal(mock.figma.currentPage.children.length, 1);
 });
 
@@ -657,7 +658,7 @@ test('UI exposes phase 2 options, local image upload, debug mode and grouped rep
     assert.equal(message.payload.options.debug, true);
     assert.ok(!message.payload.warnings.some(warning => warning.code === 'IMAGE_SOURCE'));
     const { report } = await convert(message.payload);
-    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'COMPLETE', requestId, report } }, '*'), { requestId: message.requestId, report });
+    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
     await page.waitForFunction(() => document.getElementById('status').dataset.state === 'success');
     assert.equal(await page.locator('#grid-count').textContent(), '2');
     assert.equal(await page.locator('#svg-count').textContent(), '1');

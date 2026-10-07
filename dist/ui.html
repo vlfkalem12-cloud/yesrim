@@ -908,11 +908,14 @@
   var localAssets = {};
   var html = null;
   var parsed = null;
-  var busy = false;
+  var conversionStatus = "idle";
+  var readingFiles = false;
   var cancelled = false;
-  var requestId = "";
+  var requestId = null;
   var send = (message) => parent.postMessage({ pluginMessage: message }, "*");
-  function status(message, state = "") {
+  var isBusy = () => conversionStatus === "converting" || readingFiles;
+  function status(message, state = conversionStatus) {
+    conversionStatus = state;
     const element = get("status");
     element.textContent = message;
     element.dataset.state = state;
@@ -923,7 +926,7 @@
     viewportWidth.setAttribute("aria-invalid", String(!widthValid));
     viewportHeight.setAttribute("aria-invalid", String(!heightValid));
     get("viewport-error").hidden = widthValid && heightValid;
-    convert.disabled = busy || html === null || !widthValid || !heightValid;
+    convert.disabled = isBusy() || html === null || !widthValid || !heightValid;
     return widthValid && heightValid;
   }
   viewport.addEventListener("change", () => {
@@ -937,15 +940,30 @@
     viewport.value = viewportHeight.valueAsNumber === VIEWPORT.height && ["1440", "1280", "768", "375"].includes(viewportWidth.value) ? viewportWidth.value : "custom";
     validateViewport();
   });
-  function setBusy(value) {
-    busy = value;
+  function renderControls() {
+    const value = isBusy();
     validateViewport();
     input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
     images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
     dropzone.setAttribute("aria-disabled", String(value));
     cancel.hidden = !value;
     if (!value) cancel.disabled = false;
-    convert.textContent = value ? "\uBCC0\uD658 \uC911\u2026" : "Figma\uB85C \uBCC0\uD658";
+    convert.textContent = conversionStatus === "converting" ? "\uBCC0\uD658 \uC911\u2026" : "Figma\uB85C \uBCC0\uD658";
+  }
+  function finishConversion(state, message, report) {
+    requestId = null;
+    cancelled = false;
+    input.value = "";
+    dropzone.classList.remove("drag");
+    status(message, state);
+    try {
+      if (report) showReport(report);
+    } catch (error) {
+      get("report").hidden = true;
+      status(`${message} \uBCF4\uACE0\uC11C\uB97C \uD45C\uC2DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${errorMessage(error)}`, state);
+    } finally {
+      renderControls();
+    }
   }
   function readFile(file) {
     return new Promise((resolve, reject) => {
@@ -957,8 +975,10 @@
     });
   }
   async function selectFile(file) {
-    if (busy || !file) return;
+    if (isBusy() || !file) return;
     cancelled = false;
+    requestId = null;
+    input.value = "";
     if (!/\.html?$/i.test(file.name)) {
       status(".html \uB610\uB294 .htm \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uC138\uC694.", "error");
       return;
@@ -971,8 +991,9 @@
     parsed = null;
     json.hidden = true;
     get("report").hidden = true;
-    setBusy(true);
-    status("HTML \uD30C\uC77C\uC744 \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.");
+    readingFiles = true;
+    status("HTML \uD30C\uC77C\uC744 \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.", "idle");
+    renderControls();
     try {
       const content = await readFile(file);
       if (cancelled) return;
@@ -984,8 +1005,10 @@
     } catch (error) {
       status(errorMessage(error), "error");
     } finally {
+      if (cancelled) status("\uD30C\uC77C \uC120\uD0DD\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.", "idle");
       cancelled = false;
-      setBusy(false);
+      readingFiles = false;
+      renderControls();
       input.value = "";
     }
   }
@@ -993,14 +1016,16 @@
     void selectFile(input.files?.[0]);
   });
   assetFiles.addEventListener("change", async () => {
-    if (busy || !assetFiles.files?.length) return;
+    if (isBusy() || !assetFiles.files?.length) return;
     const files = [...assetFiles.files];
     if (files.length > 100 || files.some((file) => file.size > LIMITS.imageBytes) || files.reduce((sum, file) => sum + file.size, 0) > LIMITS.assetBytes) {
       status("\uC774\uBBF8\uC9C0\uB294 \uD30C\uC77C\uB2F9 4MB, \uCD1D 16MB, \uCD5C\uB300 100\uAC1C\uAE4C\uC9C0 \uCD94\uAC00\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
       return;
     }
     cancelled = false;
-    setBusy(true);
+    readingFiles = true;
+    status("\uC774\uBBF8\uC9C0\uB97C \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.", "idle");
+    renderControls();
     try {
       const entries = await Promise.all(files.map(async (file) => {
         const data = await new Promise((resolve, reject) => {
@@ -1024,23 +1049,26 @@
     } catch (error) {
       status(errorMessage(error), "error");
     } finally {
+      if (cancelled) status("\uC774\uBBF8\uC9C0 \uC120\uD0DD\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.", "idle");
       cancelled = false;
-      setBusy(false);
+      readingFiles = false;
+      renderControls();
       assetFiles.value = "";
     }
   });
   dropzone.addEventListener("keydown", (event) => {
-    if (!busy && ["Enter", " "].includes(event.key)) {
+    if (!isBusy() && ["Enter", " "].includes(event.key)) {
       event.preventDefault();
+      input.value = "";
       input.click();
     }
   });
   dropzone.addEventListener("click", (event) => {
-    if (busy) event.preventDefault();
+    if (isBusy()) event.preventDefault();
   });
   for (const type of ["dragenter", "dragover"]) dropzone.addEventListener(type, (event) => {
     event.preventDefault();
-    if (!busy) dropzone.classList.add("drag");
+    if (!isBusy()) dropzone.classList.add("drag");
   });
   dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
   dropzone.addEventListener("drop", (event) => {
@@ -1051,15 +1079,15 @@
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => event.preventDefault());
   convert.addEventListener("click", async () => {
-    if (busy || html === null) return;
+    if (isBusy() || html === null) return;
     if (!validateViewport()) return;
     requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     cancelled = false;
     parsed = null;
-    setBusy(true);
     get("report").hidden = true;
     json.hidden = true;
-    status("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026");
+    status("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026", "converting");
+    renderControls();
     try {
       parsed = await parseHTML(html, {
         viewport: viewportWidth.valueAsNumber,
@@ -1072,8 +1100,7 @@
         debug: debug.checked
       }, get("render-host"), localAssets);
       if (cancelled) {
-        status("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
-        setBusy(false);
+        finishConversion("error", "\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
         return;
       }
       console.info("HTML \u2192 Figma intermediate document", parsed);
@@ -1081,13 +1108,12 @@
       status("Figma \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4\u2026");
       send({ type: "CREATE_FIGMA", requestId, payload: parsed });
     } catch (error) {
-      status(errorMessage(error), "error");
-      setBusy(false);
+      finishConversion("error", errorMessage(error));
     }
   });
   cancel.addEventListener("click", () => {
     cancelled = true;
-    send({ type: "CANCEL" });
+    if (conversionStatus === "converting") send({ type: "CANCEL" });
     status("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
     cancel.disabled = true;
   });
@@ -1126,21 +1152,17 @@
     get("warning-details").hidden = report.warnings.length === 0;
   }
   window.addEventListener("message", (event) => {
-    if (event.source !== parent) return;
     const message = event.data?.pluginMessage;
-    if (!message || message.requestId !== requestId || !busy) return;
+    if (!message || typeof message !== "object" || message.requestId !== requestId || conversionStatus !== "converting") return;
     if (message.type === "PROGRESS") {
       status(`${message.count}\uAC1C\uC758 \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4\u2026`);
       return;
     }
-    if (message.type === "COMPLETE") {
-      showReport(message.report);
-      status("\uBCC0\uD658 \uC644\uB8CC \xB7 Figma \uCE94\uBC84\uC2A4\uC5D0\uC11C \uB808\uC774\uC5B4\uB97C \uD3B8\uC9D1\uD558\uC138\uC694.", "success");
-    } else if (message.type === "ERROR") status(message.message, "error");
-    else return;
-    cancel.disabled = false;
-    setBusy(false);
+    if (message.type === "CONVERSION_COMPLETE") finishConversion("success", "\u2713 \uBCC0\uD658 \uC644\uB8CC \xB7 \uB2E4\uB978 HTML \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uAC70\uB098 \uB2E4\uC2DC \uBCC0\uD658\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", message.payload?.report);
+    else if (message.type === "CONVERSION_ERROR") finishConversion("error", message.payload?.message || "\uBCC0\uD658 \uC911 \uC54C \uC218 \uC5C6\uB294 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4.");
   });
+  get("status").dataset.state = conversionStatus;
+  renderControls();
 })();
 </script>
 </body>

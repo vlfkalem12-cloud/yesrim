@@ -489,19 +489,31 @@
       cancelled = true;
       return;
     }
-    if (message.type !== "CREATE_FIGMA" || typeof message.requestId !== "string" || busy) return;
+    if (message.type !== "CREATE_FIGMA" || typeof message.requestId !== "string") return;
+    if (busy) {
+      send({ type: "CONVERSION_ERROR", requestId: message.requestId, payload: { success: false, message: "\uC774\uBBF8 \uBCC0\uD658\uC774 \uC9C4\uD589 \uC911\uC785\uB2C8\uB2E4." } });
+      return;
+    }
     busy = true;
     cancelled = false;
     const requestId = message.requestId;
+    let result;
     try {
       validateDocument(message.payload);
       const { report } = await convertDocument(message.payload, (count) => send({ type: "PROGRESS", requestId, count }), () => cancelled);
-      send({ type: "COMPLETE", requestId, report });
-      figma.notify(`${report.total}\uAC1C\uC758 \uD3B8\uC9D1 \uAC00\uB2A5\uD55C \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4.`);
+      result = { type: "CONVERSION_COMPLETE", requestId, payload: { success: true, report } };
     } catch (error) {
-      send({ type: "ERROR", requestId, message: errorMessage(error) });
+      result = { type: "CONVERSION_ERROR", requestId, payload: { success: false, message: errorMessage(error) } };
     } finally {
       busy = false;
+    }
+    send(result);
+    if (result.type === "CONVERSION_COMPLETE") {
+      try {
+        figma.notify(`${result.payload.report.total}\uAC1C\uC758 \uD3B8\uC9D1 \uAC00\uB2A5\uD55C \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4.`);
+      } catch (error) {
+        console.warn("Conversion notification failed", error);
+      }
     }
   };
 })();
