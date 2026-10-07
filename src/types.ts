@@ -35,7 +35,8 @@ export interface ParsedSize {
   minHeight?: number | null;
   maxHeight?: number | null;
 }
-export interface ParsedImage { key: string; src: string; alt: string; fit: string; position?: string; repeat?: string }
+export interface ParsedImage { key: string; src: string; alt: string; fit: string; position?: string; repeat?: string; layerIndex?: number }
+export interface ParsedGradient { angle: 0 | 90 | 180 | 270; stops: { position: number; color: Color }[]; layerIndex: number }
 export interface ParsedShadow { color: Color; x: number; y: number; blur: number; spread: number; inset: boolean }
 export interface CSSVariableInfo { name: string; value: string; scope: string }
 export interface ParsedStyle {
@@ -56,6 +57,7 @@ export interface ParsedStyle {
   whiteSpace: string;
   clipsContent: boolean;
   backgroundImage?: ParsedImage;
+  backgroundGradient?: ParsedGradient;
   shadow?: ParsedShadow;
   textTransform?: string;
 }

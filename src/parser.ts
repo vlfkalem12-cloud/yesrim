@@ -7,6 +7,7 @@ import { serializeSVG } from './svg';
 import { collectCSSVariableNames, readCSSVariables } from './css-variables';
 import { allowedAsset, collectImages, resolveLocalAsset } from './assets';
 import { measureFormText, readFormContent } from './form-controls';
+import { parseLinearGradient } from './gradients';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
@@ -143,6 +144,25 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   const bounds = (rect: DOMRect): Bounds => ({ x: rect.left, y: rect.top, width: clamp(rect.width), height: clamp(rect.height) });
   const hasBlockChildren = (el: Element) => [...el.children].some(child => !['inline', 'inline-block', 'contents', 'none'].includes(computed(child).display) || ['img', 'svg'].includes(child.localName));
   const text = (el: HTMLElement) => el.innerText || el.textContent || '';
+  function readBackground(node: ParsedNode, style: CSSStyleDeclaration): void {
+    if (style.backgroundImage === 'none') return;
+    const layers = splitCSSList(style.backgroundImage);
+    const urls = layers.map(layer => layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1]);
+    const imageIndex = urls.findIndex(url => url !== undefined);
+    const gradientIndex = layers.findIndex(layer => /^linear-gradient\(/i.test(layer));
+    if (imageIndex >= 0) {
+      const layerValue = (value: string) => { const values = splitCSSList(value); return values[imageIndex % values.length]!; };
+      node.style.backgroundImage = { key: '', src: urls[imageIndex]!, alt: 'background', fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat), layerIndex: imageIndex };
+    }
+    if (gradientIndex >= 0) {
+      const result = parseLinearGradient(layers[gradientIndex]!);
+      if (result.gradient) node.style.backgroundGradient = { ...result.gradient, layerIndex: gradientIndex };
+      else if (result.fallback) node.style.background = result.fallback;
+      if (result.warning) warn('GRADIENT_FALLBACK', node.name, result.warning);
+    }
+    if (layers.some((layer, index) => !urls[index] && index !== gradientIndex && layer !== 'none')) warn('BACKGROUND_IMAGE', node.name, '미지원 배경 레이어는 생략하고 지원되는 배경 Fill을 유지합니다.');
+    if (layers.length > 1) warn('BACKGROUND_LAYERS', node.name, '다중 배경은 첫 번째 URL 이미지와 첫 번째 Linear Gradient 및 배경색을 유지합니다.');
+  }
   function parse(el: Element, depth: number): ParsedNode[] {
     if (OMIT_TAGS.has(el.localName)) return [];
     if (count >= LIMITS.nodes || depth > LIMITS.depth) { warn('TREE_LIMIT', layerName(el), '노드 수 또는 중첩 깊이 제한으로 일부 요소를 생략했습니다.'); return []; }
@@ -172,18 +192,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     if (style.display.includes('grid')) parseGrid(node, style, el, warn);
     if (style.transform !== 'none') warn('TRANSFORM', name, 'CSS transform은 측정된 경계 상자로 단순화했습니다.');
     if (style.cssFloat !== 'none') warn('FLOAT', name, 'float는 측정된 위치만 유지합니다.');
-    if (style.backgroundImage !== 'none') {
-      const layers = splitCSSList(style.backgroundImage);
-      const urls = layers.map(layer => layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1]);
-      const imageIndex = urls.findIndex(url => url !== undefined);
-      if (imageIndex >= 0) {
-        // Background settings cycle independently when their lists are shorter than image layers.
-        const layerValue = (value: string) => { const values = splitCSSList(value); return values[imageIndex % values.length]!; };
-        node.style.backgroundImage = { key: '', src: urls[imageIndex]!, alt: 'background', fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat) };
-      }
-      if (layers.some((layer, index) => !urls[index] && layer !== 'none')) warn('BACKGROUND_IMAGE', name, imageIndex >= 0 ? '미지원 gradient 배경은 생략하고 URL 이미지 Fill을 유지합니다.' : '미지원 gradient 배경은 생략하고 단색 배경을 유지합니다.');
-      if (layers.length > 1) warn('BACKGROUND_LAYERS', name, imageIndex >= 0 ? '다중 배경은 첫 번째 URL 이미지 레이어와 배경색을 유지합니다.' : '다중 배경의 미지원 레이어를 생략하고 배경색을 유지합니다.');
-    }
+    readBackground(node, style);
     if (style.boxShadow !== 'none' && splitCSSList(style.boxShadow).length > 1) warn('MULTIPLE_SHADOWS', name, '다중 shadow는 첫 번째 효과만 반영합니다.');
     if (style.boxShadow !== 'none' && !node.style.shadow) warn('BOX_SHADOW', name, '그림자 문법을 해석할 수 없습니다.');
     if (style.getPropertyValue('backdrop-filter') && style.getPropertyValue('backdrop-filter') !== 'none') warn('UNSUPPORTED_CSS', name, `Unsupported: backdrop-filter (${selector(el)})`);
@@ -201,11 +210,11 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       node.text = transformText(node.text, style.textTransform);
       if (el.children.length) warn('INLINE_TEXT', name, '여러 inline 텍스트 스타일을 부모의 스타일로 통합했습니다.');
       const noWrap = ['nowrap', 'pre'].includes(style.whiteSpace) && node.size.widthMode !== 'HUG';
-      if ((node.style.background?.a || node.style.backgroundImage || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some(v => v > 0) || Object.values(node.layout.padding).some(v => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
+      if ((node.style.background?.a || node.style.backgroundImage || node.style.backgroundGradient || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some(v => v > 0) || Object.values(node.layout.padding).some(v => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
         // Keep decorated text editable, with a frame carrying its box styling.
         node.type = 'FRAME';
         const child: ParsedNode = { ...node, type: 'TEXT', name: `${name} / text`, rect: bounds(range.getBoundingClientRect()),
-          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
+          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
           layout: { ...node.layout, direction: 'NONE', padding: zero(), margin: zero(), absolute: false }, children: [] };
         child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === 'HUG' ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
@@ -273,11 +282,13 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   const body = parse(doc.body, 0)[0];
   if (!body) throw new Error('변환할 수 있는 표시 요소가 없습니다.');
   const bodyStyle = view.getComputedStyle(doc.body);
+  const htmlStyle = computed(doc.documentElement);
+  if (!body.style.background?.a && bodyStyle.backgroundImage === 'none' && /linear-gradient\(/i.test(htmlStyle.backgroundImage)) readBackground(body, htmlStyle);
   // A sole undecorated body wrapper may be collapsed into the imported viewport frame.
   const collapse = body.children.length === 1 && body.children[0]!.type === 'FRAME' && !body.children[0]!.layout.absolute &&
     Object.values(body.children[0]!.layout.margin).every(v => v === 0) && bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
     bodyStyle.display === 'block' && Object.values(body.layout.padding).every(v => v === 0) && Object.values(body.layout.margin).every(v => v === 0) &&
-    Object.values(body.style.borderWidths).every(v => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.clipsContent;
+    Object.values(body.style.borderWidths).every(v => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.backgroundGradient && !body.style.background?.a && !body.style.clipsContent;
   const root = collapse ? body.children[0]! : body;
   if (!collapse) {
     // The imported viewport starts at document (0,0); CSS body's outside margins still occupy space.

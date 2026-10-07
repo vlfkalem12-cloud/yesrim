@@ -1,6 +1,7 @@
 import type { ConversionWarning, ParsedNode } from './types';
 export function warningCategory(code: string): string {
   if (/FONT/.test(code)) return 'Fonts';
+  if (/GRADIENT/.test(code)) return 'Unsupported CSS';
   if (/IMAGE|ASSET|BACKGROUND/.test(code)) return 'Images';
   if (/GRID/.test(code)) return 'Grid Fallback';
   if (/UNSUPPORTED|TRANSFORM|FLOAT|PSEUDO|SHADOW|BORDER_COLORS/.test(code)) return 'Unsupported CSS';

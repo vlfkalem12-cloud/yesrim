@@ -18,6 +18,7 @@
   // src/report.ts
   function warningCategory(code) {
     if (/FONT/.test(code)) return "Fonts";
+    if (/GRADIENT/.test(code)) return "Unsupported CSS";
     if (/IMAGE|ASSET|BACKGROUND/.test(code)) return "Images";
     if (/GRID/.test(code)) return "Grid Fallback";
     if (/UNSUPPORTED|TRANSFORM|FLOAT|PSEUDO|SHADOW|BORDER_COLORS/.test(code)) return "Unsupported CSS";
@@ -39,6 +40,17 @@
       groups[warning.category] = (groups[warning.category] || 0) + 1;
     }
     return groups;
+  }
+
+  // src/gradients.ts
+  function linearGradientPaint(gradient) {
+    const transforms = {
+      0: [[0, -1, 1], [1, 0, 0]],
+      90: [[1, 0, 0], [0, 1, 0]],
+      180: [[0, 1, 0], [-1, 0, 1]],
+      270: [[-1, 0, 1], [0, -1, 1]]
+    };
+    return { type: "GRADIENT_LINEAR", gradientTransform: transforms[gradient.angle], gradientStops: gradient.stops, opacity: 1, visible: true, blendMode: "NORMAL" };
   }
 
   // src/converter.ts
@@ -134,6 +146,8 @@
       if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !["FIXED", "FILL", "HUG"].includes(node.size.widthMode) || !["FIXED", "FILL", "HUG"].includes(node.size.heightMode)) throw new Error("\uC798\uBABB\uB41C \uD06C\uAE30 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       for (const value2 of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value2 !== void 0 && value2 !== null && (!finite(value2) || value2 < 0)) throw new Error("\uC798\uBABB\uB41C \uCD5C\uC18C/\uCD5C\uB300 \uD06C\uAE30\uC785\uB2C8\uB2E4.");
       if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every((value2) => finite(value2)))) throw new Error("\uC798\uBABB\uB41C \uADF8\uB9BC\uC790 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      const gradient = node.style.backgroundGradient;
+      if (gradient && (![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || index > 0 && stop.position < gradient.stops[index - 1].position || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every((value2) => finite(value2, 1) && value2 >= 0)))) throw new Error("\uC798\uBABB\uB41C Gradient \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (!["HORIZONTAL", "VERTICAL", "NONE"].includes(node.layout.direction) || !["MIN", "CENTER", "MAX", "SPACE_BETWEEN"].includes(node.layout.justify) || !["MIN", "CENTER", "MAX"].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error("\uC798\uBABB\uB41C \uB808\uC774\uC544\uC6C3 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       for (const inset of [node.layout.padding, node.layout.margin, node.style.borderWidths]) if (!inset || ![inset.top, inset.right, inset.bottom, inset.left].every((v) => finite(v))) throw new Error("\uC798\uBABB\uB41C \uC5EC\uBC31 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (![node.rect.x, node.rect.y, node.rect.width, node.rect.height, node.style.opacity, node.style.fontSize, node.style.fontWeight, node.style.letterSpacing, ...node.style.radii].every((v) => finite(v))) throw new Error("\uC798\uBABB\uB41C \uC2A4\uD0C0\uC77C \uCE58\uC218\uC785\uB2C8\uB2E4.");
@@ -204,10 +218,20 @@
       node.fills = doc.options.styles && style.background ? [solid(style.background)] : [];
       node.strokes = [];
       if (!doc.options.styles) return;
+      if (style.backgroundGradient) {
+        try {
+          node.fills = [linearGradientPaint(style.backgroundGradient), ...node.fills];
+        } catch (error) {
+          node.fills = [solid(style.backgroundGradient.stops[0].color), ...node.fills];
+          warn("GRADIENT_FALLBACK", parsed.name, `Gradient Paint \uC801\uC6A9 \uC2E4\uD328: ${errorMessage(error)}. \uCCAB \uBC88\uC9F8 color stop\uC744 Solid Fill\uB85C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.`);
+        }
+      }
       if (doc.options.images !== false && style.backgroundImage) {
         const paint = imagePaint(style.backgroundImage, parsed.name);
         if (paint) {
-          node.fills = [paint, ...node.fills];
+          const fills = node.fills;
+          const index = style.backgroundGradient && style.backgroundGradient.layerIndex < (style.backgroundImage.layerIndex ?? 0) ? 1 : 0;
+          node.fills = [...fills.slice(0, index), paint, ...fills.slice(index)];
           node.setPluginData("html-background-image", "true");
         }
       }

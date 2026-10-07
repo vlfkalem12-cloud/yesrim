@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Linear Gradient Regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/24px Inter, sans-serif; }
+  main { display: flex; flex-direction: column; gap: 16px; padding: 24px; background: linear-gradient(180deg, #FFFFFF 0%, #F1F8F6 40%, #EEF2FA 80%, #FFFFFF 100%); }
+  .swatches { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; background: linear-gradient(90deg, #fff 0%, #ddeeff 100%); }
+  .swatch { min-height: 80px; padding: 12px; border: 1px solid #8899aa; }
+  #up { background: linear-gradient(0deg, #112233 0%, #ddeeff 100%); }
+  #right { background: linear-gradient(90deg, rgb(240, 248, 255) 0%, rgba(20, 80, 120, .5) 100%); }
+  #down { background: linear-gradient(180deg, #ffffff 0%, #f1f8f6 40%, #eef2fa 80%, #ffffff 100%); }
+  #left { background: linear-gradient(270deg, #fff 0%, #667788 100%); }
+  #fallback { background: linear-gradient(45deg, #f1f8f6 0%, #eef2fa 100%); }
+  #gradient-label { background: linear-gradient(90deg, #e0f2fe, #dbeafe); }
+  input { width: 200px; padding: 8px; font: inherit; }
+</style>
+<main>
+  <h1>Gradient Background Test</h1>
+  <div class="swatches">
+    <div class="swatch" id="up"><strong>0deg · 위쪽</strong></div>
+    <div class="swatch" id="right"><p>90deg · 오른쪽</p></div>
+    <div class="swatch" id="down"><span>180deg · 아래쪽</span></div>
+    <div class="swatch" id="left">270deg · 왼쪽</div>
+  </div>
+  <div class="swatch" id="fallback">지원 범위 밖의 각도는 첫 색상과 Warning으로 유지</div>
+  <span id="gradient-label">Gradient Text Frame</span>
+  <input id="gradient-input" value="김">
+  <svg id="gradient-svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#246"/></svg>
+</main>
+</html>

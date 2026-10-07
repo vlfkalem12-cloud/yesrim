@@ -1,6 +1,7 @@
 import { LIMITS, type Color, type ConversionReport, type ParsedDocument, type ParsedImage, type ParsedNode, type SizingMode } from './types';
 import { clamp, errorMessage, isViewportDimension } from './utils';
 import { enrichWarnings } from './report';
+import { linearGradientPaint } from './gradients';
 
 type EditableNode = FrameNode | TextNode | RectangleNode;
 const solid = (color: Color): SolidPaint => ({ type: 'SOLID', color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
@@ -91,6 +92,8 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
     if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !['FIXED', 'FILL', 'HUG'].includes(node.size.widthMode) || !['FIXED', 'FILL', 'HUG'].includes(node.size.heightMode)) throw new Error('잘못된 크기 데이터입니다.');
     for (const value of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value !== undefined && value !== null && (!finite(value) || value < 0)) throw new Error('잘못된 최소/최대 크기입니다.');
     if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every(value => finite(value)))) throw new Error('잘못된 그림자 데이터입니다.');
+    const gradient = node.style.backgroundGradient;
+    if (gradient && (![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || (index > 0 && stop.position < gradient.stops[index - 1]!.position) || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every(value => finite(value, 1) && value >= 0)))) throw new Error('잘못된 Gradient 데이터입니다.');
     if (!['HORIZONTAL', 'VERTICAL', 'NONE'].includes(node.layout.direction) || !['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'].includes(node.layout.justify) || !['MIN', 'CENTER', 'MAX'].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error('잘못된 레이아웃 데이터입니다.');
     for (const inset of [node.layout.padding, node.layout.margin, node.style.borderWidths]) if (!inset || ![inset.top, inset.right, inset.bottom, inset.left].every(v => finite(v))) throw new Error('잘못된 여백 데이터입니다.');
     if (![node.rect.x, node.rect.y, node.rect.width, node.rect.height, node.style.opacity, node.style.fontSize, node.style.fontWeight, node.style.letterSpacing, ...node.style.radii].every(v => finite(v))) throw new Error('잘못된 스타일 치수입니다.');
@@ -157,9 +160,21 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     node.fills = doc.options.styles && style.background ? [solid(style.background)] : [];
     node.strokes = [];
     if (!doc.options.styles) return;
+    if (style.backgroundGradient) {
+      try { node.fills = [linearGradientPaint(style.backgroundGradient), ...node.fills as Paint[]]; }
+      catch (error) {
+        node.fills = [solid(style.backgroundGradient.stops[0]!.color), ...node.fills as Paint[]];
+        warn('GRADIENT_FALLBACK', parsed.name, `Gradient Paint 적용 실패: ${errorMessage(error)}. 첫 번째 color stop을 Solid Fill로 사용합니다.`);
+      }
+    }
     if (doc.options.images !== false && style.backgroundImage) {
       const paint = imagePaint(style.backgroundImage, parsed.name);
-      if (paint) { node.fills = [paint, ...node.fills as Paint[]]; node.setPluginData('html-background-image', 'true'); }
+      if (paint) {
+        const fills = node.fills as Paint[];
+        const index = style.backgroundGradient && style.backgroundGradient.layerIndex < (style.backgroundImage.layerIndex ?? 0) ? 1 : 0;
+        node.fills = [...fills.slice(0, index), paint, ...fills.slice(index)];
+        node.setPluginData('html-background-image', 'true');
+      }
     }
     node.opacity = clamp(style.opacity, 0, 1);
     if (doc.options.shadows !== false && style.shadow) {

@@ -6,7 +6,7 @@ import { chromium } from 'playwright';
 import { build } from 'esbuild';
 import { createFigmaMock, flatten } from './figma-mock.mjs';
 
-let browser, server, base, converter, parserBundle, utilities;
+let browser, server, base, converter, parserBundle, utilities, gradients;
 const sample = await readFile('examples/mvp.html', 'utf8');
 before(async () => {
   await mkdir('test-results', { recursive: true });
@@ -15,6 +15,8 @@ before(async () => {
   converter = await import('../test-results/converter.mjs');
   await build({ entryPoints: ['src/utils.ts'], bundle: true, outfile: 'test-results/utils.mjs', format: 'esm', platform: 'node' });
   utilities = await import('../test-results/utils.mjs');
+  await build({ entryPoints: ['src/gradients.ts'], bundle: true, outfile: 'test-results/gradients.mjs', format: 'esm', platform: 'node' });
+  gradients = await import('../test-results/gradients.mjs');
   const ui = await readFile('dist/ui.html', 'utf8');
   server = createServer((req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(req.url === '/ui' ? ui : '<!doctype html><html><body><div id="host"></div></body></html>'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -40,6 +42,115 @@ async function convert(doc, options) {
 }
 const find = (root, name) => flatten(root).find(node => node.name === name);
 const parsedNodes = root => [root, ...root.children.flatMap(parsedNodes)];
+
+test('Requested four-stop top-level Gradient produces a visible linear Paint without losing content', async () => {
+  const doc = await parse(await readFile('test/gradient-regression.html', 'utf8'));
+  const { frame, report } = await convert(doc);
+  assert.equal(frame.fills[0]?.type, 'GRADIENT_LINEAR');
+  assert.deepEqual(frame.fills[0].gradientStops.map(stop => stop.position), [0, .4, .8, 1]);
+  assert.deepEqual(frame.fills[0].gradientStops.map(stop => stop.color), [
+    { r: 1, g: 1, b: 1, a: 1 }, { r: 241 / 255, g: 248 / 255, b: 246 / 255, a: 1 },
+    { r: 238 / 255, g: 242 / 255, b: 250 / 255, a: 1 }, { r: 1, g: 1, b: 1, a: 1 }
+  ]);
+  assert.equal(find(frame, 'swatches').layoutMode, 'VERTICAL');
+  for (const row of find(frame, 'swatches').children) {
+    assert.deepEqual(row.fills, []);
+    for (const cell of row.children) assert.deepEqual(cell.fills, []);
+  }
+  const label = find(frame, 'gradient-label');
+  assert.equal(label.type, 'FRAME'); assert.equal(label.fills[0].type, 'GRADIENT_LINEAR');
+  assert.equal(label.children[0].characters, 'Gradient Text Frame');
+  assert.deepEqual(label.children[0].fills.map(paint => paint.type), ['SOLID']);
+  assert.equal(find(frame, 'gradient-input').children[0].characters, '김');
+  assert.equal(find(frame, 'gradient-svg').getPluginData('html-type'), 'svg');
+  assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+});
+
+test('Gradient angles map CSS endpoints to the correct Figma stop coordinates, including hex and rgba alpha', async () => {
+  const doc = await parse(await readFile('test/gradient-regression.html', 'utf8'));
+  const { frame } = await convert(doc);
+  const endpoints = [
+    ['up', [0.5, 1], [0.5, 0]], ['right', [0, 0.5], [1, 0.5]],
+    ['down', [0.5, 0], [0.5, 1]], ['left', [1, 0.5], [0, 0.5]]
+  ];
+  for (const [name, start, end] of endpoints) {
+    const paint = find(frame, name).fills[0];
+    assert.equal(paint.type, 'GRADIENT_LINEAR', name);
+    const [[a, b, c], [d, e, f]] = paint.gradientTransform;
+    const map = ([x, y]) => [a * x + b * y + c, d * x + e * y + f];
+    assert.deepEqual(map(start), [0, .5], `${name}: first stop`);
+    assert.deepEqual(map(end), [1, .5], `${name}: last stop`);
+  }
+  assert.equal(find(frame, 'right').fills[0].gradientStops[1].color.a, .5);
+  const result = gradients.parseLinearGradient('linear-gradient(90deg, #1234 0%, rgba(10, 20, 30, .25) 50%, rgb(40 50 60 / 75%) 100%)');
+  assert.equal(result.warning, undefined);
+  assert.deepEqual(result.gradient.stops.map(stop => stop.color.a), [68 / 255, .25, .75]);
+  assert.deepEqual(gradients.parseLinearGradient('linear-gradient(#fff, #abc, #000)').gradient.stops.map(stop => stop.position), [0, .5, 1]);
+  assert.deepEqual(gradients.parseLinearGradient('linear-gradient(180deg, #fff 60%, #abc 40%, #000)').gradient.stops.map(stop => stop.position), [.6, .6, 1]);
+  assert.equal(gradients.parseLinearGradient('linear-gradient(to left, #fff, #000)').gradient.angle, 270);
+});
+
+test('Unsupported and malformed Gradients use their first valid color and report a fallback without losing nodes', async () => {
+  for (const [css, color] of [
+    ['linear-gradient(45deg, rgba(20, 40, 60, .8), #fff)', { r: 20 / 255, g: 40 / 255, b: 60 / 255 }],
+    ['linear-gradient(180deg, #abcdef 10px, #ffffff 100%)', { r: 171 / 255, g: 205 / 255, b: 239 / 255 }]
+  ]) {
+    const doc = await parse(`<style>body{margin:0;background:${css}}main{padding:12px}</style><main><p>Keep content</p></main>`);
+    const { frame, report } = await convert(doc);
+    assert.equal(frame.fills[0].type, 'SOLID');
+    assert.ok(frame.fills[0].opacity > 0);
+    assert.deepEqual(frame.fills[0].color, color);
+    assert.ok(flatten(frame).some(node => node.characters === 'Keep content'));
+    assert.ok(report.warnings.some(warning => warning.code === 'GRADIENT_FALLBACK' && warning.category === 'Unsupported CSS'));
+    assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+  }
+  for (const css of ['linear-gradient(180deg, bad-color 0%, #abcdef 100%)', 'linear-gradient(180deg, #abcdef 0%)', 'linear-gradient(180deg, #abcdef -10%, #ffffff 100%)']) {
+    const result = gradients.parseLinearGradient(css);
+    assert.equal(result.gradient, undefined); assert.ok(result.warning);
+    assert.deepEqual(result.fallback, { r: 171 / 255, g: 205 / 255, b: 239 / 255, a: 1 });
+  }
+});
+
+test('Body, html and anonymous wrapper Gradients survive root collapse and wrapper optimization', async () => {
+  for (const css of ['body{background:linear-gradient(#fff,#ddeeff)}', 'html{background:linear-gradient(#fff,#ddeeff)}']) {
+    const doc = await parse(`<style>body{margin:0}${css}</style><main><p>Root content</p></main>`);
+    const { frame } = await convert(doc);
+    assert.equal(doc.root.tagName, 'body');
+    assert.equal(frame.fills[0].type, 'GRADIENT_LINEAR');
+    assert.ok(flatten(frame).some(node => node.characters === 'Root content'));
+  }
+  const doc = await parse('<style>body{margin:0}p{margin:0}main>div{background:linear-gradient(#fff,#ddeeff)}</style><main><div><p>Keep wrapper</p></div></main>');
+  const { frame } = await convert(doc);
+  assert.equal(find(frame, 'div').fills[0].type, 'GRADIENT_LINEAR');
+});
+
+test('Gradient Paint API rejection falls back to Solid while retaining opacity and editable descendants', async () => {
+  const doc = await parse('<style>body{margin:0}main{background:linear-gradient(180deg,rgba(30,60,90,.8),#fff);opacity:.5}</style><main><p>Preserve me</p></main>');
+  const { frame, report } = await convert(doc, { failGradientPaint: true });
+  assert.equal(frame.fills[0].type, 'SOLID');
+  assert.deepEqual(frame.fills[0].color, { r: 30 / 255, g: 60 / 255, b: 90 / 255 });
+  assert.equal(frame.fills[0].opacity, .8); assert.equal(frame.opacity, .5);
+  assert.ok(flatten(frame).some(node => node.characters === 'Preserve me'));
+  assert.ok(report.warnings.some(warning => warning.code === 'GRADIENT_FALLBACK'));
+  assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+});
+
+test('Gradients retain solid background, image layer order and separate stop, paint and node opacity', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  const html = `<style>body{margin:0}main{background-color:rgba(10,20,30,.6);background-image:linear-gradient(90deg,rgba(240,248,255,.4),#fff),url("${png}");background-size:auto,contain;background-position:center;background-repeat:no-repeat;opacity:.5}p{opacity:.7}</style><main><p>Keep alpha</p></main>`;
+  const { frame, report, images } = await convert(await parse(html));
+  assert.deepEqual(frame.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'IMAGE', 'SOLID']);
+  assert.equal(frame.fills[0].opacity, 1); assert.equal(frame.fills[0].gradientStops[0].color.a, .4);
+  assert.equal(frame.fills[1].scaleMode, 'FIT'); assert.equal(frame.fills[2].opacity, .6);
+  assert.equal(frame.opacity, .5); assert.equal(find(frame, 'p').opacity, .7);
+  assert.equal(report.image, 1); assert.equal(images.length, 1);
+  const disabledImages = await convert(await parse(html, { images: false }));
+  assert.deepEqual(disabledImages.frame.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'SOLID']);
+  assert.equal(disabledImages.images.length, 0);
+  const disabledStyles = await convert(await parse(html, { styles: false }));
+  assert.deepEqual(disabledStyles.frame.fills, []);
+  assert.ok(flatten(disabledStyles.frame).some(node => node.characters === 'Keep alpha'));
+});
 
 test('Form controls preserve value, placeholder and selected option as editable Frame + Text', async () => {
   const doc = await parse(await readFile('test/form-controls-regression.html', 'utf8'));
@@ -547,12 +658,13 @@ test('Multiple backgrounds preserve the first URL at any layer with its matching
     assert.equal(parsed.style.backgroundImage.repeat, 'no-repeat');
     const { frame, report, images } = await convert(doc, { rejectStandaloneTextSizing: true });
     const target = find(frame, 'bg');
-    assert.equal(target.fills[0].type, 'IMAGE');
-    assert.equal(target.fills[0].scaleMode, scaleMode);
+    const imageFill = target.fills.find(paint => paint.type === 'IMAGE');
+    assert.equal(imageFill.scaleMode, scaleMode);
+    assert.equal(target.fills.findIndex(paint => paint.type === 'GRADIENT_LINEAR') < target.fills.indexOf(imageFill), background.startsWith('linear-gradient'));
     assert.deepEqual(flatten(target).filter(node => node.type === 'TEXT').map(node => node.characters), ['Keep title', 'Keep paragraph']);
     assert.equal(images.length, 1);
     assert.equal(report.image, 1);
-    assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_IMAGE'));
+    assert.equal(report.warnings.some(warning => warning.code === 'BACKGROUND_IMAGE'), background.includes('radial-gradient'));
     assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_LAYERS'));
     assert.ok(!report.warnings.some(warning => ['BACKGROUND_POSITION', 'BACKGROUND_REPEAT', 'NODE_FAILED'].includes(warning.code)));
   }
