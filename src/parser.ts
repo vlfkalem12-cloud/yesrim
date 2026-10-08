@@ -1,4 +1,4 @@
-import { IMPORT_DEFAULTS, LIMITS, type Bounds, type ConversionWarning, type ImportOptions, type LocalAssets, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedStyle } from './types';
+import { IMPORT_DEFAULTS, LIMITS, type Bounds, type ConversionWarning, type FixedInsets, type ImportOptions, type LocalAssets, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedStyle, type ViewportPreset } from './types';
 import { clamp, errorMessage, isViewportDimension, number, parseColor, parseShadow, readInsets, splitCSSList, withTimeout } from './utils';
 import { authoredDimension, inferSizing, inferTextWidth, isSingleTextLine } from './sizing';
 import { buildGridRows, parseGrid } from './grid';
@@ -132,6 +132,33 @@ function readLayout(style: CSSStyleDeclaration, element?: Element): ParsedLayout
   };
 }
 
+/** Resolve CSS insets in an isolated containing block with explicit viewport dimensions. */
+function readFixedInsets(element: Element, layout: ParsedLayout, style: CSSStyleDeclaration, viewport: ViewportPreset): FixedInsets {
+  const doc = element.ownerDocument;
+  const container = doc.createElement('div'), probe = doc.createElement('div');
+  const set = (el: HTMLElement, values: Record<string, string>) => {
+    for (const [key, value] of Object.entries(values)) el.style.setProperty(key, value, 'important');
+  };
+  set(container, { all: 'initial', position: 'fixed', left: '0', top: '0', width: `${viewport.width}px`, height: `${viewport.height}px`, visibility: 'hidden', 'pointer-events': 'none', contain: 'strict' });
+  set(probe, { all: 'initial', position: 'absolute', width: '0', height: '0', 'font-size': style.fontSize, 'font-family': style.fontFamily, 'font-weight': style.fontWeight, 'line-height': style.lineHeight });
+  container.append(probe);
+  // Outside body, so it cannot enter the parsed tree or become a normal-flow child.
+  doc.documentElement.append(container);
+  try {
+    const result: FixedInsets = { top: null, right: null, bottom: null, left: null };
+    for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+      const value = layout.offsets[side];
+      if (value === 'auto') continue;
+      // Use one inset at a time; opposing insets must not constrain the measurement probe.
+      probe.style.setProperty(side, value, 'important');
+      const resolved = doc.defaultView!.getComputedStyle(probe).getPropertyValue(side);
+      if (/^-?\d*\.?\d+px$/.test(resolved)) result[side] = number(resolved);
+      probe.style.setProperty(side, 'auto', 'important');
+    }
+    return result;
+  } finally { container.remove(); }
+}
+
 export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportOptions): Promise<ParsedDocument> {
   options = { ...IMPORT_DEFAULTS, ...options };
   const doc = rendered.document;
@@ -200,6 +227,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       style: readStyle(style), children: [], source: { selector: selector(el), id: el.id, classNames: [...el.classList], styleless: !el.hasAttribute('style') },
       cssVariables: readCSSVariables(style, variableNames, selector(el))
     };
+    if (node.layout.position === 'fixed') node.layout.fixedInsets = readFixedInsets(el, node.layout, style, { width: options.viewport, height: options.viewportHeight });
     count++;
     if (node.layout.position === 'fixed') warn('FIXED_ELEMENT', name, '선택한 Viewport 기준 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
     else if (node.layout.absolute) warn('ABSOLUTE_ELEMENT', name, '절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');

@@ -2,6 +2,8 @@ export type SizingMode = 'FIXED' | 'FILL' | 'HUG';
 export interface Insets { top: number; right: number; bottom: number; left: number }
 export interface Bounds { x: number; y: number; width: number; height: number }
 export interface Color { r: number; g: number; b: number; a: number }
+export interface ViewportPreset { width: number; height: number }
+export interface FixedInsets { top: number | null; right: number | null; bottom: number | null; left: number | null }
 export interface ParsedLayout {
   display: string;
   direction: 'HORIZONTAL' | 'VERTICAL' | 'NONE';
@@ -19,6 +21,7 @@ export interface ParsedLayout {
   basis: string;
   zIndex: number | null;
   offsets: { top: string; right: string; bottom: string; left: string };
+  fixedInsets?: FixedInsets; // CSS inset lengths resolved against the selected viewport, never the document.
   alignSelf: string;
   order: number;
   wrap: boolean;
@@ -108,5 +111,11 @@ export type MainMessage =
   | { type: 'CONVERSION_COMPLETE'; requestId: string; payload: { success: true; report: ConversionReport } }
   | { type: 'CONVERSION_ERROR'; requestId: string; payload: { success: false; message: string } };
 export const LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3000, depth: 80, loadMs: 8000, dimension: 100000 } as const;
-export const VIEWPORT = { width: 1440, height: 900, minDimension: 1, maxDimension: 10000 } as const;
+export const VIEWPORT_PRESETS: Readonly<Record<string, Readonly<ViewportPreset>>> = {
+  '1440': { width: 1440, height: 900 },
+  '1280': { width: 1280, height: 800 },
+  '768': { width: 768, height: 1024 },
+  '375': { width: 375, height: 812 }
+};
+export const VIEWPORT = { ...VIEWPORT_PRESETS['1440']!, minDimension: 1, maxDimension: 10000 } as const;
 export const IMPORT_DEFAULTS = { images: true, shadows: true, optimizeWrappers: true, debug: false } as const;

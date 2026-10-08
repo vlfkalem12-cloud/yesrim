@@ -140,6 +140,31 @@ test('Repeated fixed-position conversions use each viewport selected in the actu
   } finally { await session.page.close(); }
 });
 
+test('Viewport presets include height, round-trip custom dimensions and anchor fixed layers independently of the document', async () => {
+  const session = await openSession();
+  const content = (await readFile('test/fixed-position-regression.html', 'utf8')).replace('#clipped-parent { position: relative;', '#clipped-parent { transform: translateZ(0); position: relative;');
+  try {
+    for (const [index, [preset, width, height]] of [['1440', 1440, 900], ['1280', 1280, 800], ['768', 768, 1024], ['375', 375, 812]].entries()) {
+      await choose(session, 'fixed-presets.html', content);
+      await session.ui.locator('#viewport').selectOption(preset);
+      assert.equal(await session.ui.locator('#viewport-width').inputValue(), String(width));
+      assert.equal(await session.ui.locator('#viewport-height').inputValue(), String(height));
+      await session.ui.locator('#viewport-height').fill(String(height + 1));
+      assert.equal(await session.ui.locator('#viewport').inputValue(), 'custom');
+      await session.ui.locator('#viewport-height').fill(String(height));
+      assert.equal(await session.ui.locator('#viewport').inputValue(), preset);
+      await convertOnce(session); await assertUnlocked(session, 'success');
+      const doc = session.requests[index].payload;
+      assert.deepEqual([doc.options.viewport, doc.options.viewportHeight], [width, height]);
+      const root = session.mock.figma.currentPage.children[index], toolbar = root.children.find(node => node.name === 'fixed-toolbar');
+      assert.ok(root.height > 2000);
+      assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, height - 76, width - 240, 76]);
+      assert.equal(toolbar.constraints.horizontal, 'MIN'); assert.equal(toolbar.constraints.vertical, 'MIN');
+      assert.equal(root.numberOfFixedChildren, 3);
+    }
+  } finally { await session.page.close(); }
+});
+
 test('Main conversion failure releases UI controls and allows the same HTML to succeed next time', async () => {
   const session = await openSession({ failFrameOnce: true });
   try {

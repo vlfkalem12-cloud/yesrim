@@ -95,6 +95,10 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
     const gradient = node.style.backgroundGradient;
     if (gradient && (![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || (index > 0 && stop.position < gradient.stops[index - 1]!.position) || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every(value => finite(value, 1) && value >= 0)))) throw new Error('잘못된 Gradient 데이터입니다.');
     if (!['HORIZONTAL', 'VERTICAL', 'NONE'].includes(node.layout.direction) || !['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'].includes(node.layout.justify) || !['MIN', 'CENTER', 'MAX', 'BASELINE'].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error('잘못된 레이아웃 데이터입니다.');
+    if (node.layout.fixedInsets && !(['top', 'right', 'bottom', 'left'] as const).every(side => {
+      const value = node.layout.fixedInsets![side];
+      return value === null || finite(value);
+    })) throw new Error('잘못된 Fixed Viewport 좌표입니다.');
     for (const inset of [node.layout.padding, node.layout.margin, node.style.borderWidths]) if (!inset || ![inset.top, inset.right, inset.bottom, inset.left].every(v => finite(v))) throw new Error('잘못된 여백 데이터입니다.');
     if (![node.rect.x, node.rect.y, node.rect.width, node.rect.height, node.style.opacity, node.style.fontSize, node.style.fontWeight, node.style.letterSpacing, ...node.style.radii].every(v => finite(v))) throw new Error('잘못된 스타일 치수입니다.');
     for (const color of [node.style.background, node.style.color, node.style.shadow?.color, ...node.style.borderColors]) if (color && ![color.r, color.g, color.b, color.a].every(v => finite(v, 1) && v >= 0)) throw new Error('잘못된 색상입니다.');
@@ -270,6 +274,12 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         // Hug text can change size with the loaded Figma font; retain authored right/bottom anchors.
         if (offsets.left === 'auto' && offsets.right !== 'auto') node.x += parsed.rect.width - node.width;
         if (offsets.top === 'auto' && offsets.bottom !== 'auto') node.y += parsed.rect.height - node.height;
+        // A fixed parent may have been resized from a DOM containing block to the viewport.
+        // Its absolute descendants keep their own parent anchors, never viewport anchors.
+        if (isFixed(parentParsed)) {
+          if (offsets.left === 'auto' && offsets.right !== 'auto') node.x += parent.width - parentParsed.rect.width;
+          if (offsets.top === 'auto' && offsets.bottom !== 'auto') node.y += parent.height - parentParsed.rect.height;
+        }
         node.constraints = { horizontal: offsets.left !== 'auto' && offsets.right !== 'auto' ? 'STRETCH' : offsets.right !== 'auto' ? 'MAX' : 'MIN', vertical: offsets.top !== 'auto' && offsets.bottom !== 'auto' ? 'STRETCH' : offsets.bottom !== 'auto' ? 'MAX' : 'MIN' };
       }
     }
@@ -277,15 +287,39 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   function placeFixed(node: EditableNode, parsed: ParsedNode, viewportFrame: FrameNode): void {
     viewportFrame.appendChild(node);
     if (viewportFrame.layoutMode !== 'NONE') node.layoutPositioning = 'ABSOLUTE';
-    // The browser measured this rect in the selected viewport, resolving %, calc(), and margins.
-    // Preserve those used insets when a Hug node changes size with its Figma font.
-    const right = doc.options.viewport - parsed.rect.x - parsed.rect.width;
-    const bottom = doc.options.viewportHeight - parsed.rect.y - parsed.rect.height;
-    const offsets = parsed.layout.offsets;
-    node.x = offsets.left === 'auto' && offsets.right !== 'auto' ? doc.options.viewport - right - node.width : parsed.rect.x;
-    node.y = offsets.top === 'auto' && offsets.bottom !== 'auto' ? doc.options.viewportHeight - bottom - node.height : parsed.rect.y;
+    const { viewport: width, viewportHeight: height } = doc.options;
+    // Compatibility with earlier version-1 JSON: resolve simple CSS lengths without a DOM.
+    const length = (value: string, extent: number): number | null => /^-?\d*\.?\d+(px|%)$/.test(value) ? parseFloat(value) * (value.endsWith('%') ? extent / 100 : 1) : null;
+    const { top, right, bottom, left } = parsed.layout.fixedInsets || {
+      top: length(parsed.layout.offsets.top, height), right: length(parsed.layout.offsets.right, width),
+      bottom: length(parsed.layout.offsets.bottom, height), left: length(parsed.layout.offsets.left, width)
+    };
+    const margin = parsed.layout.margin;
+    // Auto sizes with opposing insets also use the viewport, even if the measured DOM parent is narrower/taller.
+    const stretchedWidth = parsed.size.authoredWidth === 'auto' && left !== null && right !== null;
+    const stretchedHeight = parsed.size.authoredHeight === 'auto' && top !== null && bottom !== null;
+    if (stretchedWidth || stretchedHeight) {
+      const bounded = (value: number, min: number | null | undefined, max: number | null | undefined) => clamp(Math.max(min ?? 0, Math.min(max ?? LIMITS.dimension, value)), 0.01);
+      const horizontalSizing = node.layoutSizingHorizontal, verticalSizing = node.layoutSizingVertical;
+      node.resizeWithoutConstraints(
+        stretchedWidth ? bounded(width - left! - right! - margin.left - margin.right, parsed.size.minWidth, parsed.size.maxWidth) : node.width,
+        stretchedHeight ? bounded(height - top! - bottom! - margin.top - margin.bottom, parsed.size.minHeight, parsed.size.maxHeight) : node.height
+      );
+      // Figma resize can turn both axes into Fixed. Preserve the other axis's existing Hug policy.
+      if (node.type === 'FRAME' && node.layoutMode !== 'NONE') {
+        try { node.layoutSizingHorizontal = horizontalSizing; node.layoutSizingVertical = verticalSizing; }
+        catch (error) { warn('SIZING_API', parsed.name, `Viewport 크기는 유지하지만 일부 크기 설정을 복원하지 못했습니다: ${errorMessage(error)}`); }
+      }
+    }
+    // Do not derive right/bottom from the source rect: its containing block may be a tall document parent.
+    node.x = left !== null ? left + margin.left : right !== null ? width - right - margin.right - node.width : parsed.rect.x;
+    node.y = top !== null ? top + margin.top : bottom !== null ? height - bottom - margin.bottom - node.height : parsed.rect.y;
     // MAX/STRETCH would anchor to the full document height, not the selected viewport height.
     node.constraints = { horizontal: 'MIN', vertical: 'MIN' };
+    if (doc.options.debug) {
+      node.setPluginData('html-fixed-position', JSON.stringify({ viewport: { width, height }, x: node.x, y: node.y }));
+      warn('FIXED_POSITION', parsed.name, `[fixed] viewport: ${width}×${height}, x: ${node.x}, y: ${node.y}`);
+    }
   }
   function countNode(node: EditableNode): void {
     report.total++;

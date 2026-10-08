@@ -2,7 +2,13 @@
 (() => {
   // src/types.ts
   var LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3e3, depth: 80, loadMs: 8e3, dimension: 1e5 };
-  var VIEWPORT = { width: 1440, height: 900, minDimension: 1, maxDimension: 1e4 };
+  var VIEWPORT_PRESETS = {
+    "1440": { width: 1440, height: 900 },
+    "1280": { width: 1280, height: 800 },
+    "768": { width: 768, height: 1024 },
+    "375": { width: 375, height: 812 }
+  };
+  var VIEWPORT = { ...VIEWPORT_PRESETS["1440"], minDimension: 1, maxDimension: 1e4 };
 
   // src/utils.ts
   function isViewportDimension(value) {
@@ -149,6 +155,10 @@
       const gradient = node.style.backgroundGradient;
       if (gradient && (![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || index > 0 && stop.position < gradient.stops[index - 1].position || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every((value2) => finite(value2, 1) && value2 >= 0)))) throw new Error("\uC798\uBABB\uB41C Gradient \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (!["HORIZONTAL", "VERTICAL", "NONE"].includes(node.layout.direction) || !["MIN", "CENTER", "MAX", "SPACE_BETWEEN"].includes(node.layout.justify) || !["MIN", "CENTER", "MAX", "BASELINE"].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error("\uC798\uBABB\uB41C \uB808\uC774\uC544\uC6C3 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.layout.fixedInsets && !["top", "right", "bottom", "left"].every((side) => {
+        const value2 = node.layout.fixedInsets[side];
+        return value2 === null || finite(value2);
+      })) throw new Error("\uC798\uBABB\uB41C Fixed Viewport \uC88C\uD45C\uC785\uB2C8\uB2E4.");
       for (const inset of [node.layout.padding, node.layout.margin, node.style.borderWidths]) if (!inset || ![inset.top, inset.right, inset.bottom, inset.left].every((v) => finite(v))) throw new Error("\uC798\uBABB\uB41C \uC5EC\uBC31 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (![node.rect.x, node.rect.y, node.rect.width, node.rect.height, node.style.opacity, node.style.fontSize, node.style.fontWeight, node.style.letterSpacing, ...node.style.radii].every((v) => finite(v))) throw new Error("\uC798\uBABB\uB41C \uC2A4\uD0C0\uC77C \uCE58\uC218\uC785\uB2C8\uB2E4.");
       for (const color of [node.style.background, node.style.color, node.style.shadow?.color, ...node.style.borderColors]) if (color && ![color.r, color.g, color.b, color.a].every((v) => finite(v, 1) && v >= 0)) throw new Error("\uC798\uBABB\uB41C \uC0C9\uC0C1\uC785\uB2C8\uB2E4.");
@@ -334,6 +344,10 @@
           const offsets = parsed.layout.offsets;
           if (offsets.left === "auto" && offsets.right !== "auto") node.x += parsed.rect.width - node.width;
           if (offsets.top === "auto" && offsets.bottom !== "auto") node.y += parsed.rect.height - node.height;
+          if (isFixed(parentParsed)) {
+            if (offsets.left === "auto" && offsets.right !== "auto") node.x += parent.width - parentParsed.rect.width;
+            if (offsets.top === "auto" && offsets.bottom !== "auto") node.y += parent.height - parentParsed.rect.height;
+          }
           node.constraints = { horizontal: offsets.left !== "auto" && offsets.right !== "auto" ? "STRETCH" : offsets.right !== "auto" ? "MAX" : "MIN", vertical: offsets.top !== "auto" && offsets.bottom !== "auto" ? "STRETCH" : offsets.bottom !== "auto" ? "MAX" : "MIN" };
         }
       }
@@ -341,12 +355,40 @@
     function placeFixed(node, parsed, viewportFrame) {
       viewportFrame.appendChild(node);
       if (viewportFrame.layoutMode !== "NONE") node.layoutPositioning = "ABSOLUTE";
-      const right = doc.options.viewport - parsed.rect.x - parsed.rect.width;
-      const bottom = doc.options.viewportHeight - parsed.rect.y - parsed.rect.height;
-      const offsets = parsed.layout.offsets;
-      node.x = offsets.left === "auto" && offsets.right !== "auto" ? doc.options.viewport - right - node.width : parsed.rect.x;
-      node.y = offsets.top === "auto" && offsets.bottom !== "auto" ? doc.options.viewportHeight - bottom - node.height : parsed.rect.y;
+      const { viewport: width, viewportHeight: height } = doc.options;
+      const length = (value, extent) => /^-?\d*\.?\d+(px|%)$/.test(value) ? parseFloat(value) * (value.endsWith("%") ? extent / 100 : 1) : null;
+      const { top, right, bottom, left } = parsed.layout.fixedInsets || {
+        top: length(parsed.layout.offsets.top, height),
+        right: length(parsed.layout.offsets.right, width),
+        bottom: length(parsed.layout.offsets.bottom, height),
+        left: length(parsed.layout.offsets.left, width)
+      };
+      const margin = parsed.layout.margin;
+      const stretchedWidth = parsed.size.authoredWidth === "auto" && left !== null && right !== null;
+      const stretchedHeight = parsed.size.authoredHeight === "auto" && top !== null && bottom !== null;
+      if (stretchedWidth || stretchedHeight) {
+        const bounded = (value, min, max) => clamp(Math.max(min ?? 0, Math.min(max ?? LIMITS.dimension, value)), 0.01);
+        const horizontalSizing = node.layoutSizingHorizontal, verticalSizing = node.layoutSizingVertical;
+        node.resizeWithoutConstraints(
+          stretchedWidth ? bounded(width - left - right - margin.left - margin.right, parsed.size.minWidth, parsed.size.maxWidth) : node.width,
+          stretchedHeight ? bounded(height - top - bottom - margin.top - margin.bottom, parsed.size.minHeight, parsed.size.maxHeight) : node.height
+        );
+        if (node.type === "FRAME" && node.layoutMode !== "NONE") {
+          try {
+            node.layoutSizingHorizontal = horizontalSizing;
+            node.layoutSizingVertical = verticalSizing;
+          } catch (error) {
+            warn("SIZING_API", parsed.name, `Viewport \uD06C\uAE30\uB294 \uC720\uC9C0\uD558\uC9C0\uB9CC \uC77C\uBD80 \uD06C\uAE30 \uC124\uC815\uC744 \uBCF5\uC6D0\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${errorMessage(error)}`);
+          }
+        }
+      }
+      node.x = left !== null ? left + margin.left : right !== null ? width - right - margin.right - node.width : parsed.rect.x;
+      node.y = top !== null ? top + margin.top : bottom !== null ? height - bottom - margin.bottom - node.height : parsed.rect.y;
       node.constraints = { horizontal: "MIN", vertical: "MIN" };
+      if (doc.options.debug) {
+        node.setPluginData("html-fixed-position", JSON.stringify({ viewport: { width, height }, x: node.x, y: node.y }));
+        warn("FIXED_POSITION", parsed.name, `[fixed] viewport: ${width}\xD7${height}, x: ${node.x}, y: ${node.y}`);
+      }
     }
     function countNode(node) {
       report.total++;

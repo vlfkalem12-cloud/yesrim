@@ -381,6 +381,23 @@ test('Fixed bottom toolbar uses the viewport, escaping a long clipped parent whi
   assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
 });
 
+test('Fixed viewport anchors ignore document-relative measured rects inside a transformed long form parent', async () => {
+  const html = '<style>body{margin:0}main{display:flex;flex-direction:column;padding-top:50px;height:3000px}.form{position:relative;transform:translateZ(0);width:800px;height:1800px}.action{position:fixed;display:flex;left:240px;right:0;bottom:0;height:76px;background:white}.absolute{position:absolute;left:240px;right:0;bottom:0;height:76px}.inner-absolute{position:absolute;right:8px;bottom:4px;width:12px;height:12px}</style><main><section class="form"><div class="action"><input value="김"><span>Save</span><div class="inner-absolute"></div></div><div class="absolute"></div></section></main>';
+  const { doc, measurements } = await parseWithBrowserRects(html, ['.action', '.form', '.absolute']);
+  assert.ok(measurements['.action'].y > 1500, 'reproduce a DOM rect positioned inside the tall containing block');
+  assert.equal(measurements['.action'].width, 560, 'source parent is narrower than the viewport');
+  const { frame } = await convert(doc);
+  const action = find(frame, 'action'), absolute = find(frame, 'absolute'), parent = find(frame, 'form');
+  assert.equal(action.parent, frame);
+  assert.deepEqual([action.x, action.y, action.width, action.height], [240, 824, 1200, 76]);
+  assert.equal(find(action, 'input').children[0].characters, '김');
+  const innerAbsolute = find(action, 'inner-absolute');
+  assert.equal(innerAbsolute.parent, action);
+  assert.deepEqual([innerAbsolute.x, innerAbsolute.y], [1180, 60]);
+  assert.equal(absolute.parent, parent);
+  assert.equal(absolute.y, measurements['.absolute'].y - measurements['.form'].y);
+});
+
 test('Fixed offsets follow custom viewport dimensions, percentages and Hug font width changes', async () => {
   const html = await readFile('test/fixed-position-regression.html', 'utf8');
   for (const [viewport, viewportHeight] of [[1111, 777], [375, 812], [1440, 500]]) {
@@ -388,8 +405,8 @@ test('Fixed offsets follow custom viewport dimensions, percentages and Hug font 
     const { frame } = await convert(doc, { intrinsicWidthScale: 1.25, textSizingShift: { x: 13, y: -7 } });
     const toolbar = find(frame, 'fixed-toolbar'), top = find(frame, 'fixed-top'), label = find(frame, 'fixed-label');
     assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, viewportHeight - 76, viewport - 240, 76]);
-    assert.equal(top.x, measurements['#fixed-top'].x);
-    assert.equal(top.y, measurements['#fixed-top'].y);
+    assert.ok(Math.abs(top.x - measurements['#fixed-top'].x) < .001, 'CSSOM inset serialization keeps browser subpixel position');
+    assert.ok(Math.abs(top.y - measurements['#fixed-top'].y) < .001);
     assert.ok(Math.abs(top.x - viewport * .1) < .02);
     assert.ok(Math.abs(top.y - viewportHeight * .05) < .02);
     assert.equal(viewport - label.x - label.width, 20);
@@ -410,6 +427,42 @@ test('Opposing fixed insets retain auto-sized flex boxes instead of Hug sizing; 
   for (const name of ['stretch', 'margin', 'center']) {
     const target = find(frame, name), measured = measurements[`.${name}`];
     assert.deepEqual([target.x, target.y, target.width, target.height], [measured.x, measured.y, measured.width, measured.height], name);
+  }
+});
+
+test('Fixed insets resolve against the viewport for percent, calc and font units despite tall containing blocks', async () => {
+  for (const containingBlock of ['transform:translateZ(0)', 'filter:blur(0)', 'contain:paint']) {
+    const html = `<style>body{margin:0}main{height:3000px}.parent{${containingBlock};width:800px;height:1800px;margin:60px}.percent{position:fixed;left:10%;top:5%;width:90px;height:30px}.calc{position:fixed;right:calc(10% + 5px);bottom:calc(5% + 4px);width:90px;height:30px}.units{position:fixed;left:2em;top:1.5rem;width:90px;height:30px;font-size:20px}.stretch{position:fixed;display:flex;left:30px;right:40px;top:50px;bottom:60px}.constrained{position:fixed;display:flex;left:30px;right:40px;top:50px;bottom:60px;max-width:500px;min-height:850px}</style><main><div class="parent"><div class="percent">Percent</div><div class="calc">Calc</div><div class="units">Font units</div><div class="stretch">Stretch</div><div class="constrained">Min/max</div></div></main>`;
+    const { frame, report } = await convert(await parse(html));
+    const percent = find(frame, 'percent'), calc = find(frame, 'calc'), units = find(frame, 'units'), stretch = find(frame, 'stretch'), constrained = find(frame, 'constrained');
+    assert.deepEqual([percent.x, percent.y], [144, 45], containingBlock);
+    assert.deepEqual([calc.x, calc.y], [1201, 821], containingBlock);
+    assert.deepEqual([units.x, units.y], [40, 24], containingBlock);
+    assert.deepEqual([stretch.x, stretch.y, stretch.width, stretch.height], [30, 50, 1370, 790], containingBlock);
+    assert.deepEqual([constrained.width, constrained.height], [500, 850], containingBlock);
+    assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+  }
+});
+
+test('Fixed bottom anchors are invariant to document height, preserve legacy JSON and expose viewport coordinates in Debug', async () => {
+  for (const documentHeight of [1500, 1800, 3600]) {
+    const html = `<style>body{margin:0}main{display:flex;flex-direction:column;height:${documentHeight}px}.form{transform:translateZ(0);height:${documentHeight}px}.action{position:fixed;left:240px;right:0;bottom:0;height:76px;background:white}</style><main><div class="form"><div class="action"><input value="김"><textarea>현재 내용</textarea><select><option selected>선택 항목</option></select></div></div></main>`;
+    const doc = await parse(html, { debug: true });
+    const source = parsedNodes(doc.root).find(node => node.name === 'action');
+    assert.deepEqual(source.layout.fixedInsets, { top: null, right: 0, bottom: 0, left: 240 });
+    assert.ok(doc.root.size.height >= documentHeight);
+    for (const legacy of [false, true]) {
+      if (legacy) delete source.layout.fixedInsets;
+      const { frame, report } = await convert(doc);
+      const action = flatten(frame).find(node => node.getPluginData('html-source') === 'div.action');
+      assert.equal(action.parent, frame);
+      assert.deepEqual([action.x, action.y, action.width, action.height], [240, 824, 1200, 76]);
+      assert.deepEqual(JSON.parse(action.getPluginData('html-fixed-position')), { viewport: { width: 1440, height: 900 }, x: 240, y: 824 });
+      assert.ok(report.warnings.some(warning => warning.code === 'FIXED_POSITION' && warning.message === '[fixed] viewport: 1440×900, x: 240, y: 824'));
+      assert.deepEqual(flatten(action).filter(node => node.type === 'TEXT').map(node => node.characters), ['김', '현재 내용', '선택 항목']);
+    }
+    source.layout.fixedInsets = { top: null, right: 0, bottom: NaN, left: 240 };
+    await assert.rejects(() => convert(doc), /Fixed Viewport/);
   }
 });
 
@@ -486,12 +539,12 @@ test('real UI: file upload, mobile viewport, conversion message and report rende
     await page.waitForFunction(() => !document.getElementById('convert').disabled);
     await page.locator('#viewport').selectOption('375');
     assert.equal(await page.locator('#viewport-width').inputValue(), '375');
-    assert.equal(await page.locator('#viewport-height').inputValue(), '900');
+    assert.equal(await page.locator('#viewport-height').inputValue(), '812');
     await page.locator('#convert').click();
     await page.waitForFunction(() => !!window.importMessage);
     const message = await page.evaluate(() => window.importMessage);
     assert.equal(message.payload.root.size.width, 375);
-    assert.equal(message.payload.options.viewportHeight, 900);
+    assert.equal(message.payload.options.viewportHeight, 812);
     const { report } = await convert(message.payload);
     await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
     await page.waitForFunction(() => document.getElementById('status').dataset.state === 'success');
@@ -544,7 +597,7 @@ test('custom viewport inputs drive CSS viewport units, media queries and Figma w
     await page.waitForFunction(() => !document.getElementById('viewport-width').disabled);
     await page.locator('#viewport').selectOption('1280');
     assert.equal(await page.locator('#viewport-width').inputValue(), '1280');
-    assert.equal(await page.locator('#viewport-height').inputValue(), '900');
+    assert.equal(await page.locator('#viewport-height').inputValue(), '800');
   } finally { await page.close(); }
 });
 

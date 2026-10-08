@@ -63,7 +63,7 @@
   <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">
   <div class="field">
     <label class="field-label" for="viewport">Viewport</label>
-    <select id="viewport"><option value="1440">Desktop 1440</option><option value="1280">Desktop 1280</option><option value="768">Tablet 768</option><option value="375">Mobile 375</option><option value="custom">직접 입력</option></select>
+    <select id="viewport"><option value="1440">Desktop 1440 · 1440 × 900</option><option value="1280">Desktop 1280 · 1280 × 800</option><option value="768">Tablet 768 · 768 × 1024</option><option value="375">Mobile 375 · 375 × 812</option><option value="custom">직접 입력</option></select>
     <div class="dimensions">
       <label class="dimension" for="viewport-width"><span>너비 (px)</span><input id="viewport-width" type="number" min="1" max="10000" step="1" value="1440" inputmode="numeric" aria-describedby="viewport-help viewport-error"></label>
       <label class="dimension" for="viewport-height"><span>높이 (px)</span><input id="viewport-height" type="number" min="1" max="10000" step="1" value="900" inputmode="numeric" aria-describedby="viewport-help viewport-error"></label>
@@ -92,7 +92,13 @@
 (() => {
   // src/types.ts
   var LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3e3, depth: 80, loadMs: 8e3, dimension: 1e5 };
-  var VIEWPORT = { width: 1440, height: 900, minDimension: 1, maxDimension: 1e4 };
+  var VIEWPORT_PRESETS = {
+    "1440": { width: 1440, height: 900 },
+    "1280": { width: 1280, height: 800 },
+    "768": { width: 768, height: 1024 },
+    "375": { width: 375, height: 812 }
+  };
+  var VIEWPORT = { ...VIEWPORT_PRESETS["1440"], minDimension: 1, maxDimension: 1e4 };
   var IMPORT_DEFAULTS = { images: true, shadows: true, optimizeWrappers: true, debug: false };
 
   // src/utils.ts
@@ -818,6 +824,31 @@
       wrap: flex && style.flexWrap !== "nowrap"
     };
   }
+  function readFixedInsets(element, layout, style, viewport2) {
+    const doc = element.ownerDocument;
+    const container = doc.createElement("div"), probe = doc.createElement("div");
+    const set = (el, values) => {
+      for (const [key, value] of Object.entries(values)) el.style.setProperty(key, value, "important");
+    };
+    set(container, { all: "initial", position: "fixed", left: "0", top: "0", width: `${viewport2.width}px`, height: `${viewport2.height}px`, visibility: "hidden", "pointer-events": "none", contain: "strict" });
+    set(probe, { all: "initial", position: "absolute", width: "0", height: "0", "font-size": style.fontSize, "font-family": style.fontFamily, "font-weight": style.fontWeight, "line-height": style.lineHeight });
+    container.append(probe);
+    doc.documentElement.append(container);
+    try {
+      const result = { top: null, right: null, bottom: null, left: null };
+      for (const side of ["top", "right", "bottom", "left"]) {
+        const value = layout.offsets[side];
+        if (value === "auto") continue;
+        probe.style.setProperty(side, value, "important");
+        const resolved = doc.defaultView.getComputedStyle(probe).getPropertyValue(side);
+        if (/^-?\d*\.?\d+px$/.test(resolved)) result[side] = number(resolved);
+        probe.style.setProperty(side, "auto", "important");
+      }
+      return result;
+    } finally {
+      container.remove();
+    }
+  }
   async function parseRenderedHTML(rendered, options) {
     options = { ...IMPORT_DEFAULTS, ...options };
     const doc = rendered.document;
@@ -902,6 +933,7 @@
         source: { selector: selector(el), id: el.id, classNames: [...el.classList], styleless: !el.hasAttribute("style") },
         cssVariables: readCSSVariables(style, variableNames, selector(el))
       };
+      if (node.layout.position === "fixed") node.layout.fixedInsets = readFixedInsets(el, node.layout, style, { width: options.viewport, height: options.viewportHeight });
       count++;
       if (node.layout.position === "fixed") warn("FIXED_ELEMENT", name, "\uC120\uD0DD\uD55C Viewport \uAE30\uC900 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
       else if (node.layout.absolute) warn("ABSOLUTE_ELEMENT", name, "\uC808\uB300 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
@@ -1153,14 +1185,15 @@
     return widthValid && heightValid;
   }
   viewport.addEventListener("change", () => {
-    if (viewport.value !== "custom") {
-      viewportWidth.value = viewport.value;
-      viewportHeight.value = String(VIEWPORT.height);
+    const preset = VIEWPORT_PRESETS[viewport.value];
+    if (preset) {
+      viewportWidth.value = String(preset.width);
+      viewportHeight.value = String(preset.height);
     }
     validateViewport();
   });
   for (const field of [viewportWidth, viewportHeight]) field.addEventListener("input", () => {
-    viewport.value = viewportHeight.valueAsNumber === VIEWPORT.height && ["1440", "1280", "768", "375"].includes(viewportWidth.value) ? viewportWidth.value : "custom";
+    viewport.value = Object.entries(VIEWPORT_PRESETS).find(([, preset]) => preset.width === viewportWidth.valueAsNumber && preset.height === viewportHeight.valueAsNumber)?.[0] || "custom";
     validateViewport();
   });
   function renderControls() {

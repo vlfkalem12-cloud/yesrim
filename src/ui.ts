@@ -1,5 +1,5 @@
 import { parseHTML } from './parser';
-import { LIMITS, VIEWPORT, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type ParsedDocument, type UIMessage } from './types';
+import { LIMITS, VIEWPORT_PRESETS, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type ParsedDocument, type UIMessage } from './types';
 import { errorMessage, isViewportDimension } from './utils';
 
 function get<T extends HTMLElement>(id: string): T {
@@ -46,14 +46,15 @@ function validateViewport(): boolean {
   return widthValid && heightValid;
 }
 viewport.addEventListener('change', () => {
-  if (viewport.value !== 'custom') {
-    viewportWidth.value = viewport.value;
-    viewportHeight.value = String(VIEWPORT.height);
+  const preset = VIEWPORT_PRESETS[viewport.value];
+  if (preset) {
+    viewportWidth.value = String(preset.width);
+    viewportHeight.value = String(preset.height);
   }
   validateViewport();
 });
 for (const field of [viewportWidth, viewportHeight]) field.addEventListener('input', () => {
-  viewport.value = viewportHeight.valueAsNumber === VIEWPORT.height && ['1440', '1280', '768', '375'].includes(viewportWidth.value) ? viewportWidth.value : 'custom';
+  viewport.value = Object.entries(VIEWPORT_PRESETS).find(([, preset]) => preset.width === viewportWidth.valueAsNumber && preset.height === viewportHeight.valueAsNumber)?.[0] || 'custom';
   validateViewport();
 });
 function renderControls(): void {

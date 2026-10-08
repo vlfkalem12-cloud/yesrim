@@ -38,7 +38,7 @@ npm run dev
 
 변환 상태는 idle → converting → success / error로 관리합니다. 생성 완료 또는 오류 후 Loading이 종료되고 파일 선택·Convert·Drag & Drop이 다시 활성화됩니다. 같은 HTML 파일도 연속으로 선택하거나 바로 다시 변환할 수 있으며 플러그인을 닫을 필요가 없습니다. 새 HTML 파일을 선택하면 idle 상태로 초기화됩니다. 완료 보고서 표시 오류가 있어도 다음 변환은 가능합니다.
 
-Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 있습니다. 기본값은 1440 × 900px입니다. 기존 Desktop 1440 / Desktop 1280 / Tablet 768 / Mobile 375 프리셋도 사용할 수 있으며, 프리셋을 선택하면 높이는 900px로 설정됩니다. 값을 수정하면 직접 입력 모드로 전환됩니다.
+Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 있습니다. `ViewportPreset` 타입과 `VIEWPORT_PRESETS`는 문서 크기와 분리된 너비·높이 쌍입니다. 기본값은 Desktop 1440의 1440 × 900px입니다. Desktop 1280은 1280 × 800, Tablet 768은 768 × 1024, Mobile 375는 375 × 812로 설정됩니다. 프리셋 선택 시 두 값이 함께 적용되며, 직접 입력한 너비·높이가 프리셋과 모두 일치할 때만 해당 프리셋으로 표시합니다.
 
 입력한 너비·높이에서 실제 HTML을 렌더링하므로 CSS media query와 `vw` / `vh`가 반영됩니다. 생성되는 최상위 Frame의 너비는 입력값으로 고정하고, **Frame 높이는 콘텐츠에 따라 자동 결정**합니다. 입력한 높이는 HTML을 측정할 때의 viewport 높이입니다. 빈 값, 0, 음수, 소수, 범위 초과는 변환 전에 차단합니다.
 
@@ -107,7 +107,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - 기본 Grid `repeat(2,1fr)` / `repeat(3,1fr)` / `1fr 1fr` / `200px 1fr`는 세로 Auto Layout → 가로 Row → Cell 구조로 변환합니다. `fr` Cell은 Fill, px Cell은 Fixed이며 row-gap / column-gap을 분리합니다. 마지막 행의 빈 Cell은 열 폭을 유지합니다.
 - 양수 Flex 자식 margin은 투명 padding wrapper로 표현합니다. 비 Flex 요소는 브라우저가 측정한 좌표를 유지합니다.
 - Absolute 요소는 Auto Layout 흐름에서 분리하고 부모 기준 상대 좌표를 유지합니다. top / right / bottom / left의 선언 방향에 따라 MIN / MAX / STRETCH constraints를 적용합니다. z-index는 흐름 위치를 유지할 수 있는 범위에서 레이어 순서로 반영합니다.
-- Fixed 요소는 선택한 viewport 너비·높이에서 브라우저가 측정한 위치를 유지하며, 내부 자식을 포함해 최상위 Frame으로 이동합니다. 부모의 overflow clipping과 긴 문서 높이에 의한 bottom 재배치를 피하고, right / bottom Hug 크기 변경도 viewport 기준으로 보정합니다. 양쪽 inset이 지정된 auto 크기는 측정 치수를 유지합니다. Figma API가 지원하면 최상위 Frame의 `numberOfFixedChildren`을 설정하며, 실패 시 좌표·자식을 보존하고 `FIXED_SCROLL` Warning을 남깁니다. Fixed 레이어는 Figma 스크롤 고정 정책에 따라 일반 콘텐츠 위에 배치하고 서로의 z-index 순서를 유지합니다.
+- Fixed 요소의 CSS inset은 선택한 viewport 너비·높이를 가진 별도 측정 공간에서 해석합니다. 원래 rect에서 right / bottom을 역산하지 않으므로 transform / filter / contain 부모의 문서 좌표가 최종 fixed 위치에 섞이지 않습니다. px / percentage / calc / font unit을 해석하고 양쪽 inset의 auto 크기도 viewport 기준으로 계산하며 min/max를 유지합니다. 내부 자식을 포함해 최상위 Frame으로 이동하고, Auto Layout 부모에서는 Absolute Position으로 흐름에서 분리합니다. 내부 absolute 자식의 right / bottom은 최종 fixed 부모 기준으로 유지합니다. Figma API가 지원하면 최상위 Frame의 `numberOfFixedChildren`을 설정하며, 실패 시 좌표·자식을 보존하고 `FIXED_SCROLL` Warning을 남깁니다. Fixed 레이어는 Figma 스크롤 고정 정책에 따라 일반 콘텐츠 위에 배치하고 서로의 z-index 순서를 유지합니다. Debug Mode의 `FIXED_POSITION` 보고서와 `html-fixed-position` plugin data에서 `[fixed] viewport: 1440×900, x: 240, y: 824` 형태의 최종 좌표를 확인할 수 있습니다.
 - hex / rgb(a) / hsl(a) / transparent 색상, 네 방향 border 폭, 네 모서리 radius, 요소별 opacity, overflow hidden / auto / scroll clipping. 부모·자식 opacity는 각각 유지하며 곱한 값을 중복 적용하지 않습니다.
 - 첫 번째 box-shadow를 Drop / Inner Shadow로 변환하며 다중 shadow는 경고합니다.
 - font family / size / weight / italic / line-height / letter-spacing / text-align / text-transform / underline / strikethrough / white-space. 줄바꿈 Text는 측정된 폭 또는 Fill 폭을 사용하고 높이는 자동 결정합니다. nowrap / pre는 줄바꿈을 강제하지 않습니다.
@@ -164,6 +164,6 @@ Gradient 검증은 요청한 4-stop 배경, CSS 방향과 Figma transform의 시
 
 접근성 / Mixed Inline 검증은 clip / inset / 보조 spacing 패턴, Debug 기록, 포커스 후 표시, 작은 SVG·Divider·Progress Bar 보존, Text + Badge / Icon의 스타일·DOM 순서·간격, 순수 Text / br 유지, 줄바꿈의 브라우저 상대 좌표, 옵션 OFF 및 같은 HTML 연속 변환 후 동일한 구조·좌표·스타일을 검사합니다.
 
-Fixed 검증은 긴 문서의 하단 바 (`1440×900`에서 `240,824,1200,76`), 사용자 지정·모바일 viewport, percentage / calc / margin inset, Hug 폰트 치수 변경, 양쪽 inset의 auto 크기, clipped 부모에서 분리, 내부 Absolute·Form·Grid 유지, 중첩 fixed 레이어 순서, 옵션 OFF 및 스크롤 고정 API 실패를 검사합니다. 실제 iframe UI에서 동일 HTML을 viewport 크기를 바꾸며 연속 변환하는 흐름도 확인합니다. 테스트 HTML은 `test/fixed-position-regression.html`입니다.
+Fixed 검증은 긴 문서의 하단 바 (`1440×900`에서 `240,824,1200,76`), 사용자 지정·모바일 viewport, percentage / calc / margin inset, Hug 폰트 치수 변경, 양쪽 inset의 auto 크기, clipped 부모에서 분리, 내부 Absolute·Form·Grid 유지, 중첩 fixed 레이어 순서, 옵션 OFF 및 스크롤 고정 API 실패를 검사합니다. 추가 검증은 transform / filter / contain 부모에서 문서 기준 rect가 생성되는 실패를 재현하고, 1500 / 1800 / 3600px 문서·좁은 부모에서도 viewport 좌표·크기를 유지하는지 검사합니다. 네 preset의 높이, 직접 입력 왕복, font unit / min-max, 기존 version-1 JSON 호환, Debug 좌표와 메시지 검증도 포함합니다. 실제 iframe UI에서 동일 HTML을 viewport 크기와 preset을 바꾸며 연속 변환하는 흐름도 확인합니다. 테스트 HTML은 `test/fixed-position-regression.html`입니다.
 
-전체 60개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+전체 64개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
