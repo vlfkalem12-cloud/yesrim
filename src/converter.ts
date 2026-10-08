@@ -128,6 +128,9 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
       }
     }
     if (!['HORIZONTAL', 'VERTICAL', 'NONE'].includes(node.layout.direction) || !['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'].includes(node.layout.justify) || !['MIN', 'CENTER', 'MAX', 'BASELINE'].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error('잘못된 레이아웃 데이터입니다.');
+    if (node.layout.normalFlow && (node.layout.direction !== 'VERTICAL' || node.layout.wrap ||
+      !['MIN', 'CENTER', 'MAX'].includes(node.layout.normalFlow.align) || !finite(node.layout.normalFlow.gap) || node.layout.normalFlow.gap < 0 ||
+      !node.layout.normalFlow.padding || !(['top', 'right', 'bottom', 'left'] as const).every(side => finite(node.layout.normalFlow!.padding[side]) && node.layout.normalFlow!.padding[side] >= 0))) throw new Error('잘못된 Normal Flow 데이터입니다.');
     if (node.layout.fixedInsets && !(['top', 'right', 'bottom', 'left'] as const).every(side => {
       const value = node.layout.fixedInsets![side];
       return value === null || finite(value);
@@ -296,11 +299,13 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     frame.clipsContent = parsed.style.clipsContent;
     if (frame.layoutMode === 'NONE') return;
     frame.primaryAxisSizingMode = 'FIXED'; frame.counterAxisSizingMode = 'FIXED';
-    frame.primaryAxisAlignItems = parsed.layout.justify;
-    frame.counterAxisAlignItems = parsed.layout.align;
-    frame.itemSpacing = clamp(parsed.layout.gap);
-    frame.paddingTop = clamp(parsed.layout.padding.top); frame.paddingRight = clamp(parsed.layout.padding.right);
-    frame.paddingBottom = clamp(parsed.layout.padding.bottom); frame.paddingLeft = clamp(parsed.layout.padding.left);
+    const flow = parsed.layout.normalFlow;
+    frame.primaryAxisAlignItems = flow ? 'MIN' : parsed.layout.justify;
+    frame.counterAxisAlignItems = flow?.align || parsed.layout.align;
+    frame.itemSpacing = clamp(flow?.gap ?? parsed.layout.gap);
+    const padding = flow?.padding || parsed.layout.padding;
+    frame.paddingTop = clamp(padding.top); frame.paddingRight = clamp(padding.right);
+    frame.paddingBottom = clamp(padding.bottom); frame.paddingLeft = clamp(padding.left);
     frame.strokesIncludedInLayout = true;
     if (parsed.layout.wrapSpacing !== undefined) {
       try { frame.layoutWrap = 'WRAP'; frame.counterAxisSpacing = parsed.layout.wrapSpacing; frame.counterAxisAlignContent = 'AUTO'; }
@@ -360,7 +365,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         display: parsed.layout.display, flexWrap: parsed.layout.wrap, flexGrow: parsed.layout.grow,
         mode: autoFrame || autoParent ? node.layoutSizingVertical : 'FIXED' };
       node.setPluginData('html-height-sizing', JSON.stringify(details));
-      warn('HEIGHT_SIZING', parsed.name, `renderedHeight: ${details.renderedHeight}px\nauthoredHeight: ${details.authoredHeight}\ndisplay: ${details.display}\nflexWrap: ${details.flexWrap}\nflexGrow: ${details.flexGrow}\nFigma Height Mode: ${details.mode}`);
+      warn('HEIGHT_SIZING', parsed.name, `renderedHeight: ${details.renderedHeight}px\nauthoredHeight: ${details.authoredHeight}\ndisplay: ${details.display}\nflexWrap: ${details.flexWrap}\nflexGrow: ${details.flexGrow}\nFigma Height Mode: ${details.mode}\nreason: ${details.reason || 'Existing sizing policy'}`);
     }
   }
   function place(node: EditableNode, parsed: ParsedNode, parent: FrameNode | undefined, parentParsed: ParsedNode | undefined): void {
@@ -494,7 +499,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       // CSS margins have no native Figma equivalent. Add an unpainted padding wrapper in flex flow.
       const margin = parsed.layout.margin;
       const autoParent = !!parent && parent.layoutMode !== 'NONE' && !parsed.layout.absolute;
-      if (autoParent && Object.values(margin).some(v => v !== 0)) {
+      if (autoParent && !parentParsed?.layout.normalFlow && Object.values(margin).some(v => v !== 0)) {
         if (Object.values(margin).some(v => v < 0)) warn('NEGATIVE_MARGIN', parsed.name, '음수 margin은 0으로 단순화했습니다.');
         const top = Math.max(0, margin.top), right = Math.max(0, margin.right), bottom = Math.max(0, margin.bottom), left = Math.max(0, margin.left);
         marginWrapper = figma.createFrame(); marginWrapper.name = `${parsed.name} / margin${doc.options.debug && parsed.source ? ` [${parsed.source.selector} / margin]` : ''}`; marginWrapper.fills = []; marginWrapper.clipsContent = false;

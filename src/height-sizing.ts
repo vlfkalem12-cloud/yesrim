@@ -52,10 +52,52 @@ export function configureContentHeight(node: ParsedNode, element: Element, style
   // Inline/form/table boxes and anonymous wrappers keep their existing layout path.
   const identifiableBox = !!element.id || !!element.classList.length || element.hasAttribute('style') || (element.localName === 'body' && noMargins(node));
   if (style.display !== 'block' || node.size.widthMode === 'HUG' || !identifiableBox || style.transform !== 'none' ||
-    !children.every(child => noMargins(child) && ['block', 'flex', 'grid'].includes(child.layout.display)) ||
-    !matchesVerticalBoxes(node, children)) { reason('Flow cannot safely use vertical Auto Layout'); return; }
-  node.layout.direction = 'VERTICAL'; node.layout.align = 'MIN'; node.layout.justify = 'MIN'; node.layout.gap = 0;
-  node.size.heightMode = 'HUG'; reason('Measured vertical normal flow');
+    !children.every(child => ['block', 'flex', 'grid'].includes(child.layout.display))) { reason('Flow cannot safely use vertical Auto Layout'); return; }
+  if (children.every(noMargins) && matchesVerticalBoxes(node, children)) {
+    node.layout.direction = 'VERTICAL'; node.layout.align = 'MIN'; node.layout.justify = 'MIN'; node.layout.gap = 0;
+    node.size.heightMode = 'HUG'; reason('Measured vertical normal flow'); return;
+  }
+  const flow = measuredBlockFlow(node, element, style, children);
+  if (!flow) { reason('Flow cannot safely use vertical Auto Layout'); return; }
+  // Keep the CSS padding/margins and every existing child. Store only the verified Figma flow geometry.
+  node.layout.direction = 'VERTICAL'; node.layout.normalFlow = flow;
+  node.size.heightMode = 'HUG'; reason('Measured block margins/alignment; ancestor height propagation');
+}
+
+/** One vertical track with uniform measured gaps; complex/overlapping flow keeps its original coordinates. */
+function measuredBlockFlow(parent: ParsedNode, element: Element, style: CSSStyleDeclaration, children: ParsedNode[]): NonNullable<ParsedNode['layout']['normalFlow']> | null {
+  if (parent.layout.reverse || children.some(child => child.layout.order !== 0 || Object.values(child.layout.margin).some(value => value < 0))) return null;
+  for (const child of element.children) {
+    const css = element.ownerDocument.defaultView!.getComputedStyle(child);
+    if (css.display === 'none' || ['absolute', 'fixed'].includes(css.position)) continue;
+    if (css.cssFloat !== 'none' || css.transform !== 'none' || (css.position === 'relative' &&
+      [css.top, css.right, css.bottom, css.left].some(value => !['auto', '0px'].includes(value)))) return null;
+  }
+  const padding = { ...parent.layout.padding };
+  const contentLeft = parent.rect.x + padding.left + parent.style.borderWidths.left;
+  const contentWidth = parent.rect.width - padding.left - padding.right - border(parent, 'x');
+  const candidates = ['MIN', 'CENTER', 'MAX'] as const;
+  const align = candidates.find(candidate => children.every(child =>
+    (candidate === 'MIN' || child.size.widthMode === 'FIXED') && close(child.rect.x, contentLeft +
+      (candidate === 'CENTER' ? (contentWidth - child.rect.width) / 2 : candidate === 'MAX' ? contentWidth - child.rect.width : 0))));
+  if (!align) return null;
+  // A changed font's intrinsic Text width must not move a centered block or affect the Width policy.
+  const leading = children[0]!.rect.y - parent.rect.y - parent.style.borderWidths.top;
+  if (leading < padding.top - 1 || leading > padding.top + children[0]!.layout.margin.top + 1) return null;
+  padding.top = Math.max(padding.top, leading);
+  const gaps = children.slice(1).map((child, index) => child.rect.y - children[index]!.rect.y - children[index]!.rect.height);
+  const gap = Math.max(0, gaps[0] || 0);
+  if (gaps.some((value, index) => value < -.01 || !close(value, gap) || value > children[index]!.layout.margin.bottom + children[index + 1]!.layout.margin.top + 1)) return null;
+  const contents = children.reduce((sum, child) => sum + child.rect.height, 0) + gap * Math.max(0, children.length - 1) + padding.top + border(parent, 'y');
+  const bounded = (height: number) => Math.max(parent.size.minHeight || 0, Math.min(parent.size.maxHeight ?? Infinity, height));
+  const lastMargin = children[children.length - 1]!.layout.margin.bottom;
+  const bottoms = [...new Set([padding.bottom, padding.bottom + lastMargin])].filter(bottom => close(bounded(contents + bottom), parent.rect.height));
+  // A binding min/max height can hide whether the last margin collapses. Do not guess the growth behavior.
+  if (bottoms.length !== 1) return null;
+  padding.bottom = bottoms[0]!;
+  if (style.boxSizing !== 'border-box' && (parent.size.minHeight || parent.size.maxHeight != null) &&
+    padding.top + padding.bottom + border(parent, 'y') > 0) return null;
+  return { gap, padding, align };
 }
 
 function matchesVerticalBoxes(parent: ParsedNode, children: ParsedNode[]): boolean {
@@ -95,7 +137,7 @@ function matchesWrappedBoxes(parent: ParsedNode, children: ParsedNode[], rowGap:
 }
 
 /** The existing viewport-width override must not turn measured 3×2 rows into a different Wrap arrangement. */
-export function preserveWrappedViewportGeometry(root: ParsedNode, fallback: (node: ParsedNode) => void): void {
+export function preserveWrappedViewportGeometry(root: ParsedNode, fallback: (node: ParsedNode) => void, flowFallback: (node: ParsedNode) => void = () => {}): void {
   const groups = (node: ParsedNode, width: number) => {
     const available = width - node.layout.padding.left - node.layout.padding.right - border(node, 'x');
     const rows: string[][] = []; let used = 0;
@@ -106,6 +148,11 @@ export function preserveWrappedViewportGeometry(root: ParsedNode, fallback: (nod
     return JSON.stringify(rows);
   };
   const visit = (node: ParsedNode, width: number) => {
+    if (node.layout.normalFlow && node.layout.normalFlow.align !== 'MIN' && !close(width, node.rect.width)) {
+      delete node.layout.normalFlow; node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED';
+      if (node.size.heightSource) node.size.heightSource.reason = 'Viewport width changes block alignment; measured geometry retained';
+      flowFallback(node);
+    }
     if (node.layout.wrapSpacing !== undefined && !close(width, node.rect.width) &&
       (node.layout.justify !== 'MIN' || groups(node, width) !== groups(node, node.rect.width))) {
       delete node.layout.wrapSpacing; node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED';

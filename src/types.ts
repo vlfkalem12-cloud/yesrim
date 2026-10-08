@@ -27,6 +27,7 @@ export interface ParsedLayout {
   order: number;
   wrap: boolean;
   wrapSpacing?: number; // Native horizontal Wrap only, preserving the measured widths and CSS row gap.
+  normalFlow?: { gap: number; padding: Insets; align: 'MIN' | 'CENTER' | 'MAX' }; // Verified block flow; margins are already included, without adding wrappers.
 }
 export interface ParsedSize {
   width: number;

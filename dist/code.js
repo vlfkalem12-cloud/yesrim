@@ -251,6 +251,7 @@
         }
       }
       if (!["HORIZONTAL", "VERTICAL", "NONE"].includes(node.layout.direction) || !["MIN", "CENTER", "MAX", "SPACE_BETWEEN"].includes(node.layout.justify) || !["MIN", "CENTER", "MAX", "BASELINE"].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error("\uC798\uBABB\uB41C \uB808\uC774\uC544\uC6C3 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.layout.normalFlow && (node.layout.direction !== "VERTICAL" || node.layout.wrap || !["MIN", "CENTER", "MAX"].includes(node.layout.normalFlow.align) || !finite(node.layout.normalFlow.gap) || node.layout.normalFlow.gap < 0 || !node.layout.normalFlow.padding || !["top", "right", "bottom", "left"].every((side) => finite(node.layout.normalFlow.padding[side]) && node.layout.normalFlow.padding[side] >= 0))) throw new Error("\uC798\uBABB\uB41C Normal Flow \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.layout.fixedInsets && !["top", "right", "bottom", "left"].every((side) => {
         const value2 = node.layout.fixedInsets[side];
         return value2 === null || finite(value2);
@@ -434,13 +435,15 @@
       if (frame.layoutMode === "NONE") return;
       frame.primaryAxisSizingMode = "FIXED";
       frame.counterAxisSizingMode = "FIXED";
-      frame.primaryAxisAlignItems = parsed.layout.justify;
-      frame.counterAxisAlignItems = parsed.layout.align;
-      frame.itemSpacing = clamp(parsed.layout.gap);
-      frame.paddingTop = clamp(parsed.layout.padding.top);
-      frame.paddingRight = clamp(parsed.layout.padding.right);
-      frame.paddingBottom = clamp(parsed.layout.padding.bottom);
-      frame.paddingLeft = clamp(parsed.layout.padding.left);
+      const flow = parsed.layout.normalFlow;
+      frame.primaryAxisAlignItems = flow ? "MIN" : parsed.layout.justify;
+      frame.counterAxisAlignItems = flow?.align || parsed.layout.align;
+      frame.itemSpacing = clamp(flow?.gap ?? parsed.layout.gap);
+      const padding = flow?.padding || parsed.layout.padding;
+      frame.paddingTop = clamp(padding.top);
+      frame.paddingRight = clamp(padding.right);
+      frame.paddingBottom = clamp(padding.bottom);
+      frame.paddingLeft = clamp(padding.left);
       frame.strokesIncludedInLayout = true;
       if (parsed.layout.wrapSpacing !== void 0) {
         try {
@@ -517,7 +520,8 @@ authoredHeight: ${details.authoredHeight}
 display: ${details.display}
 flexWrap: ${details.flexWrap}
 flexGrow: ${details.flexGrow}
-Figma Height Mode: ${details.mode}`);
+Figma Height Mode: ${details.mode}
+reason: ${details.reason || "Existing sizing policy"}`);
       }
     }
     function place(node, parsed, parent, parentParsed) {
@@ -660,7 +664,7 @@ Figma Height Mode: ${details.mode}`);
         if (parent && isFixed(parsed)) fixedPlacements.push({ node, parsed });
         const margin = parsed.layout.margin;
         const autoParent = !!parent && parent.layoutMode !== "NONE" && !parsed.layout.absolute;
-        if (autoParent && Object.values(margin).some((v) => v !== 0)) {
+        if (autoParent && !parentParsed?.layout.normalFlow && Object.values(margin).some((v) => v !== 0)) {
           if (Object.values(margin).some((v) => v < 0)) warn("NEGATIVE_MARGIN", parsed.name, "\uC74C\uC218 margin\uC740 0\uC73C\uB85C \uB2E8\uC21C\uD654\uD588\uC2B5\uB2C8\uB2E4.");
           const top = Math.max(0, margin.top), right = Math.max(0, margin.right), bottom = Math.max(0, margin.bottom), left = Math.max(0, margin.left);
           marginWrapper = figma.createFrame();

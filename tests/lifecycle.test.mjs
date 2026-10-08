@@ -27,21 +27,26 @@ async function openSession({ failFrameOnce = false, corruptReport = false, sourc
   await page.goto(base);
   const ui = page.frames().find(frame => frame.url() === `${base}/ui`);
   await ui.locator('#file').waitFor();
-  const mock = createFigmaMock(), requests = [], replies = [], deliveries = [];
+  const mock = createFigmaMock(), requests = [], replies = [], deliveries = [], heldTerminals = [];
+  let holdTerminals = false;
   if (failFrameOnce) {
     const createFrame = mock.figma.createFrame;
     mock.figma.createFrame = () => { if (failFrameOnce) { failFrameOnce = false; throw new Error('Lifecycle root failure'); } return createFrame(); };
   }
-  mock.figma.ui.postMessage = message => {
-    replies.push(message);
-    const delivered = structuredClone(message);
-    if (corruptReport && delivered.type === 'CONVERSION_COMPLETE') delete delivered.payload.report.warningGroups;
+  const deliver = delivered => {
     const delivery = ui.evaluate(({ message, sourceParent }) => {
       window.dispatchEvent(new MessageEvent('message', { data: { pluginMessage: message }, source: sourceParent ? parent : null }));
       if (message.type !== 'PROGRESS') window.lastTerminalId = message.requestId;
     }, { message: delivered, sourceParent });
     deliveries.push(delivery);
     delivery.catch(() => {}); // The test awaits deliveries; avoid teardown-time unhandled rejections.
+  };
+  mock.figma.ui.postMessage = message => {
+    replies.push(message);
+    const delivered = structuredClone(message);
+    if (corruptReport && delivered.type === 'CONVERSION_COMPLETE') delete delivered.payload.report.warningGroups;
+    if (holdTerminals && ['CONVERSION_COMPLETE', 'CONVERSION_ERROR'].includes(delivered.type)) heldTerminals.push(delivered);
+    else deliver(delivered);
   };
   runInNewContext(mainBundle, { figma: mock.figma, __html__: '<html></html>', setTimeout, Uint8Array, console });
   await page.exposeFunction('sendToPluginMain', async message => {
@@ -57,7 +62,9 @@ async function openSession({ failFrameOnce = false, corruptReport = false, sourc
     }
     void window.sendToPluginMain(message);
   }));
-  return { page, ui, mock, requests, replies, deliveries };
+  return { page, ui, mock, requests, replies, deliveries,
+    holdTerminalReplies() { holdTerminals = true; },
+    releaseTerminalReplies() { holdTerminals = false; heldTerminals.splice(0).forEach(deliver); } };
 }
 async function choose(session, name, content = htmlFor(name), drop = false) {
   if (drop) await session.ui.evaluate(({ name, content }) => {
@@ -258,10 +265,13 @@ test('Local parse failure releases loading state and ignores stale terminal repl
     await assertUnlocked(session, 'error');
     assert.equal(session.requests.length, 0);
     await choose(session, 'good.html'); const oldId = await convertOnce(session);
+    // Keep the next request pending until the stale-reply assertions finish; completion speed is not under test.
+    session.holdTerminalReplies();
     await choose(session, 'next.html'); await session.ui.locator('#convert').click();
     await session.ui.evaluate(id => window.dispatchEvent(new MessageEvent('message', { data: { pluginMessage: { type: 'CONVERSION_ERROR', requestId: id, payload: { success: false, message: 'stale failure' } } }, source: null })), oldId);
     assert.equal(await session.ui.locator('#status').getAttribute('data-state'), 'converting');
     assert.ok(await session.ui.locator('#file').isDisabled());
+    session.releaseTerminalReplies();
     await session.ui.waitForFunction(id => window.lastTerminalId && window.lastTerminalId !== id, oldId);
     await Promise.all(session.deliveries);
     await assertUnlocked(session, 'success');

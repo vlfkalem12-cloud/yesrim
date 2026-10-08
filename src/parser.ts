@@ -395,7 +395,9 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     warn('VIEWPORT_CONSTRAINT', root.name, '최상위 Frame은 입력한 viewport 폭을 우선하므로 충돌하는 min/max-width를 해제했습니다.');
     root.size.minWidth = null; root.size.maxWidth = null;
   }
-  preserveWrappedViewportGeometry(root, node => warn('FLEX_WRAP', node.name, 'Viewport 폭 적용 시 Wrap의 행 배치가 바뀌므로 기존 좌표·높이를 유지했습니다.'));
+  preserveWrappedViewportGeometry(root,
+    node => warn('FLEX_WRAP', node.name, 'Viewport 폭 적용 시 Wrap의 행 배치가 바뀌므로 기존 좌표·높이를 유지했습니다.'),
+    node => warn('HEIGHT_LAYOUT', node.name, 'Viewport 폭 적용 시 Block 정렬이 바뀌므로 기존 좌표·높이를 유지했습니다.'));
   const descendants = [root];
   let contentBottom = root.rect.y + root.rect.height;
   while (descendants.length) {

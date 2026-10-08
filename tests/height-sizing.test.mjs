@@ -201,16 +201,19 @@ function withoutHeight(doc) {
   const copy = structuredClone(doc);
   for (const node of nodes(copy.root)) {
     // Explicitly permit only the intentional height/layout change on eligible containers.
-    if (node.size.heightSource && ['Measured vertical normal flow', 'Content-driven horizontal Wrap'].includes(node.size.heightSource.reason)) node.layout.direction = 'NONE';
-    delete node.size.heightSource; delete node.size.heightIntent; delete node.size.heightMode; delete node.layout.wrapSpacing;
+    if (node.layout.normalFlow || (node.size.heightSource && ['Measured vertical normal flow', 'Content-driven horizontal Wrap'].includes(node.size.heightSource.reason))) node.layout.direction = 'NONE';
+    delete node.size.heightSource; delete node.size.heightIntent; delete node.size.heightMode; delete node.layout.wrapSpacing; delete node.layout.normalFlow;
   }
   return copy;
 }
 function unaffectedPaints(node, parsedFrames) {
-  const padding = parsedFrames.get(node.getPluginData('html-source'))?.layout.padding;
+  const parsed = parsedFrames.get(node.getPluginData('html-source')), padding = parsed?.layout.padding;
+  // Verified block flow intentionally encodes collapsed edge margins in API padding. CSS padding stays unchanged in the JSON comparison.
+  const sourcePadding = parsed?.layout.normalFlow ? padding : undefined;
   return { name: node.name, type: node.type, width: node.width, fills: node.fills, strokes: node.strokes, effects: node.effects, opacity: node.opacity, clips: node.clipsContent,
     characters: node.characters, font: node.fontName, fontSize: node.fontSize, resize: node.textAutoResize, ranges: node.rangeStyles,
-    padding: [node.paddingTop ?? padding?.top, node.paddingRight ?? padding?.right, node.paddingBottom ?? padding?.bottom, node.paddingLeft ?? padding?.left],
+    padding: [sourcePadding?.top ?? node.paddingTop ?? padding?.top, sourcePadding?.right ?? node.paddingRight ?? padding?.right,
+      sourcePadding?.bottom ?? node.paddingBottom ?? padding?.bottom, sourcePadding?.left ?? node.paddingLeft ?? padding?.left],
     children: node.children.map(child => unaffectedPaints(child, parsedFrames)) };
 }
 test('Height changes preserve width/names/wrappers/Rich Text/SVG/Gradient across Landing, Dashboard, Form, Fixed, Grid and Mobile', { skip: !baselineSource }, async () => {
