@@ -889,31 +889,6 @@
   }
   var textLayerName = (text) => clip(text || "Text");
 
-  // src/dom-visibility.ts
-  function isAccessibilityHidden(style) {
-    if (!["absolute", "fixed"].includes(style.position) || style.display === "contents") return false;
-    const width = parseFloat(style.width), height = parseFloat(style.height);
-    const tiny = Number.isFinite(width) && width <= 1 || Number.isFinite(height) && height <= 1;
-    if (!tiny) return false;
-    const overflowHidden = [style.overflowX, style.overflowY].every((value) => ["hidden", "clip"].includes(value));
-    const compactSpacing = style.whiteSpace === "nowrap" && Object.values(readInsets(style, "margin")).some((value) => value < 0) && [readInsets(style, "padding"), readInsets(style, "border")].every((insets) => Object.values(insets).every((value) => value === 0));
-    const rect = style.clip.match(/^rect\((.*)\)$/i);
-    if (rect) {
-      const sides2 = rect[1].trim().split(/[\s,]+/);
-      if (sides2.length === 4 && sides2.every((side) => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(side))) {
-        const [top2, right2, bottom2, left2] = sides2.map(parseFloat);
-        if (bottom2 <= top2 || right2 <= left2) return overflowHidden || compactSpacing;
-      }
-    }
-    const inset = style.clipPath.match(/^inset\(([^)]*)\)$/i);
-    if (!inset) return false;
-    const sides = inset[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
-    if (!sides.length || sides.length > 4 || !sides.every((side) => /^\d+(?:\.\d+)?%$/.test(side))) return false;
-    const values = sides.map(parseFloat);
-    const top = values[0], right = values[1] ?? top, bottom = values[2] ?? top, left = values[3] ?? right;
-    return top + bottom >= 100 || left + right >= 100;
-  }
-
   // src/inline-layout.ts
   function hasInlineBoxStyle(element, style, includeDimensions = true) {
     return !!parseColor(style.backgroundColor)?.a || style.backgroundImage !== "none" || style.boxShadow !== "none" || [readInsets(style, "padding"), readInsets(style, "border")].some((insets) => Object.values(insets).some((value) => value > 0)) || ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].some((key) => number(style.getPropertyValue(key)) > 0) || includeDimensions && (authoredDimension(element, "width") !== "auto" || authoredDimension(element, "height") !== "auto");
@@ -957,11 +932,227 @@
     }
   }
 
+  // src/rich-text.ts
+  var INLINE_STYLES = /* @__PURE__ */ new Set(["b", "strong", "em", "i", "u", "small", "span"]);
+  var zero = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
+  var textStyle = (style) => ({
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle,
+    color: style.color,
+    lineHeight: style.lineHeight,
+    letterSpacing: style.letterSpacing,
+    textDecoration: style.textDecoration
+  });
+  function eligible2(element, context, depth = 1) {
+    if (depth >= context.remainingDepth || !INLINE_STYLES.has(element.localName) || context.skipped(element)) return false;
+    const style = context.computed(element);
+    if (style.display !== "inline" || ["absolute", "fixed"].includes(style.position) || style.transform !== "none" || style.filter !== "none" || style.mixBlendMode !== "normal" || number(style.opacity, 1) !== 1 || number(style.fontSize) <= 0 || !["baseline", "0px"].includes(style.verticalAlign) || hasInlineBoxStyle(element, style) || Object.values(readInsets(style, "margin")).some((value) => value !== 0) || style.position === "relative" && [style.top, style.right, style.bottom, style.left].some((value) => value !== "auto" && number(value) !== 0)) return false;
+    return [...element.children].every((child) => child.localName === "br" || eligible2(child, context, depth + 1));
+  }
+  function readRichInline(element, context) {
+    const rootStyle = context.computed(element);
+    if (rootStyle.display.includes("flex") || rootStyle.display.includes("grid") || ["svg", "img", "input", "textarea", "select"].includes(element.localName)) return null;
+    const base = textStyle(context.readStyle(rootStyle)), baseKey = JSON.stringify(base);
+    const items = [];
+    let sources = [];
+    const preserve = ["pre", "pre-wrap", "break-spaces"].includes(rootStyle.whiteSpace);
+    const flush = () => {
+      if (!sources.length) return;
+      const segments = [];
+      let text = "", pending;
+      const append = (value, style) => {
+        const key = JSON.stringify(style), previous = segments[segments.length - 1];
+        if (previous?.key === key) previous.text += value;
+        else segments.push({ text: value, style, key });
+        text += value;
+      };
+      for (const source of sources) {
+        const value = context.transformText(source.text, source.transform);
+        if (preserve) {
+          append(value, source.style);
+          continue;
+        }
+        for (const character of value) {
+          const newline = character === "\n" && (rootStyle.whiteSpace === "pre-line" || source.node.nodeType === 1);
+          if (newline) {
+            pending = void 0;
+            append("\n", source.style);
+          } else if (/[\t\n\r\f ]/.test(character)) pending = source.style;
+          else {
+            if (pending && text && !text.endsWith("\n")) append(" ", pending);
+            pending = void 0;
+            append(character, source.style);
+          }
+        }
+      }
+      if (!text) {
+        sources = [];
+        return;
+      }
+      const points = sources.filter((source) => source.node.nodeType === 3).map((source) => {
+        const value = source.node.textContent || "";
+        const first = preserve ? 0 : value.search(/[^\t\n\r\f ]/);
+        const last = preserve ? value.length : value.length - (value.match(/[\t\n\r\f ]*$/)?.[0].length || 0);
+        return { source, first, last };
+      }).filter((point) => point.first >= 0 && point.last > point.first);
+      if (!points.length) {
+        sources = [];
+        return;
+      }
+      const range = element.ownerDocument.createRange();
+      range.setStart(points[0].source.node, points[0].first);
+      range.setEnd(points[points.length - 1].source.node, points[points.length - 1].last);
+      const box = range.getBoundingClientRect(), firstRect = [...range.getClientRects()].find((rect) => rect.width > 0 && rect.height > 0);
+      let offset = 0;
+      const ranges = [];
+      for (const segment of segments) {
+        const end = offset + segment.text.length;
+        if (segment.key !== baseKey) ranges.push({ start: offset, end, style: segment.style });
+        offset = end;
+      }
+      const merge = sources.some((source) => source.inline) && points.length > 1;
+      items.push({ type: "TEXT", run: { text, ranges, rect: { x: box.x, y: box.y, width: box.width, height: box.height }, firstX: firstRect?.x ?? box.x, singleLine: isSingleTextLine(range), merge } });
+      sources = [];
+    };
+    const collect = (parent2, inline, decoration = "") => {
+      const style = context.computed(parent2), parsedStyle = textStyle(context.readStyle(style));
+      parsedStyle.textDecoration = [...new Set(`${decoration} ${parsedStyle.textDecoration}`.split(" ").filter((value) => value && value !== "none"))].join(" ") || "none";
+      for (const child of [...parent2.childNodes]) {
+        if (child.nodeType === 3) sources.push({ node: child, text: child.textContent || "", style: parsedStyle, transform: style.textTransform, inline });
+        else if (child.nodeType === 1) {
+          const childElement = child;
+          if (childElement.localName === "br") sources.push({ node: childElement, text: "\n", style: parsedStyle, transform: "none", inline });
+          else if (eligible2(childElement, context) && context.computed(childElement).whiteSpace === rootStyle.whiteSpace) collect(childElement, true, parsedStyle.textDecoration);
+          else {
+            flush();
+            items.push({ type: "ELEMENT", element: childElement });
+          }
+        }
+      }
+    };
+    collect(element, false);
+    flush();
+    return items.some((item) => item.type === "TEXT" && item.run.merge) ? items : null;
+  }
+  function richTextNode(run, parent2, style, wholeSentence) {
+    const available = Math.max(0.01, parent2.size.width - parent2.layout.padding.left - parent2.layout.padding.right - parent2.style.borderWidths.left - parent2.style.borderWidths.right);
+    const constrained = !run.singleLine || wholeSentence && (parent2.size.authoredWidth !== "auto" || parent2.size.maxWidth != null || (parent2.size.minWidth || 0) > 0);
+    const width = constrained ? wholeSentence ? available : Math.min(available, Math.max(0.01, run.rect.width)) : Math.max(0.01, run.rect.width);
+    const rect = { ...run.rect, width };
+    if (wholeSentence && constrained) rect.x = parent2.rect.x + parent2.layout.padding.left + parent2.style.borderWidths.left;
+    return {
+      type: "TEXT",
+      tagName: "#text",
+      name: `${parent2.name} / text`,
+      text: run.text,
+      ranges: run.ranges,
+      rect,
+      size: { width, height: Math.max(0.01, run.rect.height), widthMode: constrained ? "FIXED" : "HUG", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
+      layout: { ...parent2.layout, display: "inline", direction: "NONE", padding: zero(), margin: zero(), absolute: false, position: "static", grow: 0, order: 0, alignSelf: "auto", wrap: false, zIndex: null },
+      style: {
+        ...style,
+        background: null,
+        backgroundImage: void 0,
+        backgroundGradient: void 0,
+        backgroundLayers: void 0,
+        backgroundGridFallback: void 0,
+        backgroundSource: void 0,
+        shadow: void 0,
+        opacity: 1,
+        borderWidths: zero(),
+        radii: [0, 0, 0, 0]
+      },
+      source: { selector: `${parent2.source?.selector || parent2.tagName} / text`, id: "", classNames: [], synthetic: true },
+      children: []
+    };
+  }
+  function configureRichIconRow(parent2, run, style, autoLayout2) {
+    if (parent2.children.length !== 2 || parent2.children[0]?.type !== "SVG" || parent2.children[1]?.type !== "TEXT" || parent2.children[1].ranges === void 0 || parent2.layout.direction !== "NONE" || parent2.layout.wrap || style.direction !== "ltr" || !["start", "left"].includes(style.textAlign) || style.transform !== "none" || parent2.children.some((child) => child.layout.absolute) || ["top", "bottom", "left"].some((side) => parent2.children[0].layout.margin[side] !== 0)) return false;
+    const icon = parent2.children[0], text = parent2.children[1];
+    const gap = Math.max(0, icon.layout.margin.right, run.firstX - icon.rect.x - icon.rect.width);
+    const left = parent2.layout.padding.left + parent2.style.borderWidths.left;
+    const top = parent2.layout.padding.top + parent2.style.borderWidths.top;
+    const width = Math.max(0.01, parent2.size.width - left - parent2.layout.padding.right - parent2.style.borderWidths.right - icon.size.width - gap);
+    parent2.layout.gap = gap;
+    parent2.layout.align = "MIN";
+    parent2.layout.justify = "MIN";
+    parent2.layout.reverse = false;
+    if (parent2.size.widthMode === "HUG") parent2.size.widthMode = "FIXED";
+    if (autoLayout2) parent2.layout.direction = "HORIZONTAL";
+    if (parent2.size.authoredHeight === "auto" && autoLayout2) parent2.size.heightMode = "HUG";
+    icon.size.widthMode = "FIXED";
+    icon.size.heightMode = "FIXED";
+    icon.layout.margin = zero();
+    icon.layout.grow = 0;
+    icon.layout.shrink = 0;
+    icon.rect.x = parent2.rect.x + left;
+    icon.rect.y = parent2.rect.y + top;
+    text.size.width = width;
+    text.size.widthMode = autoLayout2 ? "FILL" : "FIXED";
+    text.size.heightMode = "HUG";
+    text.rect.x = parent2.rect.x + left + icon.size.width + gap;
+    text.rect.y = parent2.rect.y + top;
+    text.rect.width = width;
+    return true;
+  }
+  function configureRichWrapper(parent2, style, autoLayout2) {
+    if (!autoLayout2 || parent2.layout.display !== "block" || parent2.layout.direction !== "NONE" || parent2.layout.absolute || parent2.size.authoredHeight !== "auto" || parent2.size.widthMode === "HUG" || parent2.children.length !== 1 || style.direction !== "ltr" || style.transform !== "none") return;
+    const child = parent2.children[0];
+    const richText = child.type === "TEXT" && child.ranges !== void 0 && child.size.widthMode !== "HUG";
+    const richRow = child.type === "FRAME" && child.layout.direction === "HORIZONTAL" && child.size.heightMode === "HUG" && child.children.length === 2 && child.children[0]?.type === "SVG" && child.children[1]?.ranges !== void 0;
+    if (!richText && !richRow || child.layout.absolute || Object.values(child.layout.margin).some((value) => value !== 0)) return;
+    parent2.layout.direction = "VERTICAL";
+    parent2.layout.align = "MIN";
+    parent2.layout.justify = "MIN";
+    parent2.size.heightMode = "HUG";
+    if (richText || child.size.authoredWidth === "auto") child.size.widthMode = "FILL";
+  }
+  function configureRichGridHeights(grid) {
+    const sentenceRow = (node) => node.type === "FRAME" && node.layout.direction === "HORIZONTAL" && node.size.authoredHeight === "auto" && node.children.length === 2 && node.children[0]?.type === "SVG" && node.children[1]?.ranges !== void 0;
+    const richCard = (node) => sentenceRow(node) || node.type === "FRAME" && node.layout.direction === "VERTICAL" && node.size.authoredHeight === "auto" && node.children.length === 1 && sentenceRow(node.children[0]);
+    for (const row of grid.children) {
+      if (!row.source?.synthetic || row.layout.direction !== "HORIZONTAL" || !row.children.some((cell) => cell.children.length) || !row.children.every((cell) => cell.children.length === 0 || cell.children.length === 1 && richCard(cell.children[0]))) continue;
+      row.size.heightMode = "HUG";
+      for (const cell of row.children) {
+        if (!cell.children.length) continue;
+        cell.size.heightMode = "HUG";
+        cell.children[0].size.heightMode = "HUG";
+      }
+    }
+  }
+
+  // src/dom-visibility.ts
+  function isAccessibilityHidden(style) {
+    if (!["absolute", "fixed"].includes(style.position) || style.display === "contents") return false;
+    const width = parseFloat(style.width), height = parseFloat(style.height);
+    const tiny = Number.isFinite(width) && width <= 1 || Number.isFinite(height) && height <= 1;
+    if (!tiny) return false;
+    const overflowHidden = [style.overflowX, style.overflowY].every((value) => ["hidden", "clip"].includes(value));
+    const compactSpacing = style.whiteSpace === "nowrap" && Object.values(readInsets(style, "margin")).some((value) => value < 0) && [readInsets(style, "padding"), readInsets(style, "border")].every((insets) => Object.values(insets).every((value) => value === 0));
+    const rect = style.clip.match(/^rect\((.*)\)$/i);
+    if (rect) {
+      const sides2 = rect[1].trim().split(/[\s,]+/);
+      if (sides2.length === 4 && sides2.every((side) => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(side))) {
+        const [top2, right2, bottom2, left2] = sides2.map(parseFloat);
+        if (bottom2 <= top2 || right2 <= left2) return overflowHidden || compactSpacing;
+      }
+    }
+    const inset = style.clipPath.match(/^inset\(([^)]*)\)$/i);
+    if (!inset) return false;
+    const sides = inset[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
+    if (!sides.length || sides.length > 4 || !sides.every((side) => /^\d+(?:\.\d+)?%$/.test(side))) return false;
+    const values = sides.map(parseFloat);
+    const top = values[0], right = values[1] ?? top, bottom = values[2] ?? top, left = values[3] ?? right;
+    return top + bottom >= 100 || left + right >= 100;
+  }
+
   // src/parser.ts
   var TEXT_TAGS = /* @__PURE__ */ new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "strong", "small", "a", "em", "b", "i", "li", "pre", "code"]);
   var OMIT_TAGS = /* @__PURE__ */ new Set(["head", "style", "script", "link", "meta", "title", "noscript", "template", "br"]);
   var UNSUPPORTED_TAGS = /* @__PURE__ */ new Set(["canvas", "video", "audio", "iframe", "object", "embed"]);
-  var zero = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
+  var zero2 = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
   var layerName = (el) => el.id || el.getAttribute("class")?.trim().split(/\s+/)[0] || el.tagName.toLowerCase();
   var selector = (el) => `${el.localName}${el.id ? `#${el.id}` : ""}${[...el.classList].map((name) => `.${name}`).join("")}`;
   function sanitizeHTML(html2, warnings, localAssets2) {
@@ -1268,8 +1459,8 @@
             type: "TEXT",
             name: `${name} / text`,
             rect: bounds(range.getBoundingClientRect()),
-            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, backgroundLayers: void 0, backgroundGridFallback: void 0, backgroundSource: void 0, shadow: void 0, borderWidths: zero(), radii: [0, 0, 0, 0] },
-            layout: { ...node.layout, direction: "NONE", padding: zero(), margin: zero(), absolute: false },
+            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, backgroundLayers: void 0, backgroundGridFallback: void 0, backgroundSource: void 0, shadow: void 0, borderWidths: zero2(), radii: [0, 0, 0, 0] },
+            layout: { ...node.layout, direction: "NONE", padding: zero2(), margin: zero2(), absolute: false },
             children: []
           };
           child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === "HUG" ? "HUG" : "FIXED", heightMode: "HUG" };
@@ -1300,8 +1491,8 @@
             text: content.text,
             rect: textRect,
             size: { width: textRect.width, height: textRect.height, widthMode: content.multiline ? "FIXED" : "HUG", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
-            layout: { ...node.layout, display: "inline", direction: "NONE", padding: zero(), margin: zero(), absolute: false, position: "static", grow: 0, order: 0, alignSelf: "auto", wrap: false, zIndex: null },
-            style: { ...readStyle(contentStyle), background: null, backgroundImage: void 0, shadow: void 0, opacity: content.placeholder ? number(contentStyle.opacity, 1) : 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            layout: { ...node.layout, display: "inline", direction: "NONE", padding: zero2(), margin: zero2(), absolute: false, position: "static", grow: 0, order: 0, alignSelf: "auto", wrap: false, zIndex: null },
+            style: { ...readStyle(contentStyle), background: null, backgroundImage: void 0, shadow: void 0, opacity: content.placeholder ? number(contentStyle.opacity, 1) : 1, borderWidths: zero2(), radii: [0, 0, 0, 0] },
             source: { selector: `${selector(el)} / text`, id: "", classNames: [], synthetic: true },
             children: []
           };
@@ -1320,13 +1511,26 @@
       } else if (UNSUPPORTED_TAGS.has(el.localName) || el.localName.includes("-")) {
         warn("UNSUPPORTED_ELEMENT", name, `${el.localName}\uC740 \uD3B8\uC9D1 \uAC00\uB2A5\uD55C \uBE48 Frame\uC73C\uB85C \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.`);
       } else {
-        node.children = parseChildren(el, depth, separateInline);
-        if (options.autoLayout && separateInline) configureInlineRow(el, node, style);
+        const rich = inlineContainer && inlineElements.every((child) => ["svg", "img"].includes(child.localName) || ["inline", "inline-block", "inline-flex"].includes(computed(child).display)) ? readRichInline(el, { computed, skipped, readStyle, transformText, remainingDepth: LIMITS.depth - depth }) : null;
+        if (rich && depth < LIMITS.depth) {
+          for (const item of rich) {
+            if (item.type === "ELEMENT") node.children.push(...parse(item.element, depth + 1));
+            else if (count < LIMITS.nodes) {
+              node.children.push(richTextNode(item.run, node, readStyle(style), rich.length === 1));
+              count++;
+            } else warn("TREE_LIMIT", name, "\uB178\uB4DC \uC218 \uC81C\uD55C\uC73C\uB85C \uC77C\uBD80 Rich Text\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
+          }
+        } else node.children = parseChildren(el, depth, separateInline);
+        const richRun = rich?.find((item) => item.type === "TEXT");
+        const richRow = richRun?.type === "TEXT" && configureRichIconRow(node, richRun.run, style, options.autoLayout);
+        if (!richRow && options.autoLayout && separateInline) configureInlineRow(el, node, style);
+        configureRichWrapper(node, style, options.autoLayout);
       }
       const gridRows = node.grid ? Math.ceil(node.children.filter((child) => !child.layout.absolute).length / node.grid.columns.length) : 0;
       const gridExtras = node.grid ? gridRows * (node.grid.columns.length + 1) : 0;
       if (node.grid?.supported && options.autoLayout && count + gridExtras < LIMITS.nodes && depth < LIMITS.depth - 2) {
         buildGridRows(node);
+        configureRichGridHeights(node);
         count += gridExtras;
       } else if (node.grid?.supported && options.autoLayout) {
         node.grid.supported = false;
@@ -1370,8 +1574,8 @@
             text: value,
             rect,
             size: { width: rect.width, height: rect.height, widthMode: isSingleTextLine(range) || ["nowrap", "pre"].includes(style.whiteSpace) ? "HUG" : "FIXED", heightMode: "HUG", authoredWidth: "auto", authoredHeight: "auto" },
-            layout: { ...readLayout(style), display: "inline", direction: "NONE", padding: zero(), margin: zero(), absolute: false, grow: 0, order: 0, alignSelf: "auto", wrap: false },
-            style: { ...readStyle(style), background: null, backgroundImage: void 0, shadow: void 0, opacity: 1, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            layout: { ...readLayout(style), display: "inline", direction: "NONE", padding: zero2(), margin: zero2(), absolute: false, grow: 0, order: 0, alignSelf: "auto", wrap: false },
+            style: { ...readStyle(style), background: null, backgroundImage: void 0, shadow: void 0, opacity: 1, borderWidths: zero2(), radii: [0, 0, 0, 0] },
             source: { selector: `${selector(el)} / text`, id: "", classNames: [], synthetic: true },
             children: []
           });
@@ -1401,7 +1605,7 @@
     }
     root.name = "Imported HTML";
     root.layout.absolute = false;
-    root.layout.margin = zero();
+    root.layout.margin = zero2();
     root.size.width = options.viewport;
     root.size.widthMode = "FIXED";
     if (root.size.minWidth != null && root.size.minWidth > options.viewport || root.size.maxWidth != null && root.size.maxWidth < options.viewport) {

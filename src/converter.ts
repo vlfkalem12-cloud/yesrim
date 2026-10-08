@@ -95,6 +95,13 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
     if (node.layerName !== undefined && (typeof node.layerName !== 'string' || node.layerName.length > 160)) throw new Error('잘못된 Layer Name 데이터입니다.');
     if (node.svg !== undefined && (typeof node.svg !== 'string' || node.svg.length > LIMITS.fileBytes)) throw new Error('잘못된 SVG 데이터입니다.');
     if (node.type === 'TEXT' && (typeof node.text !== 'string' || node.text.length > 1000000)) throw new Error('잘못된 텍스트 데이터입니다.');
+    if (node.ranges !== undefined && (node.type !== 'TEXT' || !Array.isArray(node.ranges) || node.ranges.some((range, index) =>
+      !range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.start >= range.end || range.end > node.text!.length ||
+      (index > 0 && range.start < node.ranges![index - 1]!.end) || !range.style || typeof range.style.fontFamily !== 'string' ||
+      typeof range.style.fontStyle !== 'string' || typeof range.style.textDecoration !== 'string' ||
+      ![range.style.fontSize, range.style.fontWeight, range.style.letterSpacing].every(value => finite(value)) || range.style.fontSize <= 0 ||
+      (range.style.lineHeight !== null && (!finite(range.style.lineHeight) || range.style.lineHeight < 0)) ||
+      (range.style.color && ![range.style.color.r, range.style.color.g, range.style.color.b, range.style.color.a].every(value => finite(value, 1) && value >= 0))))) throw new Error('잘못된 Rich Text Range 데이터입니다.');
     if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !['FIXED', 'FILL', 'HUG'].includes(node.size.widthMode) || !['FIXED', 'FILL', 'HUG'].includes(node.size.heightMode)) throw new Error('잘못된 크기 데이터입니다.');
     for (const value of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value !== undefined && value !== null && (!finite(value) || value < 0)) throw new Error('잘못된 최소/최대 크기입니다.');
     if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every(value => finite(value)))) throw new Error('잘못된 그림자 데이터입니다.');
@@ -298,7 +305,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (node.type === 'TEXT') {
       // Text auto width is independent of whether its parent uses Auto Layout.
       const intrinsic = parsed.size.widthMode === 'HUG';
-      node.textAutoResize = intrinsic ? 'WIDTH_AND_HEIGHT' : !doc.options.autoLayout ? 'NONE' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
+      node.textAutoResize = intrinsic ? 'WIDTH_AND_HEIGHT' : parsed.ranges !== undefined ? 'HEIGHT' : !doc.options.autoLayout ? 'NONE' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
     }
     const mode = (requested: SizingMode, horizontal: boolean): SizingMode => {
       if (!doc.options.autoLayout) return 'FIXED';
@@ -425,6 +432,19 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
             text.letterSpacing = { unit: 'PIXELS', value: parsed.style.letterSpacing };
             text.textAlignHorizontal = parsed.style.textAlign === 'center' ? 'CENTER' : ['right', 'end'].includes(parsed.style.textAlign) ? 'RIGHT' : parsed.style.textAlign === 'justify' ? 'JUSTIFIED' : 'LEFT';
             text.textDecoration = parsed.style.textDecoration.includes('underline') ? 'UNDERLINE' : parsed.style.textDecoration.includes('line-through') ? 'STRIKETHROUGH' : 'NONE';
+            // Load every range font first; one unavailable style must not discard the sentence.
+            const rangeFonts = await Promise.all((parsed.ranges || []).map(range => fonts.resolve({ ...parsed, text: parsed.text!.slice(range.start, range.end), style: { ...parsed.style, ...range.style } }, true)));
+            for (const [index, range] of (parsed.ranges || []).entries()) {
+              try {
+                const rangeFont = rangeFonts[index];
+                if (rangeFont) text.setRangeFontName(range.start, range.end, rangeFont);
+                text.setRangeFills(range.start, range.end, [solid(range.style.color || parsed.style.color || { r: .1, g: .1, b: .1, a: 1 })]);
+                text.setRangeFontSize(range.start, range.end, clamp(range.style.fontSize, 1, 1000));
+                text.setRangeLetterSpacing(range.start, range.end, { unit: 'PIXELS', value: range.style.letterSpacing });
+                text.setRangeTextDecoration(range.start, range.end, range.style.textDecoration.includes('underline') ? 'UNDERLINE' : range.style.textDecoration.includes('line-through') ? 'STRIKETHROUGH' : 'NONE');
+                text.setRangeLineHeight(range.start, range.end, range.style.lineHeight === null ? { unit: 'AUTO' } : { unit: 'PIXELS', value: clamp(range.style.lineHeight, .01) });
+              } catch (error) { warn('TEXT_RANGE_STYLE', parsed.name, `Rich Text ${range.start}~${range.end} 스타일 일부를 기본값으로 유지합니다: ${errorMessage(error)}`); }
+            }
           }
         }
       } else if (parsed.type === 'SVG') {

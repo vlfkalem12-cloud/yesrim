@@ -10,6 +10,7 @@ import { measureFormText, readFormContent } from './form-controls';
 import { parseLinearGradient } from './gradients';
 import { backgroundLayers, thinHorizontalGridLines } from './backgrounds';
 import { generateLayerName } from './layer-naming';
+import { configureRichGridHeights, configureRichIconRow, configureRichWrapper, readRichInline, richTextNode } from './rich-text';
 import { isAccessibilityHidden } from './dom-visibility';
 import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
 
@@ -309,13 +310,24 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     } else if (UNSUPPORTED_TAGS.has(el.localName) || el.localName.includes('-')) {
       warn('UNSUPPORTED_ELEMENT', name, `${el.localName}은 편집 가능한 빈 Frame으로 대체했습니다.`);
     } else {
-      node.children = parseChildren(el, depth, separateInline);
-      if (options.autoLayout && separateInline) configureInlineRow(el, node, style);
+      const rich = inlineContainer && inlineElements.every(child => ['svg', 'img'].includes(child.localName) ||
+        ['inline', 'inline-block', 'inline-flex'].includes(computed(child).display)) ? readRichInline(el, { computed, skipped, readStyle, transformText, remainingDepth: LIMITS.depth - depth }) : null;
+      if (rich && depth < LIMITS.depth) {
+        for (const item of rich) {
+          if (item.type === 'ELEMENT') node.children.push(...parse(item.element, depth + 1));
+          else if (count < LIMITS.nodes) { node.children.push(richTextNode(item.run, node, readStyle(style), rich.length === 1)); count++; }
+          else warn('TREE_LIMIT', name, '노드 수 제한으로 일부 Rich Text를 생략했습니다.');
+        }
+      } else node.children = parseChildren(el, depth, separateInline);
+      const richRun = rich?.find(item => item.type === 'TEXT');
+      const richRow = richRun?.type === 'TEXT' && configureRichIconRow(node, richRun.run, style, options.autoLayout);
+      if (!richRow && options.autoLayout && separateInline) configureInlineRow(el, node, style);
+      configureRichWrapper(node, style, options.autoLayout);
     }
     const gridRows = node.grid ? Math.ceil(node.children.filter(child => !child.layout.absolute).length / node.grid.columns.length) : 0;
     const gridExtras = node.grid ? gridRows * (node.grid.columns.length + 1) : 0;
     if (node.grid?.supported && options.autoLayout && count + gridExtras < LIMITS.nodes && depth < LIMITS.depth - 2) {
-      buildGridRows(node); count += gridExtras;
+      buildGridRows(node); configureRichGridHeights(node); count += gridExtras;
     }
     else if (node.grid?.supported && options.autoLayout) { node.grid.supported = false; warn('GRID_FALLBACK', name, '노드/깊이 제한으로 Grid 행 생성을 생략했습니다.'); }
     if (!options.autoLayout) node.layout.direction = 'NONE';

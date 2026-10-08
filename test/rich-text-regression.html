@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Mobile Mixed Inline Rich Text Regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Noto Sans KR', sans-serif; font-size: 12.5px; line-height: 1.4; color: #333D4B; }
+  main { display: flex; flex-direction: column; gap: 16px; padding: 12px; }
+  .questions { display: grid; grid-template-columns: 152px 152px; gap: 8px; }
+  .question-card { width: 152px; max-width: 152px; padding: 8px 10px; background: #F1F8F6; border: 1px solid #DDE8E4; border-radius: 10px; position: relative; overflow: hidden; }
+  .question-card a { display: block; font-size: 12.5px; line-height: 1.4; color: inherit; text-decoration: none; }
+  .question-card svg { margin-right: 5px; vertical-align: -1px; }
+  .question-card b { font-weight: 600; color: #191F28; }
+  p { margin: 0; width: 152px; }
+  .badge { background: #E6F4F1; padding: 2px 6px; border-radius: 999px; margin-left: 8px; }
+</style>
+<main>
+  <div class="questions">
+    <div id="card-1" class="question-card"><a id="question-1">
+      <svg width="11" height="11" viewBox="0 0 24 24"><path d="M3 4h18v14H8l-5 4z" fill="#0B7A6E"/></svg>
+      <b>양도</b> 집 한 채면 팔아도 세금이 없나요?
+    </a></div>
+    <div id="card-2" class="question-card"><a id="question-2">
+      <svg width="11" height="11" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#0B7A6E"/></svg>
+      <b>취득</b> 분양 아파트 취득세는 언제 내요?
+    </a></div>
+    <div id="card-3" class="question-card"><a id="question-3">
+      <svg width="11" height="11" viewBox="0 0 24 24"><path d="M3 4h18v14H8l-5 4z" fill="#0B7A6E"/></svg>
+      <b>상속</b> 부모님 집을 물려받으면 얼마인가요?
+    </a></div>
+    <div id="card-4" class="question-card"><a id="question-4">
+      <svg width="11" height="11" viewBox="0 0 24 24"><path d="M3 4h18v14H8l-5 4z" fill="#0B7A6E"/></svg>
+      <b>증여</b> 가족에게 집을 주면 세금이 있나요?
+    </a></div>
+    <div id="card-5" class="question-card"><a id="question-5">
+      <svg width="11" height="11" viewBox="0 0 24 24"><path d="M3 4h18v14H8l-5 4z" fill="#0B7A6E"/></svg>
+      <b>보유</b> 집 두 채의 재산세가 궁금해요
+    </a></div>
+    <div id="card-6" class="question-card"><a id="question-6">
+      <svg width="11" height="11" viewBox="0 0 24 24"><path d="M3 4h18v14H8l-5 4z" fill="#0B7A6E"/></svg>
+      <b>종부세</b> 올해 납부 대상인지 알고 싶어요
+    </a></div>
+  </div>
+  <p id="acquisition"><strong>취득</strong> 분양 아파트 취득세는 언제 내요?</p>
+  <p id="property-tax">올해 <strong>종부세 대상</strong>인지 궁금해요</p>
+  <span id="question-badge-row">그 집에 실제로 산 기간이 있나요?<span id="retained-badge" class="badge">대화에서 · 방금</span></span>
+</main>
+</html>

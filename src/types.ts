@@ -68,12 +68,15 @@ export interface ParsedStyle {
   shadow?: ParsedShadow;
   textTransform?: string;
 }
+export type ParsedTextStyle = Pick<ParsedStyle, 'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle' | 'color' | 'lineHeight' | 'letterSpacing' | 'textDecoration'>;
+export interface ParsedTextRange { start: number; end: number; style: ParsedTextStyle }
 export interface ParsedNode {
   type: 'FRAME' | 'TEXT' | 'IMAGE' | 'SVG';
   tagName: string;
   name: string;
   layerName?: string; // Presentation only; never used by layout/style conversion.
   text?: string;
+  ranges?: ParsedTextRange[]; // UTF-16 offsets into the merged Text; empty means a uniform merged run.
   image?: ParsedImage;
   svg?: string;
   grid?: { columns: number[]; columnModes?: SizingMode[]; rowGap: number; columnGap: number; supported: boolean };

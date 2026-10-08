@@ -226,6 +226,7 @@
       if (node.layerName !== void 0 && (typeof node.layerName !== "string" || node.layerName.length > 160)) throw new Error("\uC798\uBABB\uB41C Layer Name \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.svg !== void 0 && (typeof node.svg !== "string" || node.svg.length > LIMITS.fileBytes)) throw new Error("\uC798\uBABB\uB41C SVG \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.type === "TEXT" && (typeof node.text !== "string" || node.text.length > 1e6)) throw new Error("\uC798\uBABB\uB41C \uD14D\uC2A4\uD2B8 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.ranges !== void 0 && (node.type !== "TEXT" || !Array.isArray(node.ranges) || node.ranges.some((range, index) => !range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.start >= range.end || range.end > node.text.length || index > 0 && range.start < node.ranges[index - 1].end || !range.style || typeof range.style.fontFamily !== "string" || typeof range.style.fontStyle !== "string" || typeof range.style.textDecoration !== "string" || ![range.style.fontSize, range.style.fontWeight, range.style.letterSpacing].every((value2) => finite(value2)) || range.style.fontSize <= 0 || range.style.lineHeight !== null && (!finite(range.style.lineHeight) || range.style.lineHeight < 0) || range.style.color && ![range.style.color.r, range.style.color.g, range.style.color.b, range.style.color.a].every((value2) => finite(value2, 1) && value2 >= 0)))) throw new Error("\uC798\uBABB\uB41C Rich Text Range \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !["FIXED", "FILL", "HUG"].includes(node.size.widthMode) || !["FIXED", "FILL", "HUG"].includes(node.size.heightMode)) throw new Error("\uC798\uBABB\uB41C \uD06C\uAE30 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       for (const value2 of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value2 !== void 0 && value2 !== null && (!finite(value2) || value2 < 0)) throw new Error("\uC798\uBABB\uB41C \uCD5C\uC18C/\uCD5C\uB300 \uD06C\uAE30\uC785\uB2C8\uB2E4.");
       if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every((value2) => finite(value2)))) throw new Error("\uC798\uBABB\uB41C \uADF8\uB9BC\uC790 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
@@ -444,7 +445,7 @@
       const canHug = node.type === "TEXT" || autoFrame;
       if (node.type === "TEXT") {
         const intrinsic = parsed.size.widthMode === "HUG";
-        node.textAutoResize = intrinsic ? "WIDTH_AND_HEIGHT" : !doc.options.autoLayout ? "NONE" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
+        node.textAutoResize = intrinsic ? "WIDTH_AND_HEIGHT" : parsed.ranges !== void 0 ? "HEIGHT" : !doc.options.autoLayout ? "NONE" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
       }
       const mode = (requested, horizontal) => {
         if (!doc.options.autoLayout) return "FIXED";
@@ -572,6 +573,20 @@
               text.letterSpacing = { unit: "PIXELS", value: parsed.style.letterSpacing };
               text.textAlignHorizontal = parsed.style.textAlign === "center" ? "CENTER" : ["right", "end"].includes(parsed.style.textAlign) ? "RIGHT" : parsed.style.textAlign === "justify" ? "JUSTIFIED" : "LEFT";
               text.textDecoration = parsed.style.textDecoration.includes("underline") ? "UNDERLINE" : parsed.style.textDecoration.includes("line-through") ? "STRIKETHROUGH" : "NONE";
+              const rangeFonts = await Promise.all((parsed.ranges || []).map((range) => fonts.resolve({ ...parsed, text: parsed.text.slice(range.start, range.end), style: { ...parsed.style, ...range.style } }, true)));
+              for (const [index, range] of (parsed.ranges || []).entries()) {
+                try {
+                  const rangeFont = rangeFonts[index];
+                  if (rangeFont) text.setRangeFontName(range.start, range.end, rangeFont);
+                  text.setRangeFills(range.start, range.end, [solid(range.style.color || parsed.style.color || { r: 0.1, g: 0.1, b: 0.1, a: 1 })]);
+                  text.setRangeFontSize(range.start, range.end, clamp(range.style.fontSize, 1, 1e3));
+                  text.setRangeLetterSpacing(range.start, range.end, { unit: "PIXELS", value: range.style.letterSpacing });
+                  text.setRangeTextDecoration(range.start, range.end, range.style.textDecoration.includes("underline") ? "UNDERLINE" : range.style.textDecoration.includes("line-through") ? "STRIKETHROUGH" : "NONE");
+                  text.setRangeLineHeight(range.start, range.end, range.style.lineHeight === null ? { unit: "AUTO" } : { unit: "PIXELS", value: clamp(range.style.lineHeight, 0.01) });
+                } catch (error) {
+                  warn("TEXT_RANGE_STYLE", parsed.name, `Rich Text ${range.start}~${range.end} \uC2A4\uD0C0\uC77C \uC77C\uBD80\uB97C \uAE30\uBCF8\uAC12\uC73C\uB85C \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+                }
+              }
             }
           }
         } else if (parsed.type === "SVG") {

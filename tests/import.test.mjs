@@ -405,8 +405,9 @@ test('Mixed Inline preserves alternating DOM order, typography and small icons w
   assert.deepEqual(iconLabel.children.map(child => child.type), ['TEXT', 'FRAME']);
   assert.equal(find(frame, 'inline-icon').width, 12);
   const styled = find(frame, 'styled-font');
-  assert.deepEqual(styled.children.map(child => child.characters), ['Normal', 'Bold']);
-  assert.equal(styled.children[1].fontName.style, 'Bold');
+  assert.deepEqual(styled.children.map(child => child.characters), ['Normal Bold']);
+  assert.equal(styled.children[0].getRangeFontName(0, 6).style, 'Regular');
+  assert.equal(styled.children[0].getRangeFontName(7, 11).style, 'Bold');
 });
 
 test('Plain Inline text stays one Text while radius and explicit inline box dimensions retain Frames', async () => {

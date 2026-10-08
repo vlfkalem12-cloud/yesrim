@@ -104,6 +104,27 @@ test('Real iframe UI receives relayed Main completion and converts A, B, C and t
   } finally { await session.page.close(); }
 });
 
+test('Mobile Rich Text cards repeat through the UI/Main pipeline with identical ranges, widths, names and native SVG', async () => {
+  const session = await openSession();
+  const content = await readFile('test/rich-text-regression.html', 'utf8');
+  const snapshot = node => ({ name: node.name, type: node.type, characters: node.characters || '', width: node.width, height: node.height,
+    layout: node.layoutMode, horizontal: node.layoutSizingHorizontal, vertical: node.layoutSizingVertical, autoResize: node.textAutoResize,
+    ranges: node.rangeStyles ? Array.from(node.rangeStyles, range => ({ start: range.start, end: range.end, property: range.property, value: range.value })) : [],
+    children: Array.from(node.children, snapshot) });
+  try {
+    await session.ui.locator('#viewport').selectOption('375');
+    await choose(session, 'mobile-questions.html', content); await convertOnce(session); await assertUnlocked(session, 'success');
+    const first = snapshot(session.mock.figma.currentPage.children[0]);
+    await choose(session, 'mobile-questions.html', content, true); await convertOnce(session); await assertUnlocked(session, 'success');
+    assert.deepEqual(snapshot(session.mock.figma.currentPage.children[1]), first);
+    assert.equal(session.mock.svgImports.length, 12);
+    const richNodes = session.requests[0].payload.root;
+    const visit = node => [node, ...node.children.flatMap(visit)];
+    assert.equal(visit(richNodes).filter(node => node.type === 'TEXT' && node.text.startsWith('양도 ')).length, 1);
+    assert.ok(session.replies.filter(message => message.type === 'CONVERSION_COMPLETE').every(message => !message.payload.report.warnings.some(warning => ['NODE_FAILED', 'TEXT_RANGE_STYLE'].includes(warning.code))));
+  } finally { await session.page.close(); }
+});
+
 test('The same accessibility and Mixed Inline HTML repeats without changing its generated layout or UI lifecycle', async () => {
   const session = await openSession();
   const content = await readFile('test/inline-accessibility-regression.html', 'utf8');

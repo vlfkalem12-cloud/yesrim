@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '' } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -59,6 +59,21 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       fontName: { get: () => fontName, set: value => { if (!loaded.has(`${value.family}|${value.style}`)) throw new Error('Font not loaded'); fontName = value; } },
       characters: { get: () => characters, set: value => { if (!fontName) throw new Error('Load font first'); if (failText && value.includes(failText)) throw new Error('Simulated text failure'); characters = value; } }
     });
+    if (type === 'TEXT') {
+      for (const property of ['fontName', 'fills', 'fontSize', 'letterSpacing', 'textDecoration', 'lineHeight']) {
+        node[`setRange${property[0].toUpperCase()}${property.slice(1)}`] = (start, end, value) => {
+          if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > characters.length) throw new Error('Invalid UTF-16 range');
+          if (property === 'fontName' && !loaded.has(`${value.family}|${value.style}`)) throw new Error('Range font not loaded');
+          if (property === failRangeAPI) throw new Error('Simulated range API failure');
+          node.rangeStyles ||= [];
+          node.rangeStyles.push({ start, end, property, value, loadedFonts: [...loaded] });
+        };
+        node[`getRange${property[0].toUpperCase()}${property.slice(1)}`] = (start, end) => {
+          const values = Array.from({ length: end - start }, (_, index) => node.rangeStyles?.findLast(range => range.property === property && range.start <= start + index && range.end > start + index)?.value ?? node[property]);
+          return values.every(value => JSON.stringify(value) === JSON.stringify(values[0])) ? values[0] : 'MIXED';
+        };
+      }
+    }
     page.appendChild(node);
     return node;
   }
