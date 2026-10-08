@@ -68,6 +68,10 @@
     dialog::backdrop { background: #0005; }
     dialog h2 { font-size: 15px; margin: 0 0 12px; }
     dialog p { line-height: 1.7; }
+    #file-list > li[data-selected="true"] { background: var(--figma-color-bg-brand-tertiary, #f5f3ff); border-left: 3px solid #7365df; padding-left: 9px; }
+    #selected-file { overflow-wrap: anywhere; font-weight: 600; }
+    #developer-options { border-top: 1px solid var(--figma-color-border, #e8e8ef); padding-top: 12px; }
+    #developer-file, #json-info { overflow-wrap: anywhere; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -106,9 +110,10 @@
     <label class="check"><input id="debug" type="checkbox"> Debug Mode</label>
   </div>
   <button id="convert" type="button" disabled>Figma로 변환</button>
-  <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
+  <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button></div>
   <p id="status" role="status" aria-live="polite"></p>
   <p id="batch-summary" hidden aria-live="polite"></p>
+  <div id="selected-result" hidden><p id="selected-file"></p><p class="muted">마지막 실행 결과입니다. 설정·순서 변경은 다음 변환부터 적용됩니다.</p><p id="report-empty" role="status"></p></div>
   <section id="report" hidden aria-label="변환 결과">
     <dl class="result-info"><dt>파일명</dt><dd id="report-file"></dd><dt>결과</dt><dd id="report-result"></dd></dl>
     <p id="report-error" hidden></p>
@@ -118,8 +123,8 @@
     <p class="muted" id="duration"></p>
     </details>
     <details id="warning-details"><summary id="warning-summary">상세 내용 보기</summary><ul id="warnings"></ul><button class="secondary" id="warning-more" type="button" hidden>경고 더 보기</button></details>
-    <details id="debug-details" hidden><summary>Debug 정보</summary><ul id="debug-warnings"></ul></details>
   </section>
+  <details id="developer-options" hidden><summary>개발자 옵션</summary><p id="developer-file"></p><button class="secondary" id="json" disabled type="button">변환 데이터(JSON) 다운로드</button><p class="muted" id="json-info"></p><p class="muted" id="snapshot-storage"></p><details id="debug-details" hidden><summary>Debug 정보</summary><ul id="debug-warnings"></ul></details></details>
   <div id="render-host"></div>
   <!-- UI_SCRIPT -->
 </body>

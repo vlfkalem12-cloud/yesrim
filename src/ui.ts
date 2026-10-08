@@ -4,6 +4,7 @@ import { errorMessage, isViewportDimension } from './utils';
 import { failedOutcome, REPORT_LABELS, reportText } from './report';
 import { MAX_HTML_FILES, batchSummary } from './batch';
 import { readHTMLFile, validateHTMLSelection } from './upload-files';
+import { createJSONSnapshot, snapshotJSONBlob, type JSONSnapshot } from './json-snapshots';
 
 function get<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -30,21 +31,21 @@ interface UploadItem {
   id: string; file: File; state: FileConversionStatus;
   report?: ConversionReport; outcome?: ConversionOutcome; frameId?: string;
   viewport?: { width?: number; height?: number };
+  snapshot?: JSONSnapshot; snapshotOptions?: ImportOptions; snapshotError?: string;
 }
 let items: UploadItem[] = [];
 let batchId: string | null = null;
 let currentItem: UploadItem | null = null;
 let selectedItemId: string | null = null;
-let parsedItemId: string | null = null;
 let pendingFile: ((message: Exclude<FileMessage, { type: 'PROGRESS' }>) => void) | null = null;
 let pendingBatch: { type: 'BATCH_STARTED' | 'BATCH_COMPLETE'; resolve: (message: MainMessage) => void } | null = null;
 let idSequence = 0;
 const newId = () => `${Date.now()}-${++idSequence}-${Math.random().toString(36).slice(2)}`;
-let parsed: ParsedDocument | null = null;
 let conversionStatus: ConversionStatus = 'idle';
 let readingFiles = false;
 let cancelled = false;
 let requestId: string | null = null;
+let downloadingJSON = false;
 const send = (message: UIMessage) => parent.postMessage({ pluginMessage: message }, '*');
 const isBusy = () => conversionStatus === 'converting' || readingFiles;
 function status(message: string, state: ConversionStatus = conversionStatus): void {
@@ -85,6 +86,7 @@ function renderControls(): void {
   cancel.hidden = !value;
   if (!value) cancel.disabled = false;
   get<HTMLButtonElement>('clear-files').disabled = value;
+  json.disabled = value || downloadingJSON || !items.find(item => item.id === selectedItemId)?.snapshot;
   for (const button of document.querySelectorAll<HTMLButtonElement>('#file-list button')) button.disabled = value || button.dataset.boundary === 'true';
   convert.textContent = conversionStatus === 'converting' ? '변환 중…' : 'Figma로 변환';
 }
@@ -94,7 +96,7 @@ function renderItems(): void {
   const list = get('file-list'); list.replaceChildren();
   const labels: Record<FileConversionStatus, string> = { WAITING: '대기', CONVERTING: '변환 중', SUCCESS: '변환 완료', SUCCESS_WITH_WARNINGS: '경고와 함께 변환 완료', ERROR: '변환 실패' };
   for (const [index, item] of items.entries()) {
-    const row = document.createElement('li'); row.dataset.itemId = item.id; row.dataset.state = item.state;
+    const row = document.createElement('li'); row.dataset.itemId = item.id; row.dataset.state = item.state; row.dataset.selected = String(item.id === selectedItemId);
     const name = document.createElement('strong'); name.textContent = `${index + 1}. ${item.file.name}`; row.append(name);
     const state = document.createElement('span'); state.className = 'muted';
     state.textContent = `${labels[item.state]}${item.outcome && item.state !== 'ERROR' ? ` · 경고 ${item.outcome.warningCount}건` : ''}`; row.append(state);
@@ -124,11 +126,10 @@ function renderItems(): void {
     }
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary remove-file'; remove.textContent = '삭제'; remove.disabled = isBusy();
     remove.setAttribute('aria-label', `${item.file.name} 삭제`); remove.onclick = () => removeItem(item.id); actions.append(remove); row.append(actions);
-    if (item.outcome) {
-      const detail = document.createElement('button'); detail.type = 'button'; detail.className = 'secondary file-detail'; detail.textContent = item.state === 'ERROR' ? '오류 상세 보기' : '상세 내용 보기'; detail.disabled = isBusy();
-      detail.onclick = () => { selectedItemId = item.id; displayReport(item); json.hidden = !parsed || parsedItemId !== item.id; };
-      row.append(detail);
-    }
+    const detail = document.createElement('button'); detail.type = 'button'; detail.className = 'secondary file-detail'; detail.textContent = '결과 보기'; detail.disabled = isBusy();
+    detail.setAttribute('aria-pressed', String(item.id === selectedItemId));
+    detail.onclick = () => { if (isBusy()) return; selectedItemId = item.id; renderSelectedResult(); renderItems(); renderControls(); };
+    row.append(detail);
     list.append(row);
   }
 }
@@ -136,8 +137,22 @@ function updateSelectionLabel(): void {
   get('filename').textContent = items.length === 1 ? items[0]!.file.name : items.length ? `HTML 파일 ${items.length}개 선택` : 'HTML 파일 업로드';
   get('fileinfo').textContent = items.length === 1 ? `${(items[0]!.file.size / 1024).toFixed(1)} KB · 다른 파일을 선택하려면 클릭` : '드래그하거나 클릭하여 선택 · .html / .htm · 최대 10개 · 파일당 5MB';
 }
-function displayReport(item: UploadItem): void {
-  if (!item.outcome) return;
+function renderSelectedResult(): void {
+  const item = items.find(item => item.id === selectedItemId);
+  clearReport();
+  get('selected-result').hidden = !item;
+  get('developer-options').hidden = items.length === 0;
+  const title = item ? `${items.indexOf(item) + 1}. ${item.file.name}` : '파일 목록에서 결과를 선택하세요.';
+  get('selected-file').textContent = title; get('developer-file').textContent = title;
+  get('report-empty').hidden = !!item?.outcome;
+  get('report-empty').textContent = item ? '아직 변환 결과가 없습니다.' : '';
+  json.disabled = isBusy() || downloadingJSON || !item?.snapshot;
+  get('json-info').textContent = item?.snapshot
+    ? `${item.outcome?.status === 'ERROR' ? '분석 데이터 · Frame 생성 실패' : '변환에 사용한 데이터'} · Viewport ${item.snapshotOptions!.viewport}×${item.snapshotOptions!.viewportHeight} · JSON ${(item.snapshot.serializedBytes / 1024).toFixed(1)} KB / 보관 ${(item.snapshot.blob.size / 1024).toFixed(1)} KB`
+    : item?.snapshotError ? `JSON을 보관하지 못했습니다. ${reportText(item.snapshotError)}` : '분석 데이터가 없는 파일은 다운로드할 수 없습니다.';
+  const retainedBytes = items.reduce((sum, entry) => sum + (entry.snapshot?.blob.size || 0), 0);
+  get('snapshot-storage').textContent = `JSON 보관 합계: ${(retainedBytes / 1024).toFixed(1)} KB`;
+  if (!item?.outcome) return;
   try { showReport(item.report, item.outcome); }
   catch (error) {
     get('report').hidden = true;
@@ -154,7 +169,8 @@ function finishConversion(state: 'success' | 'error', message: string): void {
   requestId = null; batchId = null; cancelled = false;
   input.value = ''; dropzone.classList.remove('drag');
   status(message, state);
-  if (currentItem) { selectedItemId = currentItem.id; displayReport(currentItem); }
+  if (!items.some(item => item.id === selectedItemId)) selectedItemId = items.find(item => item.outcome)?.id || null;
+  renderSelectedResult();
   renderItems(); renderControls();
 }
 function uploadError(message = ''): void {
@@ -172,28 +188,27 @@ function moveItem(id: string, direction: -1 | 1): void {
   if (isBusy()) return;
   const from = items.findIndex(item => item.id === id), to = from + direction;
   if (from < 0 || to < 0 || to >= items.length) return;
-  const [item] = items.splice(from, 1); items.splice(to, 0, item!); renderItems(); renderControls();
+  const [item] = items.splice(from, 1); items.splice(to, 0, item!); renderItems(); renderSelectedResult(); renderControls();
 }
 function removeItem(id: string): void {
   if (isBusy()) return;
   const index = items.findIndex(item => item.id === id); if (index < 0) return;
   const [removed] = items.splice(index, 1);
   if (currentItem === removed) currentItem = null;
-  if (parsedItemId === id) { parsed = null; parsedItemId = null; json.hidden = true; }
   if (selectedItemId === id || !selectedItemId) {
     const candidates = [...items.slice(index), ...items.slice(0, index).reverse()];
     const next = candidates.find(item => item.outcome) || candidates[0]; selectedItemId = next?.id || null;
-    clearReport(); if (next?.outcome) displayReport(next);
+
   }
   if (!items.length) { status('', 'idle'); clearReport(); selectedItemId = null; }
-  updateSelectionLabel(); refreshSummary(); renderItems(); renderControls();
+  revokeDownloads(id); renderSelectedResult(); updateSelectionLabel(); refreshSummary(); renderItems(); renderControls();
 }
 function clearFiles(): void {
   if (isBusy()) return;
-  items = []; selectedItemId = null; currentItem = null; parsed = null; parsedItemId = null; requestId = batchId = null;
+  items = []; selectedItemId = null; currentItem = null; requestId = batchId = null;
   localAssets = {}; assetFiles.value = ''; get('asset-count').textContent = '상대 경로 이미지용';
-  json.hidden = true; input.value = ''; clearReport(); get('batch-summary').hidden = true; get('batch-summary').textContent = '';
-  uploadError(); status('', 'idle'); updateSelectionLabel(); renderItems(); renderControls();
+  revokeDownloads(); input.value = ''; clearReport(); get('batch-summary').hidden = true; get('batch-summary').textContent = '';
+  uploadError(); status('', 'idle'); renderSelectedResult(); updateSelectionLabel(); renderItems(); renderControls();
 }
 const clearConfirm = get<HTMLDialogElement>('clear-confirm');
 get<HTMLButtonElement>('clear-files').onclick = () => {
@@ -212,8 +227,9 @@ async function selectFiles(files: File[]): Promise<void> {
     if (cancelled) return;
     // Keep the existing replace policy; duplicates are checked inside the proposed new list.
     items = files.map(file => ({ id: newId(), file, state: 'WAITING' }));
-    requestId = batchId = null; currentItem = null; selectedItemId = null; parsed = null; parsedItemId = null;
-    json.hidden = true; clearReport(); get('batch-summary').hidden = true; uploadError();
+    requestId = batchId = null; currentItem = null; selectedItemId = null;
+    revokeDownloads(); clearReport(); get('batch-summary').hidden = true; uploadError();
+    get<HTMLDetailsElement>('developer-options').open = false; renderSelectedResult();
     updateSelectionLabel(); status('준비되었습니다. Viewport를 설정하고 변환하세요.', 'idle');
   } catch (error) { uploadError(errorMessage(error)); status(previousStatus, previousState); }
   finally {
@@ -273,9 +289,9 @@ convert.addEventListener('click', async () => {
     images: images.checked, shadows: shadows.checked, optimizeWrappers: optimize.checked, debug: debug.checked };
   const assets = localAssets; // An explicit user-selected asset map; parser caches remain per file.
   batchId = items.length > 1 ? newId() : null;
-  cancelled = false; parsed = null; parsedItemId = null; currentItem = null;
-  for (const item of items) { item.state = 'WAITING'; delete item.outcome; delete item.report; delete item.frameId; }
-  clearReport(); get('batch-summary').hidden = true; json.hidden = true;
+  cancelled = false; currentItem = null;
+  for (const item of items) { item.state = 'WAITING'; delete item.outcome; delete item.report; delete item.frameId; delete item.snapshot; delete item.snapshotOptions; delete item.snapshotError; }
+  revokeDownloads(); clearReport(); get('batch-summary').hidden = true; renderSelectedResult();
   status('HTML을 렌더링하고 레이아웃을 분석합니다…', 'converting'); renderControls(); renderItems();
   let started = false;
   let batchError: string | null = null;
@@ -288,7 +304,7 @@ convert.addEventListener('click', async () => {
     for (const item of items) {
       if (cancelled) break;
       currentItem = item; item.state = 'CONVERTING'; requestId = newId();
-      parsed = null; parsedItemId = null; json.hidden = true;
+      let parsed: ParsedDocument | null = null;
       progress('HTML을 렌더링하고 레이아웃을 분석합니다…'); renderItems();
       let parseError: string | null = null;
       try {
@@ -297,8 +313,12 @@ convert.addEventListener('click', async () => {
         const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
         if (!cancelled) parsed = await parseHTML(source, fileOptions, get('render-host'), assets);
         if (cancelled) throw new Error('변환을 취소했습니다.');
-        parsedItemId = item.id;
-        if (options.debug) console.info('HTML → Figma intermediate document', { batchId, itemId: item.id, fileName: item.file.name, document: parsed });
+        if (parsed) {
+          item.snapshotOptions = { ...fileOptions };
+          try { item.snapshot = await createJSONSnapshot(parsed); }
+          catch (error) { item.snapshotError = errorMessage(error); console.warn('JSON snapshot storage failed', { itemId: item.id, error }); }
+        }
+        if (options.debug) console.info('HTML → Figma intermediate document', { batchId, itemId: item.id, fileName: item.file.name, version: parsed?.version, snapshotBytes: item.snapshot?.serializedBytes });
       } catch (error) { console.warn('HTML analysis failed', error); parseError = errorMessage(error); }
       let reply: Exclude<FileMessage, { type: 'PROGRESS' }> | undefined;
       if (parseError) {
@@ -316,8 +336,7 @@ convert.addEventListener('click', async () => {
       item.outcome ||= failedOutcome(item.file.name, '결과 정보를 확인할 수 없습니다.');
       item.state = item.outcome.status;
       requestId = null; renderItems();
-      // Keep only the last intermediate document for the existing JSON export.
-      // Each parseHTML call disposes its iframe; no DOM or asset cache is retained by items.
+      // Only the immutable Blob is retained by this item; the live parsed object is released at the next iteration.
     }
   } catch (error) {
     batchError = reportText(errorMessage(error));
@@ -342,7 +361,6 @@ convert.addEventListener('click', async () => {
       const outcome = items[0]?.outcome;
       finishConversion(outcome?.status === 'ERROR' || !outcome ? 'error' : 'success', cancelled ? '변환을 취소했습니다.' : outcome?.status === 'SUCCESS' ? '변환이 완료되었습니다.' : outcome?.status === 'SUCCESS_WITH_WARNINGS' ? '변환이 완료되었습니다. 일부 항목을 확인해 주세요.' : 'HTML을 변환하지 못했습니다.');
     }
-    json.hidden = !parsed;
   }
 });
 cancel.addEventListener('click', () => {
@@ -350,11 +368,26 @@ cancel.addEventListener('click', () => {
   if (conversionStatus === 'converting') send({ type: 'CANCEL', ...(batchId ? { batchId } : requestId ? { requestId } : {}) });
   status('변환을 취소하고 있습니다…'); cancel.disabled = true;
 });
-json.addEventListener('click', () => {
-  if (!parsed) return;
-  const url = URL.createObjectURL(new Blob([JSON.stringify(parsed, null, 2)], { type: 'application/json' }));
-  const link = document.createElement('a'); link.href = url; link.download = 'html-to-figma.json'; document.body.append(link); link.click(); link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+const downloadURLs = new Map<string, { itemId: string; timer: number }>();
+function revokeDownloads(itemId?: string): void {
+  for (const [url, entry] of downloadURLs) if (!itemId || entry.itemId === itemId) {
+    clearTimeout(entry.timer); URL.revokeObjectURL(url); downloadURLs.delete(url);
+  }
+}
+json.addEventListener('click', async () => {
+  const item = items.find(entry => entry.id === selectedItemId), snapshot = item?.snapshot;
+  if (isBusy() || downloadingJSON || !item || !snapshot) return;
+  downloadingJSON = true; json.disabled = true;
+  try {
+    const blob = await snapshotJSONBlob(snapshot);
+    if (!items.includes(item) || item.snapshot !== snapshot) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url;
+    link.download = `${item.file.name.replace(/\.html?$/i, '').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)}-${item.id}.json`;
+    document.body.append(link); link.click(); link.remove();
+    downloadURLs.set(url, { itemId: item.id, timer: window.setTimeout(() => { URL.revokeObjectURL(url); downloadURLs.delete(url); }, 1000) });
+  } catch (error) { get('json-info').textContent = `JSON 다운로드에 실패했습니다. ${reportText(errorMessage(error))}`; }
+  finally { downloadingJSON = false; renderControls(); }
 });
 function showReport(report: ConversionReport | undefined, outcome: ConversionOutcome): void {
   get('report').hidden = false;
@@ -413,4 +446,4 @@ window.addEventListener('message', (event: MessageEvent<{ pluginMessage?: MainMe
   if (pendingFile) { const resolve = pendingFile; pendingFile = null; resolve(message); }
 });
 get('status').dataset.state = conversionStatus;
-renderControls();
+renderSelectedResult(); renderControls();

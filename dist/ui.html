@@ -68,6 +68,10 @@
     dialog::backdrop { background: #0005; }
     dialog h2 { font-size: 15px; margin: 0 0 12px; }
     dialog p { line-height: 1.7; }
+    #file-list > li[data-selected="true"] { background: var(--figma-color-bg-brand-tertiary, #f5f3ff); border-left: 3px solid #7365df; padding-left: 9px; }
+    #selected-file { overflow-wrap: anywhere; font-weight: 600; }
+    #developer-options { border-top: 1px solid var(--figma-color-border, #e8e8ef); padding-top: 12px; }
+    #developer-file, #json-info { overflow-wrap: anywhere; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -106,9 +110,10 @@
     <label class="check"><input id="debug" type="checkbox"> Debug Mode</label>
   </div>
   <button id="convert" type="button" disabled>Figma로 변환</button>
-  <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
+  <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button></div>
   <p id="status" role="status" aria-live="polite"></p>
   <p id="batch-summary" hidden aria-live="polite"></p>
+  <div id="selected-result" hidden><p id="selected-file"></p><p class="muted">마지막 실행 결과입니다. 설정·순서 변경은 다음 변환부터 적용됩니다.</p><p id="report-empty" role="status"></p></div>
   <section id="report" hidden aria-label="변환 결과">
     <dl class="result-info"><dt>파일명</dt><dd id="report-file"></dd><dt>결과</dt><dd id="report-result"></dd></dl>
     <p id="report-error" hidden></p>
@@ -118,8 +123,8 @@
     <p class="muted" id="duration"></p>
     </details>
     <details id="warning-details"><summary id="warning-summary">상세 내용 보기</summary><ul id="warnings"></ul><button class="secondary" id="warning-more" type="button" hidden>경고 더 보기</button></details>
-    <details id="debug-details" hidden><summary>Debug 정보</summary><ul id="debug-warnings"></ul></details>
   </section>
+  <details id="developer-options" hidden><summary>개발자 옵션</summary><p id="developer-file"></p><button class="secondary" id="json" disabled type="button">변환 데이터(JSON) 다운로드</button><p class="muted" id="json-info"></p><p class="muted" id="snapshot-storage"></p><details id="debug-details" hidden><summary>Debug 정보</summary><ul id="debug-warnings"></ul></details></details>
   <div id="render-host"></div>
   <script>"use strict";
 (() => {
@@ -139,8 +144,8 @@
     return typeof value === "number" && Number.isInteger(value) && value >= VIEWPORT.minDimension && value <= VIEWPORT.maxDimension;
   }
   function number(value, fallback = 0) {
-    const parsed2 = typeof value === "number" ? value : parseFloat(value);
-    return Number.isFinite(parsed2) ? parsed2 : fallback;
+    const parsed = typeof value === "number" ? value : parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   }
   function clamp(value, min = 0, max = 1e5) {
     return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
@@ -751,9 +756,9 @@
       parts.shift();
       const directions = { "to top": 0, "to right": 90, "to bottom": 180, "to left": 270 };
       const degrees = first.match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))deg$/i);
-      const parsed2 = degrees ? (Number(degrees[1]) % 360 + 360) % 360 : directions[first.toLowerCase()];
-      if (parsed2 !== 0 && parsed2 !== 90 && parsed2 !== 180 && parsed2 !== 270) return fail("\uC9C0\uC6D0 \uAC01\uB3C4: 0 / 90 / 180 / 270deg");
-      angle = parsed2;
+      const parsed = degrees ? (Number(degrees[1]) % 360 + 360) % 360 : directions[first.toLowerCase()];
+      if (parsed !== 0 && parsed !== 90 && parsed !== 180 && parsed !== 270) return fail("\uC9C0\uC6D0 \uAC01\uB3C4: 0 / 90 / 180 / 270deg");
+      angle = parsed;
     }
     const stops = [];
     for (const part of parts) {
@@ -2091,6 +2096,63 @@
     }
   }
 
+  // src/json-snapshots.ts
+  function* jsonChunks(doc) {
+    yield "{\n";
+    const entries = Object.entries(doc).filter(([, value]) => value !== void 0);
+    for (const [index, [key, value]] of entries.entries()) {
+      if (index) yield ",\n";
+      yield `  ${JSON.stringify(key)}: `;
+      if (key !== "assets") {
+        yield JSON.stringify(value, null, 2).replace(/\n/g, "\n  ");
+        continue;
+      }
+      const images2 = Object.entries(doc.assets);
+      if (!images2.length) {
+        yield "{}";
+        continue;
+      }
+      yield "{\n";
+      for (const [imageIndex, [name, bytes]] of images2.entries()) {
+        if (imageIndex) yield ",\n";
+        yield `    ${JSON.stringify(name)}: `;
+        if (!bytes.length) {
+          yield "[]";
+          continue;
+        }
+        yield "[\n";
+        for (let offset = 0; offset < bytes.length; offset += 4096) {
+          if (offset) yield ",\n";
+          yield bytes.slice(offset, offset + 4096).map((byte) => `      ${JSON.stringify(byte)}`).join(",\n");
+        }
+        yield "\n    ]";
+      }
+      yield "\n  }";
+    }
+    yield "\n}";
+  }
+  async function createJSONSnapshot(doc, compress = typeof CompressionStream !== "undefined") {
+    let serializedBytes = 0;
+    const chunks = jsonChunks(doc), encoder = new TextEncoder();
+    const source = new ReadableStream({ pull(controller) {
+      const chunk = chunks.next();
+      if (chunk.done) {
+        controller.close();
+        return;
+      }
+      const bytes = encoder.encode(chunk.value);
+      serializedBytes += bytes.byteLength;
+      controller.enqueue(bytes);
+    } });
+    const stream = compress ? source.pipeThrough(new CompressionStream("gzip")) : source;
+    const blob = await new Response(stream).blob();
+    return { blob, serializedBytes, encoding: compress ? "gzip" : "json" };
+  }
+  async function snapshotJSONBlob(snapshot) {
+    const decoded = snapshot.encoding === "gzip" ? await new Response(snapshot.blob.stream().pipeThrough(new DecompressionStream("gzip"))).blob() : snapshot.blob;
+    return new Blob([decoded], { type: "application/json" });
+  }
+
   // src/ui.ts
   function get(id) {
     const element = document.getElementById(id);
@@ -2117,16 +2179,15 @@
   var batchId = null;
   var currentItem = null;
   var selectedItemId = null;
-  var parsedItemId = null;
   var pendingFile = null;
   var pendingBatch = null;
   var idSequence = 0;
   var newId = () => `${Date.now()}-${++idSequence}-${Math.random().toString(36).slice(2)}`;
-  var parsed = null;
   var conversionStatus = "idle";
   var readingFiles = false;
   var cancelled = false;
   var requestId = null;
+  var downloadingJSON = false;
   var send = (message) => parent.postMessage({ pluginMessage: message }, "*");
   var isBusy = () => conversionStatus === "converting" || readingFiles;
   function status(message, state = conversionStatus) {
@@ -2169,6 +2230,7 @@
     cancel.hidden = !value;
     if (!value) cancel.disabled = false;
     get("clear-files").disabled = value;
+    json.disabled = value || downloadingJSON || !items.find((item) => item.id === selectedItemId)?.snapshot;
     for (const button of document.querySelectorAll("#file-list button")) button.disabled = value || button.dataset.boundary === "true";
     convert.textContent = conversionStatus === "converting" ? "\uBCC0\uD658 \uC911\u2026" : "Figma\uB85C \uBCC0\uD658";
   }
@@ -2182,6 +2244,7 @@
       const row = document.createElement("li");
       row.dataset.itemId = item.id;
       row.dataset.state = item.state;
+      row.dataset.selected = String(item.id === selectedItemId);
       const name = document.createElement("strong");
       name.textContent = `${index + 1}. ${item.file.name}`;
       row.append(name);
@@ -2247,19 +2310,20 @@
       remove.onclick = () => removeItem(item.id);
       actions.append(remove);
       row.append(actions);
-      if (item.outcome) {
-        const detail = document.createElement("button");
-        detail.type = "button";
-        detail.className = "secondary file-detail";
-        detail.textContent = item.state === "ERROR" ? "\uC624\uB958 \uC0C1\uC138 \uBCF4\uAE30" : "\uC0C1\uC138 \uB0B4\uC6A9 \uBCF4\uAE30";
-        detail.disabled = isBusy();
-        detail.onclick = () => {
-          selectedItemId = item.id;
-          displayReport(item);
-          json.hidden = !parsed || parsedItemId !== item.id;
-        };
-        row.append(detail);
-      }
+      const detail = document.createElement("button");
+      detail.type = "button";
+      detail.className = "secondary file-detail";
+      detail.textContent = "\uACB0\uACFC \uBCF4\uAE30";
+      detail.disabled = isBusy();
+      detail.setAttribute("aria-pressed", String(item.id === selectedItemId));
+      detail.onclick = () => {
+        if (isBusy()) return;
+        selectedItemId = item.id;
+        renderSelectedResult();
+        renderItems();
+        renderControls();
+      };
+      row.append(detail);
       list.append(row);
     }
   }
@@ -2267,8 +2331,21 @@
     get("filename").textContent = items.length === 1 ? items[0].file.name : items.length ? `HTML \uD30C\uC77C ${items.length}\uAC1C \uC120\uD0DD` : "HTML \uD30C\uC77C \uC5C5\uB85C\uB4DC";
     get("fileinfo").textContent = items.length === 1 ? `${(items[0].file.size / 1024).toFixed(1)} KB \xB7 \uB2E4\uB978 \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uB824\uBA74 \uD074\uB9AD` : "\uB4DC\uB798\uADF8\uD558\uAC70\uB098 \uD074\uB9AD\uD558\uC5EC \uC120\uD0DD \xB7 .html / .htm \xB7 \uCD5C\uB300 10\uAC1C \xB7 \uD30C\uC77C\uB2F9 5MB";
   }
-  function displayReport(item) {
-    if (!item.outcome) return;
+  function renderSelectedResult() {
+    const item = items.find((item2) => item2.id === selectedItemId);
+    clearReport();
+    get("selected-result").hidden = !item;
+    get("developer-options").hidden = items.length === 0;
+    const title = item ? `${items.indexOf(item) + 1}. ${item.file.name}` : "\uD30C\uC77C \uBAA9\uB85D\uC5D0\uC11C \uACB0\uACFC\uB97C \uC120\uD0DD\uD558\uC138\uC694.";
+    get("selected-file").textContent = title;
+    get("developer-file").textContent = title;
+    get("report-empty").hidden = !!item?.outcome;
+    get("report-empty").textContent = item ? "\uC544\uC9C1 \uBCC0\uD658 \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." : "";
+    json.disabled = isBusy() || downloadingJSON || !item?.snapshot;
+    get("json-info").textContent = item?.snapshot ? `${item.outcome?.status === "ERROR" ? "\uBD84\uC11D \uB370\uC774\uD130 \xB7 Frame \uC0DD\uC131 \uC2E4\uD328" : "\uBCC0\uD658\uC5D0 \uC0AC\uC6A9\uD55C \uB370\uC774\uD130"} \xB7 Viewport ${item.snapshotOptions.viewport}\xD7${item.snapshotOptions.viewportHeight} \xB7 JSON ${(item.snapshot.serializedBytes / 1024).toFixed(1)} KB / \uBCF4\uAD00 ${(item.snapshot.blob.size / 1024).toFixed(1)} KB` : item?.snapshotError ? `JSON\uC744 \uBCF4\uAD00\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. ${reportText(item.snapshotError)}` : "\uBD84\uC11D \uB370\uC774\uD130\uAC00 \uC5C6\uB294 \uD30C\uC77C\uC740 \uB2E4\uC6B4\uB85C\uB4DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    const retainedBytes = items.reduce((sum, entry) => sum + (entry.snapshot?.blob.size || 0), 0);
+    get("snapshot-storage").textContent = `JSON \uBCF4\uAD00 \uD569\uACC4: ${(retainedBytes / 1024).toFixed(1)} KB`;
+    if (!item?.outcome) return;
     try {
       showReport(item.report, item.outcome);
     } catch (error) {
@@ -2290,10 +2367,8 @@
     input.value = "";
     dropzone.classList.remove("drag");
     status(message, state);
-    if (currentItem) {
-      selectedItemId = currentItem.id;
-      displayReport(currentItem);
-    }
+    if (!items.some((item) => item.id === selectedItemId)) selectedItemId = items.find((item) => item.outcome)?.id || null;
+    renderSelectedResult();
     renderItems();
     renderControls();
   }
@@ -2317,6 +2392,7 @@
     const [item] = items.splice(from, 1);
     items.splice(to, 0, item);
     renderItems();
+    renderSelectedResult();
     renderControls();
   }
   function removeItem(id) {
@@ -2325,23 +2401,18 @@
     if (index < 0) return;
     const [removed] = items.splice(index, 1);
     if (currentItem === removed) currentItem = null;
-    if (parsedItemId === id) {
-      parsed = null;
-      parsedItemId = null;
-      json.hidden = true;
-    }
     if (selectedItemId === id || !selectedItemId) {
       const candidates = [...items.slice(index), ...items.slice(0, index).reverse()];
       const next = candidates.find((item) => item.outcome) || candidates[0];
       selectedItemId = next?.id || null;
-      clearReport();
-      if (next?.outcome) displayReport(next);
     }
     if (!items.length) {
       status("", "idle");
       clearReport();
       selectedItemId = null;
     }
+    revokeDownloads(id);
+    renderSelectedResult();
     updateSelectionLabel();
     refreshSummary();
     renderItems();
@@ -2352,19 +2423,18 @@
     items = [];
     selectedItemId = null;
     currentItem = null;
-    parsed = null;
-    parsedItemId = null;
     requestId = batchId = null;
     localAssets = {};
     assetFiles.value = "";
     get("asset-count").textContent = "\uC0C1\uB300 \uACBD\uB85C \uC774\uBBF8\uC9C0\uC6A9";
-    json.hidden = true;
+    revokeDownloads();
     input.value = "";
     clearReport();
     get("batch-summary").hidden = true;
     get("batch-summary").textContent = "";
     uploadError();
     status("", "idle");
+    renderSelectedResult();
     updateSelectionLabel();
     renderItems();
     renderControls();
@@ -2396,12 +2466,12 @@
       requestId = batchId = null;
       currentItem = null;
       selectedItemId = null;
-      parsed = null;
-      parsedItemId = null;
-      json.hidden = true;
+      revokeDownloads();
       clearReport();
       get("batch-summary").hidden = true;
       uploadError();
+      get("developer-options").open = false;
+      renderSelectedResult();
       updateSelectionLabel();
       status("\uC900\uBE44\uB418\uC5C8\uC2B5\uB2C8\uB2E4. Viewport\uB97C \uC124\uC815\uD558\uACE0 \uBCC0\uD658\uD558\uC138\uC694.", "idle");
     } catch (error) {
@@ -2515,18 +2585,20 @@
     const assets = localAssets;
     batchId = items.length > 1 ? newId() : null;
     cancelled = false;
-    parsed = null;
-    parsedItemId = null;
     currentItem = null;
     for (const item of items) {
       item.state = "WAITING";
       delete item.outcome;
       delete item.report;
       delete item.frameId;
+      delete item.snapshot;
+      delete item.snapshotOptions;
+      delete item.snapshotError;
     }
+    revokeDownloads();
     clearReport();
     get("batch-summary").hidden = true;
-    json.hidden = true;
+    renderSelectedResult();
     status("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026", "converting");
     renderControls();
     renderItems();
@@ -2543,9 +2615,7 @@
         currentItem = item;
         item.state = "CONVERTING";
         requestId = newId();
-        parsed = null;
-        parsedItemId = null;
-        json.hidden = true;
+        let parsed = null;
         progress("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026");
         renderItems();
         let parseError = null;
@@ -2555,8 +2625,16 @@
           const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
           if (!cancelled) parsed = await parseHTML(source, fileOptions, get("render-host"), assets);
           if (cancelled) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
-          parsedItemId = item.id;
-          if (options.debug) console.info("HTML \u2192 Figma intermediate document", { batchId, itemId: item.id, fileName: item.file.name, document: parsed });
+          if (parsed) {
+            item.snapshotOptions = { ...fileOptions };
+            try {
+              item.snapshot = await createJSONSnapshot(parsed);
+            } catch (error) {
+              item.snapshotError = errorMessage(error);
+              console.warn("JSON snapshot storage failed", { itemId: item.id, error });
+            }
+          }
+          if (options.debug) console.info("HTML \u2192 Figma intermediate document", { batchId, itemId: item.id, fileName: item.file.name, version: parsed?.version, snapshotBytes: item.snapshot?.serializedBytes });
         } catch (error) {
           console.warn("HTML analysis failed", error);
           parseError = errorMessage(error);
@@ -2610,7 +2688,6 @@
         const outcome = items[0]?.outcome;
         finishConversion(outcome?.status === "ERROR" || !outcome ? "error" : "success", cancelled ? "\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4." : outcome?.status === "SUCCESS" ? "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4." : outcome?.status === "SUCCESS_WITH_WARNINGS" ? "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC77C\uBD80 \uD56D\uBAA9\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : "HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
       }
-      json.hidden = !parsed;
     }
   });
   cancel.addEventListener("click", () => {
@@ -2619,16 +2696,39 @@
     status("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
     cancel.disabled = true;
   });
-  json.addEventListener("click", () => {
-    if (!parsed) return;
-    const url = URL.createObjectURL(new Blob([JSON.stringify(parsed, null, 2)], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "html-to-figma.json";
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1e3);
+  var downloadURLs = /* @__PURE__ */ new Map();
+  function revokeDownloads(itemId) {
+    for (const [url, entry] of downloadURLs) if (!itemId || entry.itemId === itemId) {
+      clearTimeout(entry.timer);
+      URL.revokeObjectURL(url);
+      downloadURLs.delete(url);
+    }
+  }
+  json.addEventListener("click", async () => {
+    const item = items.find((entry) => entry.id === selectedItemId), snapshot = item?.snapshot;
+    if (isBusy() || downloadingJSON || !item || !snapshot) return;
+    downloadingJSON = true;
+    json.disabled = true;
+    try {
+      const blob = await snapshotJSONBlob(snapshot);
+      if (!items.includes(item) || item.snapshot !== snapshot) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${item.file.name.replace(/\.html?$/i, "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60)}-${item.id}.json`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      downloadURLs.set(url, { itemId: item.id, timer: window.setTimeout(() => {
+        URL.revokeObjectURL(url);
+        downloadURLs.delete(url);
+      }, 1e3) });
+    } catch (error) {
+      get("json-info").textContent = `JSON \uB2E4\uC6B4\uB85C\uB4DC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4. ${reportText(errorMessage(error))}`;
+    } finally {
+      downloadingJSON = false;
+      renderControls();
+    }
   });
   function showReport(report, outcome) {
     get("report").hidden = false;
@@ -2706,6 +2806,7 @@
     }
   });
   get("status").dataset.state = conversionStatus;
+  renderSelectedResult();
   renderControls();
 })();
 </script>

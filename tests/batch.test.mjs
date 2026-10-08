@@ -211,7 +211,7 @@ test('Warnings, Debug, computed CSS, image assets and intermediate data remain i
     await s.ui.locator('.file-detail').first().click(); const firstDebug = await s.ui.locator('#debug-warnings').textContent();
     assert.equal(await s.ui.locator('#report-file').textContent(), 'warnings.html'); assert.ok(await s.ui.locator('#json').isHidden());
     await s.ui.locator('.file-detail').nth(1).click(); assert.equal(await s.ui.locator('#report-file').textContent(), 'clean.html');
-    assert.equal(await s.ui.locator('#warning-count').textContent(), '확인된 경고가 없습니다.'); assert.ok(await s.ui.locator('#json').isVisible());
+    assert.equal(await s.ui.locator('#warning-count').textContent(), '확인된 경고가 없습니다.'); await s.ui.locator('#developer-options').evaluate(el => el.open = true); assert.ok(await s.ui.locator('#json').isVisible()); assert.ok(await s.ui.locator('#json').isEnabled());
     assert.ok(!((await s.ui.locator('#debug-warnings').textContent()).includes('missing.css'))); assert.ok(firstDebug.includes('missing.css'));
     const flatten = node => [node, ...node.children.flatMap(flatten)];
     assert.equal(flatten(creates(s)[0].payload.root).find(n => n.text === 'A').style.color.r, 1);

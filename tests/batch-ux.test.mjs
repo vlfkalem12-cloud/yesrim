@@ -8,9 +8,11 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { createFigmaMock } from './figma-mock.mjs';
 
-let browser, server, base, mainBundle, oldMain;
+let browser, server, base, mainBundle, oldMain, snapshots;
 const baseline = process.env.BATCH_UX_BASELINE_SRC;
 before(async () => {
+  await build({entryPoints:['src/json-snapshots.ts'],bundle:true,outfile:'test-results/json-snapshots.mjs',format:'esm',platform:'node'});
+  snapshots=await import('../test-results/json-snapshots.mjs');
   const ui = await readFile('dist/ui.html', 'utf8'); mainBundle = await readFile('dist/code.js', 'utf8');
   if (baseline) oldMain = (await build({ entryPoints: [resolve(baseline, 'code.ts')], bundle: true, write: false, format: 'iife', target: 'es2020' })).outputFiles[0].text;
   server = createServer((req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(req.url === '/ui' ? ui : '<!doctype html><iframe src="/ui" width="440" height="1200"></iframe>'); });
@@ -174,4 +176,76 @@ test('UX conversion locks order, deletion and clear while retaining progress and
     s.release(); await s.ui.waitForFunction(()=>document.getElementById('status').dataset.state==='success'); await s.drain();
     assert.equal(s.mock.figma.currentPage.children.length,10); assert.ok(await s.ui.locator('.remove-file').first().isEnabled());
   }finally{await s.page.close();}
+});
+
+async function downloadJSON(s,index){
+  await s.ui.locator('.file-detail').nth(index).click();
+  await s.ui.locator('#developer-options').evaluate(el=>el.open=true);
+  const pending=s.page.waitForEvent('download'); await s.ui.locator('#json').click(); const download=await pending;
+  const text=await readFile(await download.path(),'utf8'); return {name:download.suggestedFilename(),text,doc:JSON.parse(text)};
+}
+
+test('UX selected Report and every JSON preserve the actual converted data across order and setting changes',async()=>{
+  const s=await session();try{
+    await choose(s,[file('same.html',basic('A')),file('same.html',basic('B')),file('C.html')]);
+    await viewportFor(s,1,360,844); await convert(s);
+    assert.equal(await s.ui.locator('#selected-file').textContent(),'1. same.html');
+    assert.equal(await s.ui.locator('#file-list > li').first().getAttribute('data-selected'),'true');
+    assert.equal(await s.ui.locator('#developer-options').evaluate(el=>el.open),false);
+    const saved=creates(s).map(m=>structuredClone(m.payload)),downloads=[];
+    for(let i=0;i<3;i++){
+      const result=await downloadJSON(s,i); assert.equal(result.text,JSON.stringify(saved[i],null,2)); downloads.push(result.name);
+      assert.match(await s.ui.locator('#selected-file').textContent(),new RegExp(`^${i+1}\\.`));
+    }
+    assert.equal(new Set(downloads).size,3); assert.match(downloads[0],/^same-/);
+    await s.ui.locator('.file-detail').nth(1).click(); const selected=(await ids(s))[1];
+    await s.ui.locator('.move-up').nth(1).click(); assert.equal((await ids(s))[0],selected);
+    assert.equal(await s.ui.locator('#selected-file').textContent(),'1. same.html');
+    await viewportFor(s,0,768,1024); const original=await downloadJSON(s,0); assert.equal(original.text,JSON.stringify(saved[1],null,2));
+    await convert(s); assert.equal(await s.ui.locator('#file-list > li').first().getAttribute('data-selected'),'true');
+    const next=await downloadJSON(s,0); assert.equal(next.text,JSON.stringify(creates(s)[3].payload,null,2)); assert.equal(next.doc.options.viewport,768);
+  }finally{await s.page.close();}
+});
+
+test('UX waiting and parser failures have no JSON, while converter failures retain labeled analysis data',async()=>{
+  const s=await session({failAt:[1]});try{
+    await choose(s,[file('failed.html'),file('hidden.html','<style>body{display:none}</style><p>hidden</p>'),file('last.html')]);
+    await s.ui.locator('.file-detail').nth(1).click(); assert.equal(await s.ui.locator('#report-empty').textContent(),'아직 변환 결과가 없습니다.'); assert.ok(await s.ui.locator('#json').isDisabled());
+    await convert(s); assert.equal(await s.ui.locator('#selected-file').textContent(),'2. hidden.html'); assert.ok(await s.ui.locator('#json').isDisabled());
+    assert.equal(await s.ui.locator('#report').getAttribute('data-result'),'ERROR');
+    const result=await downloadJSON(s,0); assert.equal(result.text,JSON.stringify(creates(s)[0].payload,null,2)); assert.match(await s.ui.locator('#json-info').textContent(),/분석 데이터 · Frame 생성 실패/);
+    await s.ui.locator('.remove-file').first().click(); assert.equal(await s.ui.locator('#selected-file').textContent(),'1. hidden.html'); assert.ok(await s.ui.locator('#json').isDisabled());
+    await s.ui.locator('.remove-file').first().click(); assert.equal(await s.ui.locator('#report-file').textContent(),'last.html'); assert.ok(await s.ui.locator('#json').isEnabled());
+  }finally{await s.page.close();}
+});
+
+test('UX deleting and clearing release snapshot storage and revoke download URLs without removing Canvas frames',async()=>{
+  const s=await session();try{
+    await s.ui.evaluate(()=>{
+      const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL),timeout=window.setTimeout.bind(window);
+      window.urls=[];window.revoked=[];
+      URL.createObjectURL=blob=>{const url=create(blob);window.urls.push(url);return url;};
+      URL.revokeObjectURL=url=>{window.revoked.push(url);revoke(url);};
+      window.setTimeout=(fn,delay,...args)=>timeout(fn,delay===1000?100000:delay,...args);
+    });
+    await choose(s,[file('A.html'),file('B.html')]);await convert(s);await downloadJSON(s,0);
+    const before=await s.ui.locator('#snapshot-storage').textContent(); await s.ui.locator('.remove-file').first().click();
+    assert.ok(await s.ui.evaluate(()=>window.revoked.includes(window.urls[0])));assert.notEqual(await s.ui.locator('#snapshot-storage').textContent(),before);
+    await downloadJSON(s,0);await s.ui.locator('#clear-files').click();await s.ui.locator('#clear-confirm-submit').click();
+    assert.equal(await s.ui.locator('#snapshot-storage').textContent(),'JSON 보관 합계: 0.0 KB'); assert.ok(await s.ui.evaluate(()=>window.urls.every(url=>window.revoked.includes(url))));
+    assert.equal(s.mock.figma.currentPage.children.length,2);await choose(s,[file('A.html')]);assert.ok(await s.ui.locator('#json').isDisabled());
+  }finally{await s.page.close();}
+});
+
+test('UX streamed snapshots keep the exact version-1 JSON representation, with bounded image chunks and compressed storage',async()=>{
+  const doc={version:1,options:{viewport:360,viewportHeight:844},root:{name:'한글',text:'a\nb',children:[]},assets:{one:[0,255,12],empty:[]},warnings:[],unused:undefined};
+  const exact=JSON.stringify(doc,null,2);
+  for(const compress of [false,true]){
+    const saved=await snapshots.createJSONSnapshot(doc,compress); const blob=await snapshots.snapshotJSONBlob(saved);
+    assert.equal(await blob.text(),exact); assert.equal(saved.serializedBytes,Buffer.byteLength(exact));assert.equal(blob.type,'application/json');
+  }
+  const large={...doc,assets:{image:Array.from({length:1024*1024},(_,i)=>i%256)}};
+  const saved=await snapshots.createJSONSnapshot(large); assert.ok(saved.blob.size<saved.serializedBytes/20);
+  assert.deepEqual(JSON.parse(await (await snapshots.snapshotJSONBlob(saved)).text()),JSON.parse(JSON.stringify(large)));
+  await writeFile('test-results/json-snapshot-storage.json',JSON.stringify({sourceImageBytes:large.assets.image.length,serializedBytes:saved.serializedBytes,retainedBlobBytes:saved.blob.size,note:'Storage size measurement; not native Figma or process heap usage'},null,2));
 });
