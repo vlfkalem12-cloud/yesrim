@@ -54,6 +54,8 @@ Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 �
 
 Gradient 확인에는 `test/gradient-regression.html`을 사용하세요. 요청한 최상위 4-stop 배경, 0 / 90 / 180 / 270deg 방향, rgba stop, Grid 배경과 Text Frame, 미지원 각도의 Solid fallback을 포함했습니다.
 
+접근성 숨김과 Mixed Inline 확인에는 `test/inline-accessibility-regression.html`을 사용하세요. 1px clip / inset label, 작은 SVG·Dot·Divider·Progress Bar, 질문 + Badge, Text + Icon, 교차하는 Text / Element, 순수 Text와 줄바꿈을 함께 확인할 수 있습니다. 접근성 숨김 제외 기록은 Debug Mode에서만 표시합니다.
+
 Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기본 ON, Debug Mode는 기본 OFF입니다. Debug Mode를 켜면 `card [div.card]`처럼 레이어 이름에 HTML selector가 추가됩니다. Images를 끄면 이미지 bytes 수집과 Image Fill 생성을 생략하고 `img` 영역의 빈 Rectangle을 유지합니다. HTML 치수 측정 단계에서는 원본 이미지가 로딩될 수 있습니다. Inline SVG Vector 변환은 유지됩니다.
 
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
@@ -69,6 +71,8 @@ src/ui.ts              FileReader, UI ↔ main 통신, JSON 다운로드
 src/parser.ts          DOMParser, sandbox 렌더링, computed CSS → JSON
 src/form-controls.ts   현재 value / placeholder / 선택된 option 및 텍스트 치수
 src/gradients.ts       Linear Gradient 파싱, Solid fallback, Figma Paint 방향
+src/dom-visibility.ts  접근성 숨김 clipping 조합 판정
+src/inline-layout.ts   Mixed Inline 스타일 구분과 한 줄 Auto Layout
 src/sizing.ts          부모·Flex·CSS 크기와 min/max → Fixed / Fill / Hug
 src/grid.ts            기본 Grid → 세로·가로 Auto Layout 중첩
 src/assets.ts          이미지·배경 이미지 로딩, 상대 경로 연결, 캐시
@@ -84,6 +88,7 @@ test/phase2-test.html  2차 기능과 실패 복구 테스트 HTML
 test/rendering-regression.html  Block / Absolute / 다중 배경 렌더링 재현 HTML
 test/form-controls-regression.html  Form Control 내용과 주변 Layout 회귀 HTML
 test/gradient-regression.html  Linear Gradient 배경과 fallback 회귀 HTML
+test/inline-accessibility-regression.html  접근성 숨김과 Mixed Inline 회귀 HTML
 tests/                 Chromium 파싱·UI 및 Figma API 모의 테스트
 ```
 
@@ -94,6 +99,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - `.html` / `.htm` 클릭 업로드와 Drag & Drop, 최대 5MB.
 - DOM 계층과 id → 첫 번째 class → tag 우선순위 레이어 이름. 장식 없는 단일 body wrapper는 최상위 Imported HTML로 통합합니다. 별도 optimizer는 치수와 위치가 같은 익명 단일 wrapper만 보수적으로 제거합니다.
 - 일반 컨테이너와 button은 Frame, h1~h6 / p / span / label / strong / small 등은 Text. 배경·padding·border가 있는 Text는 Frame 안에 Text를 배치합니다. 컨테이너의 직접 text node도 별도로 생성합니다.
+- 순수 Text와 동일한 스타일의 단순 inline 자식은 기존 단일 Text를 유지합니다. 스타일이 있는 자식과 직접 Text가 섞이면 childNodes 순서대로 분리하며 Badge의 배경 / padding / radius / font / 크기를 보존합니다. 한 줄이며 측정 간격이 일정한 경우 Horizontal Auto Layout과 baseline 정렬을 사용합니다. 간격은 margin과 공백을 포함한 실제 bounding rect 차이로 계산하여 중복 margin wrapper를 피합니다. 줄바꿈이나 간격·정렬을 안전하게 표현할 수 없는 경우 측정된 상대 좌표를 유지합니다.
 - text / search / email / url / tel / number input과 textarea는 현재 DOM value → placeholder → 빈 control 순으로 처리합니다. select는 현재 선택된 option의 표시 이름을 사용합니다. Control Frame의 측정 크기·border·padding을 유지하고 내부에 편집 가능한 Text를 배치하며, placeholder 색상·opacity와 textarea 줄바꿈을 반영합니다. label / span 안의 중첩 control도 유지합니다. checkbox / radio / button의 변환 경로는 유지합니다.
 - Flex row / column → 가로 / 세로 Auto Layout. reverse 방향과 CSS order를 반영합니다.
 - `gap`, 네 방향 padding, justify start / center / end / space-between, align start / center / end 및 cross-axis stretch.
@@ -111,13 +117,14 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - Inline `<svg>`는 computed fill / stroke 등 스타일을 반영한 SVG를 `figma.createNodeFromSvg`로 전달하여 Vector를 유지합니다. 실패하면 placeholder Frame과 경고를 만들고 다른 요소를 계속 처리합니다.
 - CSS Variable은 최종 computed 값을 스타일에 적용하고 이름·값·scope를 JSON에 보관합니다. 실제 Figma Variable 생성은 후속 확장을 위한 범위입니다.
 - display:none / visibility:hidden 요소는 기본적으로 생략합니다. 복잡한 Grid와 줄바꿈 Flexbox는 경고와 함께 측정된 고정 좌표로 보존합니다.
+- 접근성용 숨김은 절대·고정 위치, 1px 이하 치수, 완전히 닫힌 clip / inset 및 overflow 또는 보조 spacing 조합으로 판단합니다. 크기·class 이름·aria-hidden만으로 제외하지 않습니다. 숨김 자식이 부모의 Text에 합쳐져 노출되지 않도록 하며, 포커스 후 실제로 보이는 요소는 유지합니다. Debug Mode에서만 `ACCESSIBILITY_HIDDEN` 기록을 남깁니다.
 - 개별 노드·폰트·이미지 실패는 Warning과 함께 계속 처리합니다. 폰트가 하나도 로드되지 않으면 Text 대신 placeholder를 만들고 명시합니다. 취소된 Figma 변환의 부분 Frame은 제거합니다.
 
 ## 미지원 범위와 Known Issues
 
 - JavaScript 실행 결과, interactive state, animation / transition, Shadow DOM / Web Components, canvas / video / iframe, complex transform / float / pseudo-element는 재현하지 않습니다. 일부는 경고와 빈 Frame으로 대체되거나 생략됩니다.
 - Grid span / 명시적 배치 / dense / 복잡한 track 함수와 `flex-wrap`은 editable fixed layout으로 보존합니다. 기본 Grid의 모든 Cell은 측정된 행 높이를 사용하므로 후속 편집 때 CSS의 자동 행 높이와 차이가 날 수 있습니다.
-- 여러 inline 글꼴·스타일은 부모의 Text 스타일로 통합합니다. 가상 리스트, 스크립트로 생성되는 DOM, form control의 내부 브라우저 렌더링은 완전히 재현하지 않습니다.
+- 복잡한 inline 줄바꿈 전체를 Auto Layout 엔진으로 재현하지 않습니다. 여러 줄과 서로 다른 간격은 측정된 Text / Frame 좌표를 사용합니다. 가상 리스트, 스크립트로 생성되는 DOM, form control의 내부 브라우저 렌더링은 완전히 재현하지 않습니다.
 - cardinal 방향 외의 Linear Gradient 각도, px stop / color hint / 두 위치 stop / 색상 보간 공간은 Solid fallback으로 단순화합니다. radial / conic / repeating gradient, 여러 URL·Gradient 전체 레이어, 반복 배경 / center 이외 배경 위치, list marker, writing-mode / RTL, space-around / evenly, baseline, 개별 align-self 정렬, 음수 margin, 서로 다른 border 색상은 생략하거나 단순화합니다. Figma API가 지원하지 않는 Frame shadow spread는 blur·offset을 유지하고 경고합니다.
 - 서로 다른 flex-grow 비율은 Figma Fill의 동일 분배와 차이가 있어 측정 크기로 고정하고 경고합니다. 복잡한 flow 자식 z-index와 CSS stacking context 전체는 완전히 재현하지 않습니다.
 - HTML 파일만으로 상대 경로 파일이나 로컬 폰트 파일을 읽을 수 없습니다. 이미지는 함께 선택할 수 있고, CSS는 인라인 또는 HTTPS URL을 사용하세요. HTTP와 기타 URL scheme은 외부 리소스로 허용하지 않습니다.
@@ -154,4 +161,6 @@ Form Control 검증은 value / placeholder 우선순위, 빈 control, textarea �
 
 Gradient 검증은 요청한 4-stop 배경, CSS 방향과 Figma transform의 시작·끝 좌표, hex / rgba alpha, 기본·생략 stop, 파싱·Paint 적용 실패 후 Solid fallback, body / html 및 익명 wrapper 보존, Grid Row / Cell·Text의 배경 중복 방지, 기존 단색·이미지·opacity와 옵션 처리를 검사합니다.
 
-전체 47개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+접근성 / Mixed Inline 검증은 clip / inset / 보조 spacing 패턴, Debug 기록, 포커스 후 표시, 작은 SVG·Divider·Progress Bar 보존, Text + Badge / Icon의 스타일·DOM 순서·간격, 순수 Text / br 유지, 줄바꿈의 브라우저 상대 좌표, 옵션 OFF 및 같은 HTML 연속 변환 후 동일한 구조·좌표·스타일을 검사합니다.
+
+전체 54개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

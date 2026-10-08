@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Accessibility Hidden and Mixed Inline Regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/24px Inter, sans-serif; }
+  main { display: flex; flex-direction: column; gap: 16px; padding: 24px; width: 720px; background: linear-gradient(180deg, #fff, #f1f8f6); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; margin: -1px; padding: 0; border: 0; }
+  .question { font-size: 14px; line-height: normal; font-weight: 600; color: #333d4b; }
+  .badge { margin-left: 8px; font-size: 11.5px; font-weight: 600; color: #0b7a6e; background: #e6f4f1; border-radius: 5px; padding: 2px 7px; }
+  #wrapped { display: block; width: 160px; }
+  #field { width: 240px; height: 64px; padding: 8px; font: inherit; }
+</style>
+<main>
+  <div class="row" id="accessibility-row">
+    <label id="hidden-label" for="field" class="sr-only">Hidden Label</label>
+    <span id="hidden-inset" class="visually-hidden">Screen reader only</span>
+    <div id="visible-dot" style="width:12px;height:12px;border-radius:50%;background:#2563eb"></div>
+    <svg id="small-svg" aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M0 0h12v12H0z" fill="#2563eb"/></svg>
+    <div id="divider" style="width:1px;height:16px;background:#667788"></div>
+    <div id="progress" style="width:80px;height:1px;overflow:hidden;background:#2563eb"></div>
+    <div id="tiny-dot" style="position:absolute;width:1px;height:1px;overflow:hidden;background:#2563eb"></div>
+    <div id="tiny-visible-clip" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 1px 1px 0);background:#2563eb"></div>
+    <span id="visible-text">Visible Text</span>
+  </div>
+  <span id="hidden-in-text">Visible label<span class="sr-only">Secret inline label</span></span>
+  <span id="question" class="question">
+    그 집에 실제로 산 기간이 있나요?
+    <span id="question-badge" class="badge">대화에서 · 방금</span>
+  </span>
+  <span id="ordered" class="question">Before <span id="ordered-badge" class="badge">NEW</span> After <svg id="ordered-icon" width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2563eb"/></svg> End</span>
+  <span id="icon-label" class="question">Icon <svg id="inline-icon" width="12" height="12" viewBox="0 0 12 12"><path d="M0 0h12v12H0z" fill="#2563eb"/></svg></span>
+  <span id="plain">Hello</span>
+  <span id="plain-children">Hello<span> world</span></span>
+  <span id="line-breaks">first<br>second</span>
+  <span id="styled-font">Normal <strong id="bold-child">Bold</strong></span>
+  <span id="radius-only" style="border-radius:5px">Radius</span>
+  <span id="width-only" style="display:inline-block;width:120px;height:32px">Fixed box</span>
+  <span id="wrapped">Several words that wrap onto multiple lines <span id="wrapped-badge" class="badge">WRAPPED</span> and more words after the badge.</span>
+  <textarea id="field">현재 메모</textarea>
+</main>
+</html>

@@ -8,6 +8,8 @@ import { collectCSSVariableNames, readCSSVariables } from './css-variables';
 import { allowedAsset, collectImages, resolveLocalAsset } from './assets';
 import { measureFormText, readFormContent } from './form-controls';
 import { parseLinearGradient } from './gradients';
+import { isAccessibilityHidden } from './dom-visibility';
+import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
@@ -139,6 +141,10 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   const variableNames = collectCSSVariableNames(doc);
   const computedCache = new WeakMap<Element, CSSStyleDeclaration>();
   const computed = (el: Element) => { if (!computedCache.has(el)) computedCache.set(el, view.getComputedStyle(el)); return computedCache.get(el)!; };
+  const skipped = (el: Element) => {
+    const style = computed(el);
+    return OMIT_TAGS.has(el.localName) || style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || isAccessibilityHidden(style);
+  };
   const warn = (code: string, node: string, message: string) => { if (warnings.length < 500) warnings.push({ code, node, message }); };
   let count = 0;
   const bounds = (rect: DOMRect): Bounds => ({ x: rect.left, y: rect.top, width: clamp(rect.width), height: clamp(rect.height) });
@@ -168,6 +174,10 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     if (count >= LIMITS.nodes || depth > LIMITS.depth) { warn('TREE_LIMIT', layerName(el), '노드 수 또는 중첩 깊이 제한으로 일부 요소를 생략했습니다.'); return []; }
     const style = computed(el);
     if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return [];
+    if (isAccessibilityHidden(style)) {
+      if (options.debug) warn('ACCESSIBILITY_HIDDEN', layerName(el), `Skipped Accessibility Hidden Element: ${selector(el)}${el.hasAttribute('for') ? `[for=${JSON.stringify(el.getAttribute('for'))}]` : ''}`);
+      return [];
+    }
     if (style.display === 'contents') {
       warn('DISPLAY_CONTENTS', layerName(el), 'display:contents 요소의 자식들을 부모에 배치했습니다.');
       return parseChildren(el, depth);
@@ -179,7 +189,11 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       const box = child.getBoundingClientRect();
       return readFormContent(child) !== null && (box.width > 0 || box.height > 0) && !['hidden', 'collapse'].includes(computed(child).visibility);
     });
-    const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el) && !hasFormContent;
+    const inlineElements = [...el.children].filter(child => !skipped(child));
+    const inlineContainer = TEXT_TAGS.has(el.localName) || (inlineElements.length > 0 && inlineElements.every(child =>
+      ['inline', 'inline-block', 'inline-flex'].includes(computed(child).display) || ['svg', 'img'].includes(child.localName)));
+    const separateInline = inlineContainer && needsInlineChildren(el, computed, skipped);
+    const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el) && !hasFormContent && !separateInline;
     const node: ParsedNode = {
       type: el.localName === 'svg' ? 'SVG' : el.localName === 'img' ? 'IMAGE' : isText ? 'TEXT' : 'FRAME', tagName: el.localName, name, rect,
       layout: readLayout(style, el), size: inferSizing(el, style, el.parentElement ? computed(el.parentElement) : null, rect.width, rect.height),
@@ -210,7 +224,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       node.text = transformText(node.text, style.textTransform);
       if (el.children.length) warn('INLINE_TEXT', name, '여러 inline 텍스트 스타일을 부모의 스타일로 통합했습니다.');
       const noWrap = ['nowrap', 'pre'].includes(style.whiteSpace) && node.size.widthMode !== 'HUG';
-      if ((node.style.background?.a || node.style.backgroundImage || node.style.backgroundGradient || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some(v => v > 0) || Object.values(node.layout.padding).some(v => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
+      const dimensionBox = ['inline', 'inline-block'].includes(style.display) || ['span', 'label', 'a', 'strong', 'small', 'em', 'b', 'i', 'code'].includes(el.localName);
+      if ((hasInlineBoxStyle(el, style, dimensionBox) || noWrap) && count < LIMITS.nodes && depth < LIMITS.depth) {
         // Keep decorated text editable, with a frame carrying its box styling.
         node.type = 'FRAME';
         const child: ParsedNode = { ...node, type: 'TEXT', name: `${name} / text`, rect: bounds(range.getBoundingClientRect()),
@@ -218,6 +233,11 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
           layout: { ...node.layout, direction: 'NONE', padding: zero(), margin: zero(), absolute: false }, children: [] };
         child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === 'HUG' ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
+        if (options.autoLayout && ['inline', 'inline-block'].includes(style.display) && isSingleTextLine(range)) {
+          node.layout.direction = 'HORIZONTAL'; node.layout.align = 'BASELINE'; node.layout.justify = 'MIN'; node.layout.gap = 0;
+          child.size.widthMode = 'HUG';
+          if (node.size.authoredHeight === 'auto') node.size.heightMode = 'HUG';
+        }
       }
     } else if (formContent !== null) {
       const content = formContent;
@@ -246,7 +266,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     } else if (UNSUPPORTED_TAGS.has(el.localName) || el.localName.includes('-')) {
       warn('UNSUPPORTED_ELEMENT', name, `${el.localName}은 편집 가능한 빈 Frame으로 대체했습니다.`);
     } else {
-      node.children = parseChildren(el, depth);
+      node.children = parseChildren(el, depth, separateInline);
+      if (options.autoLayout && separateInline) configureInlineRow(el, node, style);
     }
     const gridRows = node.grid ? Math.ceil(node.children.filter(child => !child.layout.absolute).length / node.grid.columns.length) : 0;
     const gridExtras = node.grid ? gridRows * (node.grid.columns.length + 1) : 0;
@@ -257,16 +278,20 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     if (!options.autoLayout) node.layout.direction = 'NONE';
     return [node];
   }
-  function parseChildren(el: Element, depth: number): ParsedNode[] {
+  function parseChildren(el: Element, depth: number, inlineContent = false): ParsedNode[] {
     if (depth >= LIMITS.depth) { warn('TREE_LIMIT', layerName(el), '중첩 깊이 제한으로 자식 요소를 생략했습니다.'); return []; }
     const children: ParsedNode[] = [];
     for (const child of [...el.childNodes]) {
       if (child.nodeType === Node.ELEMENT_NODE) children.push(...parse(child as Element, depth + 1));
       else if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim() && count < LIMITS.nodes) {
-        const range = doc.createRange(); range.selectNode(child);
-        const rect = bounds(range.getBoundingClientRect());
         const style = computed(el);
         const preserve = ['pre', 'pre-wrap', 'break-spaces'].includes(style.whiteSpace);
+        const range = doc.createRange(); range.selectNode(child);
+        if (inlineContent && !preserve) {
+          range.setStart(child, child.textContent.search(/\S/));
+          range.setEnd(child, child.textContent.length - (child.textContent.match(/\s*$/)?.[0].length || 0));
+        }
+        const rect = bounds(range.getBoundingClientRect());
         const value = transformText(preserve ? child.textContent : child.textContent.replace(/\s+/g, ' ').trim(), style.textTransform);
         if (!rect.width && !rect.height) continue;
         children.push({ type: 'TEXT', tagName: '#text', name: `${layerName(el)} / text`, text: value, rect,

@@ -602,6 +602,74 @@
     return { gradient: { angle, stops: stops.map((stop) => ({ color: stop.color, position: stop.position })), layerIndex: 0 }, fallback };
   }
 
+  // src/dom-visibility.ts
+  function isAccessibilityHidden(style) {
+    if (!["absolute", "fixed"].includes(style.position) || style.display === "contents") return false;
+    const width = parseFloat(style.width), height = parseFloat(style.height);
+    const tiny = Number.isFinite(width) && width <= 1 || Number.isFinite(height) && height <= 1;
+    if (!tiny) return false;
+    const overflowHidden = [style.overflowX, style.overflowY].every((value) => ["hidden", "clip"].includes(value));
+    const compactSpacing = style.whiteSpace === "nowrap" && Object.values(readInsets(style, "margin")).some((value) => value < 0) && [readInsets(style, "padding"), readInsets(style, "border")].every((insets) => Object.values(insets).every((value) => value === 0));
+    const rect = style.clip.match(/^rect\((.*)\)$/i);
+    if (rect) {
+      const sides2 = rect[1].trim().split(/[\s,]+/);
+      if (sides2.length === 4 && sides2.every((side) => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/.test(side))) {
+        const [top2, right2, bottom2, left2] = sides2.map(parseFloat);
+        if (bottom2 <= top2 || right2 <= left2) return overflowHidden || compactSpacing;
+      }
+    }
+    const inset = style.clipPath.match(/^inset\(([^)]*)\)$/i);
+    if (!inset) return false;
+    const sides = inset[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
+    if (!sides.length || sides.length > 4 || !sides.every((side) => /^\d+(?:\.\d+)?%$/.test(side))) return false;
+    const values = sides.map(parseFloat);
+    const top = values[0], right = values[1] ?? top, bottom = values[2] ?? top, left = values[3] ?? right;
+    return top + bottom >= 100 || left + right >= 100;
+  }
+
+  // src/inline-layout.ts
+  function hasInlineBoxStyle(element, style, includeDimensions = true) {
+    return !!parseColor(style.backgroundColor)?.a || style.backgroundImage !== "none" || style.boxShadow !== "none" || [readInsets(style, "padding"), readInsets(style, "border")].some((insets) => Object.values(insets).some((value) => value > 0)) || ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].some((key) => number(style.getPropertyValue(key)) > 0) || includeDimensions && (authoredDimension(element, "width") !== "auto" || authoredDimension(element, "height") !== "auto");
+  }
+  function needsInlineChildren(element, computed, skipped) {
+    const stack = [...element.children];
+    const properties = ["font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "color", "text-decoration-line", "text-transform", "white-space"];
+    while (stack.length) {
+      const child = stack.pop();
+      if (child.localName === "br") continue;
+      if (skipped(child)) return true;
+      const style = computed(child), parentStyle = computed(child.parentElement);
+      if (["svg", "img", "input", "textarea", "select"].includes(child.localName) || hasInlineBoxStyle(child, style) || Object.values(readInsets(style, "margin")).some((value) => value !== 0) || number(style.opacity, 1) !== 1 || properties.some((key) => style.getPropertyValue(key) !== parentStyle.getPropertyValue(key))) return true;
+      stack.push(...child.children);
+    }
+    return false;
+  }
+  function configureInlineRow(element, node, style) {
+    if (node.children.length < 2 || node.grid || node.layout.direction !== "NONE" || node.layout.wrap || style.direction !== "ltr" || !["start", "left"].includes(style.textAlign) || style.transform !== "none" || node.children.some((child) => child.layout.absolute || ["input", "textarea", "select"].includes(child.tagName) || !["inline", "inline-block", "inline-flex"].includes(child.layout.display) && !["SVG", "IMAGE"].includes(child.type))) return;
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    if (!isSingleTextLine(range)) return;
+    if ([...element.children].some((child) => {
+      const childStyle = element.ownerDocument.defaultView.getComputedStyle(child);
+      return childStyle.verticalAlign !== "baseline" || childStyle.transform !== "none";
+    })) return;
+    const gaps = node.children.slice(1).map((child, index) => child.rect.x - (node.children[index].rect.x + node.children[index].rect.width));
+    if (gaps.some((gap) => gap < -0.5) || Math.max(...gaps) - Math.min(...gaps) > 1) return;
+    node.layout.direction = "HORIZONTAL";
+    node.layout.align = "BASELINE";
+    node.layout.justify = "MIN";
+    node.layout.reverse = false;
+    node.layout.gap = Math.max(0, gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length);
+    node.layout.padding.left = Math.max(node.layout.padding.left, node.children[0].rect.x - node.rect.x - node.style.borderWidths.left);
+    if (node.size.authoredHeight === "auto") node.size.heightMode = "HUG";
+    for (const child of node.children) {
+      child.layout.margin = { top: 0, right: 0, bottom: 0, left: 0 };
+      child.layout.order = 0;
+      child.layout.grow = 0;
+      child.layout.alignSelf = "auto";
+    }
+  }
+
   // src/parser.ts
   var TEXT_TAGS = /* @__PURE__ */ new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "strong", "small", "a", "em", "b", "i", "li", "pre", "code"]);
   var OMIT_TAGS = /* @__PURE__ */ new Set(["head", "style", "script", "link", "meta", "title", "noscript", "template", "br"]);
@@ -762,6 +830,10 @@
       if (!computedCache.has(el)) computedCache.set(el, view.getComputedStyle(el));
       return computedCache.get(el);
     };
+    const skipped = (el) => {
+      const style = computed(el);
+      return OMIT_TAGS.has(el.localName) || style.display === "none" || ["hidden", "collapse"].includes(style.visibility) || isAccessibilityHidden(style);
+    };
     const warn = (code, node, message) => {
       if (warnings.length < 500) warnings.push({ code, node, message });
     };
@@ -799,6 +871,10 @@
       }
       const style = computed(el);
       if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return [];
+      if (isAccessibilityHidden(style)) {
+        if (options.debug) warn("ACCESSIBILITY_HIDDEN", layerName(el), `Skipped Accessibility Hidden Element: ${selector(el)}${el.hasAttribute("for") ? `[for=${JSON.stringify(el.getAttribute("for"))}]` : ""}`);
+        return [];
+      }
       if (style.display === "contents") {
         warn("DISPLAY_CONTENTS", layerName(el), "display:contents \uC694\uC18C\uC758 \uC790\uC2DD\uB4E4\uC744 \uBD80\uBAA8\uC5D0 \uBC30\uCE58\uD588\uC2B5\uB2C8\uB2E4.");
         return parseChildren(el, depth);
@@ -810,7 +886,10 @@
         const box = child.getBoundingClientRect();
         return readFormContent(child) !== null && (box.width > 0 || box.height > 0) && !["hidden", "collapse"].includes(computed(child).visibility);
       });
-      const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el) && !hasFormContent;
+      const inlineElements = [...el.children].filter((child) => !skipped(child));
+      const inlineContainer = TEXT_TAGS.has(el.localName) || inlineElements.length > 0 && inlineElements.every((child) => ["inline", "inline-block", "inline-flex"].includes(computed(child).display) || ["svg", "img"].includes(child.localName));
+      const separateInline = inlineContainer && needsInlineChildren(el, computed, skipped);
+      const isText = TEXT_TAGS.has(el.localName) && !hasBlockChildren(el) && !hasFormContent && !separateInline;
       const node = {
         type: el.localName === "svg" ? "SVG" : el.localName === "img" ? "IMAGE" : isText ? "TEXT" : "FRAME",
         tagName: el.localName,
@@ -852,7 +931,8 @@
         node.text = transformText(node.text, style.textTransform);
         if (el.children.length) warn("INLINE_TEXT", name, "\uC5EC\uB7EC inline \uD14D\uC2A4\uD2B8 \uC2A4\uD0C0\uC77C\uC744 \uBD80\uBAA8\uC758 \uC2A4\uD0C0\uC77C\uB85C \uD1B5\uD569\uD588\uC2B5\uB2C8\uB2E4.");
         const noWrap = ["nowrap", "pre"].includes(style.whiteSpace) && node.size.widthMode !== "HUG";
-        if ((node.style.background?.a || node.style.backgroundImage || node.style.backgroundGradient || node.style.shadow || noWrap || Object.values(node.style.borderWidths).some((v) => v > 0) || Object.values(node.layout.padding).some((v) => v > 0)) && count < LIMITS.nodes && depth < LIMITS.depth) {
+        const dimensionBox = ["inline", "inline-block"].includes(style.display) || ["span", "label", "a", "strong", "small", "em", "b", "i", "code"].includes(el.localName);
+        if ((hasInlineBoxStyle(el, style, dimensionBox) || noWrap) && count < LIMITS.nodes && depth < LIMITS.depth) {
           node.type = "FRAME";
           const child = {
             ...node,
@@ -867,6 +947,14 @@
           node.children = [child];
           node.text = void 0;
           count++;
+          if (options.autoLayout && ["inline", "inline-block"].includes(style.display) && isSingleTextLine(range)) {
+            node.layout.direction = "HORIZONTAL";
+            node.layout.align = "BASELINE";
+            node.layout.justify = "MIN";
+            node.layout.gap = 0;
+            child.size.widthMode = "HUG";
+            if (node.size.authoredHeight === "auto") node.size.heightMode = "HUG";
+          }
         }
       } else if (formContent !== null) {
         const content = formContent;
@@ -903,7 +991,8 @@
       } else if (UNSUPPORTED_TAGS.has(el.localName) || el.localName.includes("-")) {
         warn("UNSUPPORTED_ELEMENT", name, `${el.localName}\uC740 \uD3B8\uC9D1 \uAC00\uB2A5\uD55C \uBE48 Frame\uC73C\uB85C \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.`);
       } else {
-        node.children = parseChildren(el, depth);
+        node.children = parseChildren(el, depth, separateInline);
+        if (options.autoLayout && separateInline) configureInlineRow(el, node, style);
       }
       const gridRows = node.grid ? Math.ceil(node.children.filter((child) => !child.layout.absolute).length / node.grid.columns.length) : 0;
       const gridExtras = node.grid ? gridRows * (node.grid.columns.length + 1) : 0;
@@ -917,7 +1006,7 @@
       if (!options.autoLayout) node.layout.direction = "NONE";
       return [node];
     }
-    function parseChildren(el, depth) {
+    function parseChildren(el, depth, inlineContent = false) {
       if (depth >= LIMITS.depth) {
         warn("TREE_LIMIT", layerName(el), "\uC911\uCCA9 \uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C \uC790\uC2DD \uC694\uC18C\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
         return [];
@@ -926,11 +1015,15 @@
       for (const child of [...el.childNodes]) {
         if (child.nodeType === Node.ELEMENT_NODE) children.push(...parse(child, depth + 1));
         else if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim() && count < LIMITS.nodes) {
-          const range = doc.createRange();
-          range.selectNode(child);
-          const rect = bounds(range.getBoundingClientRect());
           const style = computed(el);
           const preserve = ["pre", "pre-wrap", "break-spaces"].includes(style.whiteSpace);
+          const range = doc.createRange();
+          range.selectNode(child);
+          if (inlineContent && !preserve) {
+            range.setStart(child, child.textContent.search(/\S/));
+            range.setEnd(child, child.textContent.length - (child.textContent.match(/\s*$/)?.[0].length || 0));
+          }
+          const rect = bounds(range.getBoundingClientRect());
           const value = transformText(preserve ? child.textContent : child.textContent.replace(/\s+/g, " ").trim(), style.textTransform);
           if (!rect.width && !rect.height) continue;
           children.push({

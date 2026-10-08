@@ -7,7 +7,7 @@ export interface ParsedLayout {
   direction: 'HORIZONTAL' | 'VERTICAL' | 'NONE';
   reverse: boolean;
   justify: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN';
-  align: 'MIN' | 'CENTER' | 'MAX';
+  align: 'MIN' | 'CENTER' | 'MAX' | 'BASELINE';
   stretch: boolean;
   gap: number;
   padding: Insets;

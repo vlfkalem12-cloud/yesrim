@@ -104,6 +104,22 @@ test('Real iframe UI receives relayed Main completion and converts A, B, C and t
   } finally { await session.page.close(); }
 });
 
+test('The same accessibility and Mixed Inline HTML repeats without changing its generated layout or UI lifecycle', async () => {
+  const session = await openSession();
+  const content = await readFile('test/inline-accessibility-regression.html', 'utf8');
+  const snapshot = node => ({ type: node.type, name: node.name, characters: node.characters || '', width: node.width, height: node.height, x: node.x, y: node.y,
+    layout: node.layoutMode, gap: node.itemSpacing, horizontal: node.layoutSizingHorizontal, vertical: node.layoutSizingVertical,
+    padding: [node.paddingTop, node.paddingRight, node.paddingBottom, node.paddingLeft], radius: node.topLeftRadius,
+    fills: node.fills, opacity: node.opacity, children: node.children.map(snapshot) });
+  try {
+    await choose(session, 'inline-accessibility.html', content); await convertOnce(session); await assertUnlocked(session, 'success');
+    const original = snapshot(session.mock.figma.currentPage.children[0]);
+    await choose(session, 'inline-accessibility.html', content); await convertOnce(session); await assertUnlocked(session, 'success');
+    assert.deepEqual(snapshot(session.mock.figma.currentPage.children[1]), original);
+    assert.equal(session.mock.figma.currentPage.children.length, 2);
+  } finally { await session.page.close(); }
+});
+
 test('Main conversion failure releases UI controls and allows the same HTML to succeed next time', async () => {
   const session = await openSession({ failFrameOnce: true });
   try {

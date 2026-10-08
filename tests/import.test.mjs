@@ -43,6 +43,116 @@ async function convert(doc, options) {
 const find = (root, name) => flatten(root).find(node => node.name === name);
 const parsedNodes = root => [root, ...root.children.flatMap(parsedNodes)];
 
+test('Accessibility clipping patterns skip hidden labels without dropping small SVG, dots, dividers or progress bars', async () => {
+  const doc = await parse(await readFile('test/inline-accessibility-regression.html', 'utf8'));
+  const { frame, report } = await convert(doc);
+  assert.ok(!find(frame, 'hidden-label'));
+  assert.ok(!find(frame, 'hidden-inset'));
+  for (const name of ['visible-dot', 'small-svg', 'divider', 'progress', 'tiny-dot', 'tiny-visible-clip', 'visible-text']) assert.ok(find(frame, name), name);
+  assert.equal(find(frame, 'small-svg').getPluginData('html-type'), 'svg');
+  assert.equal(find(frame, 'divider').width, 1);
+  assert.equal(find(frame, 'progress').height, 1);
+  assert.ok(!flatten(frame).some(node => /Hidden Label|Screen reader only|Secret inline label/.test(node.characters || '')));
+  assert.ok(flatten(frame).some(node => node.characters === 'Visible label'));
+  assert.ok(!report.warnings.some(warning => warning.code === 'ACCESSIBILITY_HIDDEN'));
+});
+
+test('Mixed question and Badge remain separate editable children with Horizontal Hug layout and original styling', async () => {
+  const doc = await parse(await readFile('test/inline-accessibility-regression.html', 'utf8'));
+  const { frame, report } = await convert(doc);
+  const question = find(frame, 'question'), badge = find(frame, 'question-badge');
+  assert.equal(question.type, 'FRAME'); assert.equal(question.layoutMode, 'HORIZONTAL');
+  assert.deepEqual(question.children.map(child => child.type), ['TEXT', 'FRAME']);
+  assert.equal(question.children[0].characters, '그 집에 실제로 산 기간이 있나요?');
+  assert.equal(badge.layoutMode, 'HORIZONTAL'); assert.equal(badge.layoutSizingHorizontal, 'HUG');
+  assert.equal(badge.layoutSizingVertical, 'HUG');
+  assert.deepEqual([badge.paddingTop, badge.paddingRight, badge.paddingBottom, badge.paddingLeft], [2, 7, 2, 7]);
+  assert.equal(badge.topLeftRadius, 5);
+  assert.deepEqual(badge.fills[0].color, { r: 230 / 255, g: 244 / 255, b: 241 / 255 });
+  assert.equal(badge.children[0].characters, '대화에서 · 방금');
+  assert.equal(badge.children[0].fontSize, 11.5);
+  assert.deepEqual(badge.children[0].fills[0].color, { r: 11 / 255, g: 122 / 255, b: 110 / 255 });
+  assert.ok(question.itemSpacing >= 8 && question.itemSpacing < 16);
+  assert.equal(find(frame, 'question-badge / margin'), undefined, 'browser spacing must not be added twice');
+  assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+});
+
+test('Accessibility skipping is based on computed clipping, logs only in Debug and keeps focus-revealed labels', async () => {
+  const debug = await parse(await readFile('test/inline-accessibility-regression.html', 'utf8'), { debug: true });
+  assert.ok(debug.warnings.some(warning => warning.code === 'ACCESSIBILITY_HIDDEN' && warning.message.includes('[for="field"]')));
+  const page = await browser.newPage();
+  try {
+    await page.goto(base); await page.addScriptTag({ content: parserBundle });
+    const states = await page.evaluate(async () => {
+      const rendered = await Parser.renderHTML('<style>body{margin:0}label:not(:focus){position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}label:focus{position:static;width:auto;height:auto;overflow:visible;clip-path:none}</style><main><label id="focus-label" tabindex="0">Focus reveals label</label><span id="modern-hidden" style="position:absolute;width:1px;height:1px;clip-path:inset(50%)">Hidden without overflow</span><span id="legacy-hidden" style="position:absolute;width:1px;height:1px;clip:rect(0 0 0 0);white-space:nowrap;margin:-1px;padding:0;border:0">Hidden with compact spacing</span><span id="class-only" class="sr-only">Visible class name</span><svg id="aria-icon" aria-hidden="true" width="12" height="12"><path d="M0 0h12v12H0z"/></svg></main>', 1440, 900, document.getElementById('host'));
+      const options = { viewport: 1440, viewportHeight: 900, autoLayout: true, styles: true };
+      try {
+        const before = await Parser.parseRenderedHTML(rendered, options);
+        rendered.document.getElementById('focus-label').focus();
+        const after = await Parser.parseRenderedHTML(rendered, options);
+        return JSON.stringify({ before, after });
+      } finally { rendered.dispose(); }
+    });
+    const { before, after } = JSON.parse(states);
+    assert.ok(!parsedNodes(before.root).some(node => node.name === 'focus-label'));
+    for (const name of ['modern-hidden', 'legacy-hidden']) assert.ok(!parsedNodes(before.root).some(node => node.name === name), name);
+    assert.ok(parsedNodes(after.root).some(node => node.name === 'focus-label'));
+    for (const name of ['class-only', 'aria-icon']) assert.ok(parsedNodes(before.root).some(node => node.name === name), name);
+  } finally { await page.close(); }
+});
+
+test('Mixed Inline preserves alternating DOM order, typography and small icons without flattening their parent', async () => {
+  const { frame } = await convert(await parse(await readFile('test/inline-accessibility-regression.html', 'utf8')));
+  const ordered = find(frame, 'ordered');
+  assert.deepEqual(ordered.children.map(child => child.type === 'TEXT' ? child.characters : child.name), ['Before', 'ordered-badge', 'After', 'ordered-icon', 'End']);
+  assert.equal(find(frame, 'ordered-icon').getPluginData('html-type'), 'svg');
+  assert.equal(find(frame, 'ordered-badge').children[0].characters, 'NEW');
+  const iconLabel = find(frame, 'icon-label');
+  assert.equal(iconLabel.layoutMode, 'HORIZONTAL');
+  assert.deepEqual(iconLabel.children.map(child => child.type), ['TEXT', 'FRAME']);
+  assert.equal(find(frame, 'inline-icon').width, 12);
+  const styled = find(frame, 'styled-font');
+  assert.deepEqual(styled.children.map(child => child.characters), ['Normal', 'Bold']);
+  assert.equal(styled.children[1].fontName.style, 'Bold');
+});
+
+test('Plain Inline text stays one Text while radius and explicit inline box dimensions retain Frames', async () => {
+  const { frame } = await convert(await parse(await readFile('test/inline-accessibility-regression.html', 'utf8')));
+  assert.equal(find(frame, 'plain').type, 'TEXT'); assert.equal(find(frame, 'plain').characters, 'Hello');
+  assert.equal(find(frame, 'plain-children').type, 'TEXT'); assert.equal(find(frame, 'plain-children').characters, 'Hello world');
+  assert.equal(find(frame, 'line-breaks').type, 'TEXT'); assert.equal(find(frame, 'line-breaks').characters, 'first\nsecond');
+  assert.equal(find(frame, 'radius-only').type, 'FRAME'); assert.equal(find(frame, 'radius-only').topLeftRadius, 5);
+  assert.equal(find(frame, 'radius-only').children[0].characters, 'Radius');
+  const width = find(frame, 'width-only');
+  assert.equal(width.type, 'FRAME'); assert.equal(width.width, 120); assert.equal(width.height, 32);
+  assert.equal(width.children[0].characters, 'Fixed box');
+});
+
+test('Wrapped Inline and disabled Auto Layout retain browser-relative child positions without dropping styled content', async () => {
+  const html = await readFile('test/inline-accessibility-regression.html', 'utf8');
+  const { doc, measurements } = await parseWithBrowserRects(html, ['#wrapped']);
+  const { frame } = await convert(doc);
+  const wrapped = find(frame, 'wrapped'), parsed = parsedNodes(doc.root).find(node => node.name === 'wrapped');
+  assert.equal(wrapped.layoutMode, 'NONE');
+  const measuredBadge = measurements['#wrapped'].children[0];
+  assert.equal(find(wrapped, 'wrapped-badge').x, measuredBadge.x);
+  assert.equal(find(wrapped, 'wrapped-badge').y, measuredBadge.y);
+  parsed.children.forEach((child, index) => {
+    assert.equal(wrapped.children[index].x, child.rect.x - parsed.rect.x);
+    assert.equal(wrapped.children[index].y, child.rect.y - parsed.rect.y);
+  });
+  assert.ok(wrapped.children.some(child => child.type === 'TEXT' && child.textAutoResize === 'HEIGHT'));
+  for (const options of [{ autoLayout: false }, { styles: false }]) {
+    const result = await convert(await parse(html, options));
+    const question = find(result.frame, 'question'), badge = find(result.frame, 'question-badge');
+    assert.equal(question.children[0].characters, '그 집에 실제로 산 기간이 있나요?');
+    assert.equal(badge.children[0].characters, '대화에서 · 방금');
+    assert.ok(!flatten(result.frame).some(node => /Hidden Label|Secret inline label/.test(node.characters || '')));
+    if (options.autoLayout === false) assert.equal(question.layoutMode, 'NONE');
+    if (options.styles === false) assert.deepEqual(badge.fills, []);
+  }
+});
+
 test('Requested four-stop top-level Gradient produces a visible linear Paint without losing content', async () => {
   const doc = await parse(await readFile('test/gradient-regression.html', 'utf8'));
   const { frame, report } = await convert(doc);
