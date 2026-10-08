@@ -2,6 +2,7 @@ import { LIMITS, type Color, type ConversionReport, type ParsedBackgroundLayer, 
 import { clamp, errorMessage, isViewportDimension } from './utils';
 import { enrichWarnings } from './report';
 import { linearGradientPaint } from './gradients';
+import { backgroundLayers, thinHorizontalGridLines, type BackgroundGridLine } from './backgrounds';
 
 type EditableNode = FrameNode | TextNode | RectangleNode;
 const solid = (color: Color): SolidPaint => ({ type: 'SOLID', color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
@@ -97,13 +98,19 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
     if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every(value => finite(value)))) throw new Error('잘못된 그림자 데이터입니다.');
     const gradient = node.style.backgroundGradient;
     if (gradient) validateGradient(gradient);
+    if (node.style.backgroundGridFallback !== undefined && typeof node.style.backgroundGridFallback !== 'boolean') throw new Error('잘못된 Background Grid 데이터입니다.');
+    if (node.style.backgroundSource !== undefined && (!node.style.backgroundSource ||
+      !['background', 'backgroundImage', 'backgroundColor', 'backgroundSize', 'backgroundPosition'].every(key => {
+        const value = node.style.backgroundSource![key as keyof NonNullable<typeof node.style.backgroundSource>];
+        return typeof value === 'string' && value.length <= LIMITS.fileBytes;
+      }))) throw new Error('잘못된 Background Debug 데이터입니다.');
     if (node.style.backgroundLayers !== undefined) {
       if (!Array.isArray(node.style.backgroundLayers)) throw new Error('잘못된 Background Layer 데이터입니다.');
       for (const layer of node.style.backgroundLayers) {
         if (!layer || !['GRADIENT', 'IMAGE', 'SOLID'].includes(layer.type)) throw new Error('잘못된 Background Layer 데이터입니다.');
         if (layer.type === 'GRADIENT') validateGradient(layer.gradient);
         if (layer.type === 'IMAGE' && (!layer.image || ![layer.image.key, layer.image.src, layer.image.fit].every(value => typeof value === 'string'))) throw new Error('잘못된 Background Image 데이터입니다.');
-        if (layer.type === 'SOLID' && (!layer.color || ![layer.color.r, layer.color.g, layer.color.b, layer.color.a].every(value => finite(value, 1) && value >= 0))) throw new Error('잘못된 Background Color 데이터입니다.');
+        if (layer.type === 'SOLID' && (!layer.color || ![layer.color.r, layer.color.g, layer.color.b, layer.color.a].every(value => finite(value, 1) && value >= 0) || !Number.isInteger(layer.layerIndex) || layer.layerIndex < 0 || (layer.base !== undefined && typeof layer.base !== 'boolean'))) throw new Error('잘못된 Background Color 데이터입니다.');
       }
     }
     if (!['HORIZONTAL', 'VERTICAL', 'NONE'].includes(node.layout.direction) || !['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'].includes(node.layout.justify) || !['MIN', 'CENTER', 'MAX', 'BASELINE'].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error('잘못된 레이아웃 데이터입니다.');
@@ -141,6 +148,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   const imageHashes = new Map<string, string>();
   const placements: { node: EditableNode; parsed: ParsedNode; parent: FrameNode; parentParsed: ParsedNode }[] = [];
   const fixedPlacements: { node: EditableNode; parsed: ParsedNode }[] = [];
+  const gridBackgrounds: { node: FrameNode; parsed: ParsedNode; lines: BackgroundGridLine[] }[] = [];
+  const backgroundDiagnostics: { node: FrameNode | RectangleNode; parsed: ParsedNode; layers: ParsedBackgroundLayer[] }[] = [];
   const isFixed = (parsed: ParsedNode) => parsed.layout.absolute && parsed.layout.position === 'fixed';
   let root: FrameNode | undefined;
   function imagePaint(image: ParsedImage, name: string): ImagePaint | null {
@@ -175,19 +184,16 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
 
   function applyBoxStyle(node: FrameNode | RectangleNode, parsed: ParsedNode): void {
     const style = parsed.style;
-    const base: Paint[] = doc.options.styles && style.background ? [solid(style.background)] : [];
+    const layers = backgroundLayers(style);
+    const baseLayer = layers.find(layer => layer.type === 'SOLID' && layer.base);
+    const base: Paint[] = doc.options.styles && baseLayer?.type === 'SOLID' ? [solid(baseLayer.color)] : [];
     node.fills = base;
     node.strokes = [];
     if (!doc.options.styles) return;
-    // Keep earlier version-1 documents usable; new documents carry every CSS layer in order.
-    const legacy: ParsedBackgroundLayer[] = [
-      ...(style.backgroundGradient ? [{ type: 'GRADIENT' as const, gradient: style.backgroundGradient }] : []),
-      ...(style.backgroundImage ? [{ type: 'IMAGE' as const, image: style.backgroundImage }] : [])
-    ];
     const indexOf = (layer: ParsedBackgroundLayer) => layer.type === 'GRADIENT' ? layer.gradient.layerIndex : layer.type === 'IMAGE' ? layer.image.layerIndex ?? 0 : layer.layerIndex;
-    const layers = style.backgroundLayers ?? legacy.sort((a, b) => indexOf(a) - indexOf(b));
     const applied: Paint[] = [];
     for (const layer of layers) {
+      if (layer.type === 'SOLID' && layer.base) continue;
       if (layer.type === 'IMAGE' && doc.options.images === false) continue;
       let paint = layer.type === 'GRADIENT' ? linearGradientPaint(layer.gradient) : layer.type === 'IMAGE' ? imagePaint(layer.image, parsed.name) : solid(layer.color);
       if (!paint) continue;
@@ -206,6 +212,9 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       applied.push(paint);
       if (layer.type === 'IMAGE') node.setPluginData('html-background-image', 'true');
     }
+    const lines = style.backgroundGridFallback && node.type === 'FRAME' && parsed.type === 'FRAME' ? thinHorizontalGridLines(layers) : null;
+    if (lines && node.type === 'FRAME') gridBackgrounds.push({ node, parsed, lines });
+    if (doc.options.debug && style.backgroundLayers?.length) backgroundDiagnostics.push({ node, parsed, layers });
     node.opacity = clamp(style.opacity, 0, 1);
     if (doc.options.shadows !== false && style.shadow) {
       const shadow = style.shadow;
@@ -225,6 +234,47 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       node.strokeTopWeight = clamp(top); node.strokeRightWeight = clamp(right); node.strokeBottomWeight = clamp(bottom); node.strokeLeftWeight = clamp(left);
       if (new Set(style.borderColors.map(color => JSON.stringify(color))).size > 1) warn('BORDER_COLORS', parsed.name, '서로 다른 테두리 색상은 첫 번째 색상으로 통합했습니다.');
     }
+  }
+  function createBackgroundGrid(node: FrameNode, parsed: ParsedNode, lines: BackgroundGridLine[]): void {
+    const rectangles: RectangleNode[] = [];
+    const original = node.fills as Paint[];
+    try {
+      for (const [index, line] of lines.entries()) {
+        const rectangle = figma.createRectangle(); rectangles.push(rectangle);
+        rectangle.name = `Grid Line / ${Math.round(line.position * 10000) / 100}%`;
+        rectangle.fills = [solid(line.color)]; rectangle.strokes = [];
+        // Children are back-to-front. Respect reverse stacking without changing content order.
+        node.insertChild(node.itemReverseZIndex ? node.children.length : index, rectangle);
+        if (node.layoutMode !== 'NONE') rectangle.layoutPositioning = 'ABSOLUTE';
+        rectangle.resizeWithoutConstraints(node.width, 1);
+        rectangle.x = 0; rectangle.y = Math.max(0, Math.min(node.height - 1, Math.round(node.height * line.position)));
+        // Absolute layers cannot use Auto Layout FILL; STRETCH provides the same full-width behavior.
+        rectangle.constraints = { horizontal: 'STRETCH', vertical: 'MIN' };
+        rectangle.setPluginData('html-background-grid-line', String(line.position));
+      }
+      // Retain all source Paints/stops for inspection, but avoid drawing the gradient and rectangle twice.
+      node.fills = original.map(paint => paint.type === 'GRADIENT_LINEAR' ? { ...paint, visible: false } : paint);
+      node.setPluginData('html-background-grid-fallback', 'true');
+    } catch (error) {
+      for (const rectangle of rectangles) if (!rectangle.removed) rectangle.remove();
+      node.fills = original;
+      warn('BACKGROUND_GRID_FALLBACK', parsed.name, `Grid Line Rectangle 생성 실패로 원본 Gradient Fill을 유지합니다: ${errorMessage(error)}`);
+    }
+  }
+  function debugBackground(node: FrameNode | RectangleNode, parsed: ParsedNode, layers: ParsedBackgroundLayer[]): void {
+    const fills = node.fills as Paint[];
+    const color = (value: Color) => `#${[value.r, value.g, value.b].map(channel => Math.round(channel * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}${value.a === 1 ? '' : ` alpha=${value.a}`}`;
+    const details = layers.map((layer, index) => `- layer ${index + 1}: ${layer.type === 'GRADIENT' ? `linear-gradient (${layer.gradient.angle}deg; ${layer.gradient.stops.map(stop => `${Math.round(stop.position * 10000) / 100}% alpha=${stop.color.a} ${color(stop.color)}`).join(', ')})` : layer.type === 'IMAGE' ? 'image' : `solid ${color(layer.color)}`}`);
+    const rectangles = node.type === 'FRAME' ? node.children.filter(child => child.getPluginData('html-background-grid-line')) : [];
+    const diagnostics = { computed: parsed.style.backgroundSource, backgroundLayers: layers, figmaFills: fills, renderOrder: 'first paint on top; solid base last',
+      gridLines: rectangles.map(rectangle => ({ name: rectangle.name, x: rectangle.x, y: rectangle.y, width: rectangle.width, height: rectangle.height })) };
+    node.setPluginData('html-background-debug', JSON.stringify(diagnostics));
+    console.info('HTML → Figma background', parsed.source?.selector || parsed.name, diagnostics);
+    warn('BACKGROUND_DEBUG', parsed.name, [
+      ...(parsed.style.backgroundSource ? [`computed backgroundImage: ${parsed.style.backgroundSource.backgroundImage}`, `computed background: ${parsed.style.backgroundSource.background}`] : []),
+      `background layers: ${layers.length}`, ...details, `figma fills: ${fills.length}`, 'order: CSS first layer → top Paint; solid base → bottom Paint',
+      ...(rectangles.length ? [`Grid Line fallback: ${rectangles.length} Rectangles; original Gradient Paints hidden; visible fills: ${fills.filter(paint => paint.visible !== false).length}`] : [])
+    ].join('\n'));
   }
   function configureLayout(frame: FrameNode, parsed: ParsedNode): void {
     frame.layoutMode = doc.options.autoLayout ? parsed.layout.direction : 'NONE';
@@ -478,6 +528,9 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     // Sizing and reparenting can change node geometry. Apply browser-relative positions last,
     // from outer frames to descendants, after the root viewport size is final.
     for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
+    // Generate backgrounds after content sizing; absolute rectangles cannot affect Auto Layout/Hug.
+    for (const { node, parsed, lines } of gridBackgrounds) if (!node.removed) createBackgroundGrid(node, parsed, lines);
+    for (const { node, parsed, layers } of backgroundDiagnostics) if (!node.removed) debugBackground(node, parsed, layers);
     created.x = figma.viewport.center.x - created.width / 2;
     created.y = figma.viewport.center.y - created.height / 2;
     figma.currentPage.selection = [created];

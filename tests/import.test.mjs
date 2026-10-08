@@ -68,10 +68,11 @@ async function compareSvgPixels(original, serialized) {
 }
 
 // Project Paint matrices/stops to SVG for an independent browser comparison with the CSS background.
-function backgroundPaintSvg(fills, width, height) {
+function backgroundPaintSvg(fills, width, height, rectangles = []) {
   const rgb = color => `rgb(${color.r * 255},${color.g * 255},${color.b * 255})`;
   const defs = [], shapes = [];
   for (const [index, paint] of [...fills].reverse().entries()) {
+    if (paint.visible === false) continue;
     if (paint.type === 'SOLID') shapes.push(`<rect width="100%" height="100%" fill="${rgb(paint.color)}" opacity="${paint.opacity ?? 1}"/>`);
     else if (paint.type === 'GRADIENT_LINEAR') {
       const [[a, c, e], [b, d, f]] = paint.gradientTransform, determinant = a * d - b * c;
@@ -79,6 +80,10 @@ function backgroundPaintSvg(fills, width, height) {
       defs.push(`<linearGradient id="g${index}" x1="0" y1=".5" x2="1" y2=".5" gradientTransform="matrix(${inverse.join(' ')})">${paint.gradientStops.map(stop => `<stop offset="${stop.position}" stop-color="${rgb(stop.color)}" stop-opacity="${stop.color.a}"/>`).join('')}</linearGradient>`);
       shapes.push(`<rect width="100%" height="100%" fill="url(#g${index})" opacity="${paint.opacity ?? 1}"/>`);
     }
+  }
+  for (const rectangle of rectangles) {
+    const paint = rectangle.fills[0];
+    shapes.push(`<rect x="${rectangle.x}" y="${rectangle.y}" width="${rectangle.width}" height="${rectangle.height}" fill="${rgb(paint.color)}" opacity="${paint.opacity ?? 1}"/>`);
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs>${defs.join('')}</defs>${shapes.join('')}</svg>`;
 }
@@ -134,15 +139,27 @@ test('Ordinary SVG shapes and dashed line offsets retain their native SVG import
   assert.equal(svgImports.length, 1); assert.equal(report.svg, 1); assert.equal(flatten(frame).filter(node => node.type === 'VECTOR').length, 1);
 });
 
-test('Dashboard three-gradient grid lines retain all fills and their alpha without changing surrounding layout', async () => {
+test('Dashboard thin grid lines retain source Paints and use three visible Rectangles behind unchanged chart content', async () => {
   const html = await readFile('test/dashboard-rendering-regression.html', 'utf8'), doc = await parse(html);
   const { frame, report } = await convert(doc);
   const chart = find(frame, 'chart-wrap'), source = parsedNodes(doc.root).find(node => node.name === 'chart-wrap');
-  assert.deepEqual(source.style.backgroundLayers.map(layer => layer.type), ['GRADIENT', 'GRADIENT', 'GRADIENT']);
+  assert.deepEqual(source.style.backgroundLayers.map(layer => layer.type), ['GRADIENT', 'GRADIENT', 'GRADIENT', 'SOLID']);
+  assert.equal(source.style.backgroundLayers[3].base, true);
   assert.deepEqual(chart.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
   assert.deepEqual(chart.fills.slice(0, 3).map(paint => paint.gradientStops.map(stop => stop.position)), [[.24, .25, .26], [.49, .5, .51], [.74, .75, .76]]);
   for (const paint of chart.fills.slice(0, 3)) assert.deepEqual(paint.gradientStops.map(stop => stop.color.a), [0, 1, 0]);
   assert.deepEqual(chart.fills[3].color, { r: 1, g: 1, b: 1 });
+  assert.ok(chart.fills.slice(0, 3).every(paint => paint.visible === false), 'do not double-render the gradient bands');
+  const lines = chart.children.filter(node => node.getPluginData('html-background-grid-line'));
+  assert.equal(lines.length, 3); assert.equal(chart.getPluginData('html-background-grid-fallback'), 'true');
+  assert.deepEqual(lines.map(node => [node.name, node.x, node.y, node.width, node.height]), [
+    ['Grid Line / 25%', 0, 75, 600, 1], ['Grid Line / 50%', 0, 150, 600, 1], ['Grid Line / 75%', 0, 225, 600, 1]
+  ]);
+  for (const line of lines) {
+    assert.equal(line.type, 'RECTANGLE'); assert.deepEqual(line.constraints, { horizontal: 'STRETCH', vertical: 'MIN' });
+    assert.deepEqual(line.fills[0].color, { r: 243 / 255, g: 244 / 255, b: 246 / 255 }); assert.equal(line.fills[0].opacity, 1);
+    assert.ok(chart.children.indexOf(line) < chart.children.indexOf(find(frame, 'line-chart')), 'background must remain behind the SVG');
+  }
   const summary = find(frame, 'summary');
   assert.equal(summary.layoutMode, 'VERTICAL'); assert.equal(summary.children[0].children.length, 4);
   assert.equal(find(frame, 'widgets').children[0].children.length, 2);
@@ -161,17 +178,105 @@ test('Dashboard three-gradient grid lines retain all fills and their alpha witho
     await page.setContent(html);
     await page.locator('#chart-wrap').evaluate(element => element.replaceChildren());
     const original = 'data:image/png;base64,' + (await page.locator('#chart-wrap').screenshot()).toString('base64');
-    const difference = await compareSvgPixels(original, backgroundPaintSvg(chart.fills, 600, 300));
-    assert.ok(difference.meanError < .2, JSON.stringify(difference));
+    const rendered = backgroundPaintSvg(chart.fills, 600, 300, lines);
+    const expected = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="300"><rect width="600" height="300" fill="white"/><path d="M0 75.5H600M0 150.5H600M0 225.5H600" stroke="#F3F4F6" stroke-width="1"/></svg>';
+    assert.equal((await compareSvgPixels(expected, rendered)).meanError, 0, 'all three native rectangle rows must be visible');
+    const difference = await compareSvgPixels(original, rendered);
+    assert.ok(difference.meanError < .25, JSON.stringify(difference));
     assert.equal(difference.substantialPixels, 0);
   } finally { await page.close(); }
+});
+
+test('Background Debug traces computed CSS, all four IR layers, final fills and transparent stops', async () => {
+  const doc = await parse(await readFile('test/dashboard-rendering-regression.html', 'utf8'), { debug: true });
+  const source = parsedNodes(doc.root).find(node => node.name === 'chart-wrap');
+  const computedLayers = utilities.splitCSSList(source.style.backgroundSource.backgroundImage);
+  assert.equal(computedLayers.length, 4); assert.equal(computedLayers[3], 'none', 'the shorthand color-only layer contributes a none image');
+  assert.equal(computedLayers.filter(layer => layer.startsWith('linear-gradient(')).length, 3);
+  assert.equal(source.style.backgroundSource.backgroundColor, 'rgb(255, 255, 255)');
+  assert.match(source.style.backgroundSource.background, /rgb\(255, 255, 255\)/);
+  assert.deepEqual(source.style.backgroundLayers.slice(0, 3).map(layer => layer.gradient.stops[1].position), [.25, .5, .75]);
+  for (const layer of source.style.backgroundLayers.slice(0, 3)) assert.deepEqual(layer.gradient.stops.map(stop => stop.color.a), [0, 1, 0]);
+  const logs = [], info = console.info;
+  let result;
+  try { console.info = (...args) => logs.push(args); result = await convert(doc); }
+  finally { console.info = info; }
+  const chart = flatten(result.frame).find(node => node.getPluginData('html-source') === 'div#chart-wrap');
+  const diagnostic = JSON.parse(chart.getPluginData('html-background-debug'));
+  assert.deepEqual(diagnostic.computed, source.style.backgroundSource);
+  assert.equal(diagnostic.backgroundLayers.length, 4); assert.equal(diagnostic.figmaFills.length, 4); assert.equal(diagnostic.gridLines.length, 3);
+  assert.deepEqual(diagnostic.figmaFills.slice(0, 3).map(paint => paint.gradientStops.map(stop => stop.color.a)), [[0, 1, 0], [0, 1, 0], [0, 1, 0]]);
+  assert.ok(logs.some(args => args[1] === 'div#chart-wrap' && args[2].figmaFills.length === 4));
+  const warning = result.report.warnings.find(warning => warning.code === 'BACKGROUND_DEBUG' && warning.node === 'chart-wrap');
+  assert.equal(warning.category, 'Debug');
+  for (const text of ['computed backgroundImage:', 'computed background:', 'background layers: 4', '- layer 1: linear-gradient', '- layer 2: linear-gradient', '- layer 3: linear-gradient', '- layer 4: solid #FFFFFF', 'figma fills: 4', '25% alpha=1 #F3F4F6', '50% alpha=1 #F3F4F6', '75% alpha=1 #F3F4F6', 'Grid Line fallback: 3']) assert.ok(warning.message.includes(text), text);
+});
+
+const thinGridBackground = [25, 50, 75].map(percent => `linear-gradient(to bottom,transparent ${percent - 1}%,#F3F4F6 ${percent}%,transparent ${percent + 1}%)`).join(',');
+
+test('Grid fallback stays outside Auto Layout, retains opacity and uses the final full-width geometry', async () => {
+  const html = `<style>body{margin:0}main{display:flex;flex-direction:column}.chart{display:flex;flex-direction:column;width:100%;height:300px;gap:12px;padding:16px;box-sizing:border-box;background:${thinGridBackground},#fff;opacity:.6}.chart p{margin:0}</style><main><div class="chart"><p>First</p><p>Second</p></div></main>`;
+  for (const autoLayout of [true, false]) {
+    const { frame, report } = await convert(await parse(html, { viewport: 480, autoLayout })), chart = find(frame, 'chart');
+    const lines = chart.children.filter(node => node.getPluginData('html-background-grid-line'));
+    assert.equal(lines.length, 3); assert.equal(chart.opacity, .6);
+    for (const line of lines) {
+      assert.equal(line.width, chart.width); assert.equal(line.height, 1); assert.equal(line.fills[0].opacity, 1);
+      assert.equal(line.layoutPositioning, autoLayout ? 'ABSOLUTE' : 'AUTO');
+    }
+    assert.deepEqual(lines.map(line => line.y), [75, 150, 225]);
+    assert.equal(chart.children.filter(node => !node.getPluginData('html-background-grid-line')).length, 2);
+    if (autoLayout) { assert.equal(chart.layoutMode, 'VERTICAL'); assert.equal(chart.itemSpacing, 12); assert.equal(chart.paddingTop, 16); }
+    assert.equal(report.text, 2); assert.ok(!report.warnings.some(warning => /BACKGROUND|NODE_FAILED/.test(warning.code)));
+    assert.ok(!chart.getPluginData('html-background-debug'), 'debug metadata stays off by default');
+  }
+});
+
+test('Ordinary, wide, uneven, colored, tiled and image-mixed gradients keep Paints without Grid Rectangle fallback', async () => {
+  const cases = [
+    [thinGridBackground.split('),')[0] + ')', ''],
+    ['linear-gradient(180deg,#fff,#abc),linear-gradient(180deg,#abc,#fff),linear-gradient(180deg,#fff,#abc)', ''],
+    [[25, 50, 75].map(percent => `linear-gradient(180deg,transparent ${percent - 5}%,#F3F4F6 ${percent}%,transparent ${percent + 5}%)`).join(','), ''],
+    [thinGridBackground.replace('#F3F4F6', '#ff0000'), ''],
+    [thinGridBackground.replace('74%', '79%').replace('75%', '80%').replace('76%', '81%'), ''],
+    [thinGridBackground.replaceAll('to bottom', 'to right'), ''],
+    [thinGridBackground, 'background-size:100% 20px'],
+    [thinGridBackground + ',url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==")', '']
+  ];
+  for (const [background, extra] of cases) {
+    const { frame } = await convert(await parse(`<style>body{margin:0}.chart{width:600px;height:300px;background:${background},#fff;${extra}}</style><main><div class="chart"><p>Content</p></div></main>`));
+    const chart = find(frame, 'chart');
+    assert.ok(!chart.getPluginData('html-background-grid-fallback'), background);
+    assert.ok(!chart.children.some(node => node.getPluginData('html-background-grid-line')), background);
+    assert.ok(chart.fills.filter(paint => paint.type === 'GRADIENT_LINEAR').every(paint => paint.visible !== false), background);
+    assert.equal(flatten(chart).find(node => node.type === 'TEXT').characters, 'Content');
+  }
+  const disabled = await convert(await parse(`<main style="background:${thinGridBackground},#fff"><p>Content</p></main>`, { styles: false }));
+  assert.ok(!flatten(disabled.frame).some(node => node.getPluginData('html-background-grid-line'))); assert.deepEqual(disabled.frame.fills, []);
+});
+
+test('A Grid Rectangle API failure removes partial lines and keeps the original paints and content', async () => {
+  const doc = await parse(`<style>body{margin:0}.chart{width:600px;height:300px;background:${thinGridBackground},#fff}</style><main><div class="chart"><p>Content</p></div></main>`);
+  const mock = createFigmaMock(), createRectangle = mock.figma.createRectangle;
+  let count = 0;
+  mock.figma.createRectangle = () => { if (++count === 2) throw new Error('Grid rectangle failure'); return createRectangle(); };
+  globalThis.figma = mock.figma;
+  const { frame, report } = await converter.convertDocument(doc), chart = find(frame, 'chart');
+  assert.ok(!chart.children.some(node => node.getPluginData('html-background-grid-line')));
+  assert.deepEqual(chart.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+  assert.ok(chart.fills.every(paint => paint.visible !== false)); assert.equal(flatten(chart).find(node => node.type === 'TEXT').characters, 'Content');
+  assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_GRID_FALLBACK')); assert.equal(mock.figma.currentPage.children.length, 1);
+  const rejected = await convert(doc, { failGradientPaint: true }), rejectedChart = find(rejected.frame, 'chart');
+  assert.equal(rejectedChart.children.filter(node => node.getPluginData('html-background-grid-line')).length, 3, 'even a rejected Gradient Paint must not hide the grid lines');
+  assert.equal(rejectedChart.fills.at(-1).opacity, 1); assert.deepEqual(rejectedChart.fills.at(-1).color, { r: 1, g: 1, b: 1 });
+  assert.ok(!rejected.report.warnings.some(warning => warning.code === 'NODE_FAILED'));
 });
 
 test('Multiple URL and Gradient layers preserve order, per-layer image settings, cache reuse and options', async () => {
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
   const html = `<style>body{margin:0}main{display:flex}.layered{width:240px;height:120px;background-color:rgba(10,20,30,.6);background-image:linear-gradient(180deg,rgba(0,0,0,0) 0%,rgba(10,20,30,.1) 100%),url("${png}"),linear-gradient(90deg,#abc8,#fff),url("${png}");background-size:auto,contain,auto,cover;background-position:center;background-repeat:no-repeat;opacity:.5}</style><main><div class="layered"><strong>Keep content</strong></div><img id="regular-image" src="${png}"></main>`;
   const doc = await parse(html), source = parsedNodes(doc.root).find(node => node.name === 'layered');
-  assert.equal(source.style.backgroundLayers.length, 4); assert.deepEqual(source.style.backgroundLayers.map(layer => layer.type), ['GRADIENT', 'IMAGE', 'GRADIENT', 'IMAGE']);
+  assert.equal(source.style.backgroundLayers.length, 5); assert.deepEqual(source.style.backgroundLayers.map(layer => layer.type), ['GRADIENT', 'IMAGE', 'GRADIENT', 'IMAGE', 'SOLID']);
   const { frame, report, images } = await convert(doc), target = find(frame, 'layered');
   assert.deepEqual(target.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'IMAGE', 'GRADIENT_LINEAR', 'IMAGE', 'SOLID']);
   assert.equal(target.fills[0].gradientStops[0].color.a, 0); assert.equal(target.fills[0].gradientStops[1].color.a, .1);

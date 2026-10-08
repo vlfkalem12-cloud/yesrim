@@ -23,6 +23,7 @@
 
   // src/report.ts
   function warningCategory(code) {
+    if (code === "BACKGROUND_DEBUG") return "Debug";
     if (/FONT/.test(code)) return "Fonts";
     if (/GRADIENT|BACKGROUND_LAYER/.test(code)) return "Unsupported CSS";
     if (/IMAGE|ASSET|BACKGROUND/.test(code)) return "Images";
@@ -75,6 +76,38 @@
       if (before.r !== after.r || before.g !== after.g || before.b !== after.b) stops.push({ position: stop.position, color: { ...after, a: 0 } });
     });
     return { type: "GRADIENT_LINEAR", gradientTransform: transforms[gradient.angle], gradientStops: stops, opacity: 1, visible: true, blendMode: "NORMAL" };
+  }
+
+  // src/backgrounds.ts
+  function backgroundLayers(style) {
+    const legacy = [
+      ...style.backgroundGradient ? [{ type: "GRADIENT", gradient: style.backgroundGradient }] : [],
+      ...style.backgroundImage ? [{ type: "IMAGE", image: style.backgroundImage }] : []
+    ];
+    const indexOf = (layer) => layer.type === "GRADIENT" ? layer.gradient.layerIndex : layer.type === "IMAGE" ? layer.image.layerIndex ?? 0 : layer.layerIndex;
+    const layers = style.backgroundLayers ?? legacy.sort((a, b) => indexOf(a) - indexOf(b));
+    if (!style.background || layers.some((layer) => layer.type === "SOLID" && layer.base)) return layers;
+    return [...layers, { type: "SOLID", color: style.background, layerIndex: Math.max(-1, ...layers.map(indexOf)) + 1, base: true }];
+  }
+  function thinHorizontalGridLines(layers) {
+    const gradients = layers.filter((layer) => !(layer.type === "SOLID" && layer.base));
+    if (gradients.length < 3) return null;
+    const lines = [];
+    let angle;
+    for (const layer of gradients) {
+      if (layer.type !== "GRADIENT") return null;
+      const gradient = layer.gradient;
+      if (![0, 180].includes(gradient.angle) || angle !== void 0 && angle !== gradient.angle || gradient.stops.length !== 3) return null;
+      angle = gradient.angle;
+      const [before, peak, after] = gradient.stops;
+      if (!before || !peak || !after || before.color.a !== 0 || after.color.a !== 0 || peak.color.a <= 0 || before.position >= peak.position || peak.position >= after.position || after.position - before.position > 0.020001 || Math.abs(peak.position - before.position - (after.position - peak.position)) > 1e-6) return null;
+      const position = angle === 180 ? peak.position : 1 - peak.position;
+      lines.push({ position, color: peak.color, layerIndex: gradient.layerIndex });
+    }
+    lines.sort((a, b) => a.position - b.position);
+    const color = lines[0].color, spacing = lines[1].position - lines[0].position;
+    if (spacing <= 0.02 || lines.some((line, index) => ["r", "g", "b", "a"].some((channel) => Math.abs(line.color[channel] - color[channel]) > 1e-6) || index > 0 && Math.abs(line.position - lines[index - 1].position - spacing) > 1e-6)) return null;
+    return lines;
   }
 
   // src/converter.ts
@@ -175,13 +208,18 @@
       if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every((value2) => finite(value2)))) throw new Error("\uC798\uBABB\uB41C \uADF8\uB9BC\uC790 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       const gradient = node.style.backgroundGradient;
       if (gradient) validateGradient(gradient);
+      if (node.style.backgroundGridFallback !== void 0 && typeof node.style.backgroundGridFallback !== "boolean") throw new Error("\uC798\uBABB\uB41C Background Grid \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.style.backgroundSource !== void 0 && (!node.style.backgroundSource || !["background", "backgroundImage", "backgroundColor", "backgroundSize", "backgroundPosition"].every((key) => {
+        const value2 = node.style.backgroundSource[key];
+        return typeof value2 === "string" && value2.length <= LIMITS.fileBytes;
+      }))) throw new Error("\uC798\uBABB\uB41C Background Debug \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.style.backgroundLayers !== void 0) {
         if (!Array.isArray(node.style.backgroundLayers)) throw new Error("\uC798\uBABB\uB41C Background Layer \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
         for (const layer of node.style.backgroundLayers) {
           if (!layer || !["GRADIENT", "IMAGE", "SOLID"].includes(layer.type)) throw new Error("\uC798\uBABB\uB41C Background Layer \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
           if (layer.type === "GRADIENT") validateGradient(layer.gradient);
           if (layer.type === "IMAGE" && (!layer.image || ![layer.image.key, layer.image.src, layer.image.fit].every((value2) => typeof value2 === "string"))) throw new Error("\uC798\uBABB\uB41C Background Image \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
-          if (layer.type === "SOLID" && (!layer.color || ![layer.color.r, layer.color.g, layer.color.b, layer.color.a].every((value2) => finite(value2, 1) && value2 >= 0))) throw new Error("\uC798\uBABB\uB41C Background Color \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+          if (layer.type === "SOLID" && (!layer.color || ![layer.color.r, layer.color.g, layer.color.b, layer.color.a].every((value2) => finite(value2, 1) && value2 >= 0) || !Number.isInteger(layer.layerIndex) || layer.layerIndex < 0 || layer.base !== void 0 && typeof layer.base !== "boolean")) throw new Error("\uC798\uBABB\uB41C Background Color \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
         }
       }
       if (!["HORIZONTAL", "VERTICAL", "NONE"].includes(node.layout.direction) || !["MIN", "CENTER", "MAX", "SPACE_BETWEEN"].includes(node.layout.justify) || !["MIN", "CENTER", "MAX", "BASELINE"].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error("\uC798\uBABB\uB41C \uB808\uC774\uC544\uC6C3 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
@@ -222,6 +260,8 @@
     const imageHashes = /* @__PURE__ */ new Map();
     const placements = [];
     const fixedPlacements = [];
+    const gridBackgrounds = [];
+    const backgroundDiagnostics = [];
     const isFixed = (parsed) => parsed.layout.absolute && parsed.layout.position === "fixed";
     let root;
     function imagePaint(image, name) {
@@ -257,18 +297,16 @@
     }
     function applyBoxStyle(node, parsed) {
       const style = parsed.style;
-      const base = doc.options.styles && style.background ? [solid(style.background)] : [];
+      const layers = backgroundLayers(style);
+      const baseLayer = layers.find((layer) => layer.type === "SOLID" && layer.base);
+      const base = doc.options.styles && baseLayer?.type === "SOLID" ? [solid(baseLayer.color)] : [];
       node.fills = base;
       node.strokes = [];
       if (!doc.options.styles) return;
-      const legacy = [
-        ...style.backgroundGradient ? [{ type: "GRADIENT", gradient: style.backgroundGradient }] : [],
-        ...style.backgroundImage ? [{ type: "IMAGE", image: style.backgroundImage }] : []
-      ];
       const indexOf = (layer) => layer.type === "GRADIENT" ? layer.gradient.layerIndex : layer.type === "IMAGE" ? layer.image.layerIndex ?? 0 : layer.layerIndex;
-      const layers = style.backgroundLayers ?? legacy.sort((a, b) => indexOf(a) - indexOf(b));
       const applied = [];
       for (const layer of layers) {
+        if (layer.type === "SOLID" && layer.base) continue;
         if (layer.type === "IMAGE" && doc.options.images === false) continue;
         let paint = layer.type === "GRADIENT" ? linearGradientPaint(layer.gradient) : layer.type === "IMAGE" ? imagePaint(layer.image, parsed.name) : solid(layer.color);
         if (!paint) continue;
@@ -286,6 +324,9 @@
         applied.push(paint);
         if (layer.type === "IMAGE") node.setPluginData("html-background-image", "true");
       }
+      const lines = style.backgroundGridFallback && node.type === "FRAME" && parsed.type === "FRAME" ? thinHorizontalGridLines(layers) : null;
+      if (lines && node.type === "FRAME") gridBackgrounds.push({ node, parsed, lines });
+      if (doc.options.debug && style.backgroundLayers?.length) backgroundDiagnostics.push({ node, parsed, layers });
       node.opacity = clamp(style.opacity, 0, 1);
       if (doc.options.shadows !== false && style.shadow) {
         const shadow = style.shadow;
@@ -308,6 +349,55 @@
         node.strokeLeftWeight = clamp(left);
         if (new Set(style.borderColors.map((color) => JSON.stringify(color))).size > 1) warn("BORDER_COLORS", parsed.name, "\uC11C\uB85C \uB2E4\uB978 \uD14C\uB450\uB9AC \uC0C9\uC0C1\uC740 \uCCAB \uBC88\uC9F8 \uC0C9\uC0C1\uC73C\uB85C \uD1B5\uD569\uD588\uC2B5\uB2C8\uB2E4.");
       }
+    }
+    function createBackgroundGrid(node, parsed, lines) {
+      const rectangles = [];
+      const original = node.fills;
+      try {
+        for (const [index, line] of lines.entries()) {
+          const rectangle = figma.createRectangle();
+          rectangles.push(rectangle);
+          rectangle.name = `Grid Line / ${Math.round(line.position * 1e4) / 100}%`;
+          rectangle.fills = [solid(line.color)];
+          rectangle.strokes = [];
+          node.insertChild(node.itemReverseZIndex ? node.children.length : index, rectangle);
+          if (node.layoutMode !== "NONE") rectangle.layoutPositioning = "ABSOLUTE";
+          rectangle.resizeWithoutConstraints(node.width, 1);
+          rectangle.x = 0;
+          rectangle.y = Math.max(0, Math.min(node.height - 1, Math.round(node.height * line.position)));
+          rectangle.constraints = { horizontal: "STRETCH", vertical: "MIN" };
+          rectangle.setPluginData("html-background-grid-line", String(line.position));
+        }
+        node.fills = original.map((paint) => paint.type === "GRADIENT_LINEAR" ? { ...paint, visible: false } : paint);
+        node.setPluginData("html-background-grid-fallback", "true");
+      } catch (error) {
+        for (const rectangle of rectangles) if (!rectangle.removed) rectangle.remove();
+        node.fills = original;
+        warn("BACKGROUND_GRID_FALLBACK", parsed.name, `Grid Line Rectangle \uC0DD\uC131 \uC2E4\uD328\uB85C \uC6D0\uBCF8 Gradient Fill\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+      }
+    }
+    function debugBackground(node, parsed, layers) {
+      const fills = node.fills;
+      const color = (value) => `#${[value.r, value.g, value.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}${value.a === 1 ? "" : ` alpha=${value.a}`}`;
+      const details = layers.map((layer, index) => `- layer ${index + 1}: ${layer.type === "GRADIENT" ? `linear-gradient (${layer.gradient.angle}deg; ${layer.gradient.stops.map((stop) => `${Math.round(stop.position * 1e4) / 100}% alpha=${stop.color.a} ${color(stop.color)}`).join(", ")})` : layer.type === "IMAGE" ? "image" : `solid ${color(layer.color)}`}`);
+      const rectangles = node.type === "FRAME" ? node.children.filter((child) => child.getPluginData("html-background-grid-line")) : [];
+      const diagnostics = {
+        computed: parsed.style.backgroundSource,
+        backgroundLayers: layers,
+        figmaFills: fills,
+        renderOrder: "first paint on top; solid base last",
+        gridLines: rectangles.map((rectangle) => ({ name: rectangle.name, x: rectangle.x, y: rectangle.y, width: rectangle.width, height: rectangle.height }))
+      };
+      node.setPluginData("html-background-debug", JSON.stringify(diagnostics));
+      console.info("HTML \u2192 Figma background", parsed.source?.selector || parsed.name, diagnostics);
+      warn("BACKGROUND_DEBUG", parsed.name, [
+        ...parsed.style.backgroundSource ? [`computed backgroundImage: ${parsed.style.backgroundSource.backgroundImage}`, `computed background: ${parsed.style.backgroundSource.background}`] : [],
+        `background layers: ${layers.length}`,
+        ...details,
+        `figma fills: ${fills.length}`,
+        "order: CSS first layer \u2192 top Paint; solid base \u2192 bottom Paint",
+        ...rectangles.length ? [`Grid Line fallback: ${rectangles.length} Rectangles; original Gradient Paints hidden; visible fills: ${fills.filter((paint) => paint.visible !== false).length}`] : []
+      ].join("\n"));
     }
     function configureLayout(frame, parsed) {
       frame.layoutMode = doc.options.autoLayout ? parsed.layout.direction : "NONE";
@@ -577,6 +667,8 @@
         }
       }
       for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
+      for (const { node, parsed, lines } of gridBackgrounds) if (!node.removed) createBackgroundGrid(node, parsed, lines);
+      for (const { node, parsed, layers } of backgroundDiagnostics) if (!node.removed) debugBackground(node, parsed, layers);
       created.x = figma.viewport.center.x - created.width / 2;
       created.y = figma.viewport.center.y - created.height / 2;
       figma.currentPage.selection = [created];

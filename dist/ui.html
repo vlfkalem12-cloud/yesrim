@@ -707,6 +707,38 @@
     return { gradient: { angle, stops: stops.map((stop) => ({ color: stop.color, position: stop.position })), layerIndex: 0 }, fallback };
   }
 
+  // src/backgrounds.ts
+  function backgroundLayers(style) {
+    const legacy = [
+      ...style.backgroundGradient ? [{ type: "GRADIENT", gradient: style.backgroundGradient }] : [],
+      ...style.backgroundImage ? [{ type: "IMAGE", image: style.backgroundImage }] : []
+    ];
+    const indexOf = (layer) => layer.type === "GRADIENT" ? layer.gradient.layerIndex : layer.type === "IMAGE" ? layer.image.layerIndex ?? 0 : layer.layerIndex;
+    const layers = style.backgroundLayers ?? legacy.sort((a, b) => indexOf(a) - indexOf(b));
+    if (!style.background || layers.some((layer) => layer.type === "SOLID" && layer.base)) return layers;
+    return [...layers, { type: "SOLID", color: style.background, layerIndex: Math.max(-1, ...layers.map(indexOf)) + 1, base: true }];
+  }
+  function thinHorizontalGridLines(layers) {
+    const gradients = layers.filter((layer) => !(layer.type === "SOLID" && layer.base));
+    if (gradients.length < 3) return null;
+    const lines = [];
+    let angle;
+    for (const layer of gradients) {
+      if (layer.type !== "GRADIENT") return null;
+      const gradient = layer.gradient;
+      if (![0, 180].includes(gradient.angle) || angle !== void 0 && angle !== gradient.angle || gradient.stops.length !== 3) return null;
+      angle = gradient.angle;
+      const [before, peak, after] = gradient.stops;
+      if (!before || !peak || !after || before.color.a !== 0 || after.color.a !== 0 || peak.color.a <= 0 || before.position >= peak.position || peak.position >= after.position || after.position - before.position > 0.020001 || Math.abs(peak.position - before.position - (after.position - peak.position)) > 1e-6) return null;
+      const position = angle === 180 ? peak.position : 1 - peak.position;
+      lines.push({ position, color: peak.color, layerIndex: gradient.layerIndex });
+    }
+    lines.sort((a, b) => a.position - b.position);
+    const color = lines[0].color, spacing = lines[1].position - lines[0].position;
+    if (spacing <= 0.02 || lines.some((line, index) => ["r", "g", "b", "a"].some((channel) => Math.abs(line.color[channel] - color[channel]) > 1e-6) || index > 0 && Math.abs(line.position - lines[index - 1].position - spacing) > 1e-6)) return null;
+    return lines;
+  }
+
   // src/dom-visibility.ts
   function isAccessibilityHidden(style) {
     if (!["absolute", "fixed"].includes(style.position) || style.display === "contents") return false;
@@ -996,6 +1028,17 @@
           if (result.warning) warn("GRADIENT_FALLBACK", node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} \u2014 ${result.warning}`);
         } else if (layer !== "none") warn("BACKGROUND_LAYER", node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`);
       });
+      node.style.backgroundLayers = backgroundLayers(node.style);
+      const fullBox = splitCSSList(style.backgroundSize).every((size) => ["auto", "auto auto", "100% 100%"].includes(size));
+      const allParsed = node.style.backgroundLayers.filter((layer) => !(layer.type === "SOLID" && layer.base)).length === layers.filter((layer) => layer !== "none").length;
+      node.style.backgroundGridFallback = fullBox && allParsed && thinHorizontalGridLines(node.style.backgroundLayers) !== null;
+      if (options.debug) node.style.backgroundSource = {
+        background: style.background,
+        backgroundImage: style.backgroundImage,
+        backgroundColor: style.backgroundColor,
+        backgroundSize: style.backgroundSize,
+        backgroundPosition: style.backgroundPosition
+      };
     }
     function parse(el, depth) {
       if (OMIT_TAGS.has(el.localName)) return [];
@@ -1075,7 +1118,7 @@
             type: "TEXT",
             name: `${name} / text`,
             rect: bounds(range.getBoundingClientRect()),
-            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, backgroundLayers: void 0, shadow: void 0, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, backgroundLayers: void 0, backgroundGridFallback: void 0, backgroundSource: void 0, shadow: void 0, borderWidths: zero(), radii: [0, 0, 0, 0] },
             layout: { ...node.layout, direction: "NONE", padding: zero(), margin: zero(), absolute: false },
             children: []
           };
@@ -1222,6 +1265,10 @@
     if (bodyStyle.backgroundColor === "rgba(0, 0, 0, 0)") {
       const htmlBackground = parseColor(view.getComputedStyle(doc.documentElement).backgroundColor);
       if (htmlBackground && !root.style.background?.a) root.style.background = htmlBackground;
+    }
+    if (root.style.backgroundLayers) {
+      root.style.backgroundLayers = root.style.backgroundLayers.filter((layer) => !(layer.type === "SOLID" && layer.base));
+      root.style.backgroundLayers = backgroundLayers(root.style);
     }
     if (options.optimizeWrappers) optimizeEmptyWrappers(root);
     await collectImages(root, doc, options, assets, warn);
@@ -1503,6 +1550,7 @@
       for (const warning of report.warnings.filter((warning2) => warning2.category === category)) {
         const li = document.createElement("li");
         li.textContent = `${warning.element || warning.node} \u2014 ${warning.code}: ${warning.message}`;
+        if (warning.category === "Debug") li.style.whiteSpace = "pre-line";
         items.append(li);
       }
       group.append(items);

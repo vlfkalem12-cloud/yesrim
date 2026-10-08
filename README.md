@@ -60,6 +60,8 @@ Dashboard 렌더링 확인에는 `test/dashboard-rendering-regression.html`을 �
 
 Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기본 ON, Debug Mode는 기본 OFF입니다. Debug Mode를 켜면 `card [div.card]`처럼 레이어 이름에 HTML selector가 추가됩니다. Images를 끄면 이미지 bytes 수집과 Image Fill 생성을 생략하고 `img` 영역의 빈 Rectangle을 유지합니다. HTML 치수 측정 단계에서는 원본 이미지가 로딩될 수 있습니다. Inline SVG Vector 변환은 유지됩니다.
 
+Multiple Background를 확인할 때는 **Debug Mode**를 켜고 완료 보고서의 **Debug** 항목을 펼치세요. 실제 computed `backgroundImage` / `background`, 레이어별 종류·색상·stop 위치·alpha, 최종 `figma fills` 수와 순서를 표시합니다. 요청한 Chart 배경은 `background layers: 4` (Gradient 3개 + Solid #FFFFFF), `figma fills: 4`로 표시됩니다. CSS shorthand의 마지막 색상은 computed `backgroundImage`에서 `none`이고 `backgroundColor`에 색상이 저장되므로, JSON에서는 이를 하나의 Solid base로 합칩니다. 같은 정보는 콘솔과 Frame의 `html-background-debug` plugin data에도 기록합니다.
+
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
 
 ## 구현 구조
@@ -73,6 +75,7 @@ src/ui.ts              FileReader, UI ↔ main 통신, JSON 다운로드
 src/parser.ts          DOMParser, sandbox 렌더링, computed CSS → JSON
 src/form-controls.ts   현재 value / placeholder / 선택된 option 및 텍스트 치수
 src/gradients.ts       Linear Gradient 파싱, Solid fallback, Figma Paint 방향
+src/backgrounds.ts     다중 배경·Solid base 통합, 얇은 반복 Grid Line 패턴 판별
 src/dom-visibility.ts  접근성 숨김 clipping 조합 판정
 src/inline-layout.ts   Mixed Inline 스타일 구분과 한 줄 Auto Layout
 src/sizing.ts          부모·Flex·CSS 크기와 min/max → Fixed / Fill / Hug
@@ -117,6 +120,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - `img`는 편집 가능한 Rectangle + Image Fill. HTTPS CORS 이미지와 `data:image`를 PNG bytes로 전달합니다. `contain`은 FIT, 나머지는 FILL로 근사합니다. 동일 URL의 이미지 데이터는 재사용합니다.
 - `linear-gradient()`은 `GRADIENT_LINEAR` Fill로 변환합니다. 0 / 90 / 180 / 270deg, 기본 방향과 to top / right / bottom / left, hex / rgb / rgba, 0~100% stop과 2개 이상의 색상을 지원합니다. 생략한 stop은 CSS에 맞게 분배합니다. 색상의 alpha와 Frame opacity를 각각 유지합니다. 파싱 실패 또는 Gradient Paint 적용 실패 시 첫 유효 color stop의 Solid Fill과 `GRADIENT_FALLBACK` Warning을 남깁니다. body / html의 최상위 Gradient와 장식된 Text의 배경도 보존합니다.
 - `background-image:url(...)`은 해당 Frame의 Image Fill로 변환합니다. 다중 배경은 괄호·따옴표를 고려해 최상위 쉼표에서 분리하고 모든 URL / Linear Gradient를 CSS 순서대로 Fill 배열에 유지합니다. 첫 레이어가 위, 단색 배경이 맨 아래입니다. 각 URL의 size / position / repeat과 이미지 캐시를 유지하며 cover / contain / center / no-repeat을 우선 지원합니다. Images를 꺼도 모든 Linear Gradient는 유지됩니다. 실패한 Gradient는 해당 위치에서 Solid fallback으로 처리하며 다른 Fill과 내부 자식을 유지합니다. 미지원 레이어는 원본 CSS와 `BACKGROUND_LAYER` Warning을 남기고 해당 레이어만 생략합니다. 완전히 투명한 stop의 alpha를 보존하면서 주변 RGB를 사용해 검은 보간 가장자리를 피합니다. 기존 version-1 JSON의 단일 Gradient / Image 필드도 처리합니다.
+- 같은 색의 얇은 수평 Grid Line Gradient가 3개 이상 일정한 간격으로 반복될 때는 1px Rectangle으로 재현합니다. 지원 패턴은 전체 배경 크기에서 방향 0 / 180deg, transparent → 색상 → transparent의 대칭 3-stop, 전체 폭 2% 이하입니다. 선은 콘텐츠 뒤에 배치하고 Auto Layout에서는 Absolute로 처리합니다. 폭은 최종 Frame 전체 폭이며 STRETCH constraint로 유지합니다. 원본 Gradient Paint와 stop 데이터는 숨김 상태로 보존하고 흰색 등 Solid base는 표시합니다. Debug에는 fallback Rectangle 수와 실제 좌표도 나옵니다. 일반·넓은·수평 방향·간격이 불규칙한·색상이 다른·타일 크기를 지정한·이미지가 섞인 Gradient는 기존 Fill로 유지합니다. Rectangle 생성 실패 시 부분 생성물을 제거하고 원본 Gradient와 Warning을 유지합니다.
 - Inline `<svg>`는 computed fill / stroke 등 스타일을 반영한 SVG를 `figma.createNodeFromSvg`로 전달하여 Vector를 유지합니다. 실패하면 placeholder Frame과 경고를 만들고 다른 요소를 계속 처리합니다.
 - Donut의 fill:none인 dashed circle은 cx / cy / r, dasharray / dashoffset / pathLength에 따른 실제 표시 구간을 명시적인 SVG Arc path로 변환해 importer의 dash 해석을 피합니다. 연속 구간과 원의 seam을 유지하고 stroke-width / linecap / opacity / 2D rotate를 보존합니다. 일반 Icon / Path / Rect / Circle / Line / Polyline은 기존 native Vector import 경로를 유지하며 raster Image로 바꾸지 않습니다. 변환 예외가 발생하면 원본 SVG stroke와 `SVG_DASH` Warning을 유지합니다. 길이가 0인 점선이나 매우 촘촘한 패턴은 원본 SVG 형태로 전달합니다.
 - CSS Variable은 최종 computed 값을 스타일에 적용하고 이름·값·scope를 JSON에 보관합니다. 실제 Figma Variable 생성은 후속 확장을 위한 범위입니다.
@@ -169,6 +173,6 @@ Gradient 검증은 요청한 4-stop 배경, CSS 방향과 Figma transform의 시
 
 Fixed 검증은 긴 문서의 하단 바 (`1440×900`에서 `240,824,1200,76`), 사용자 지정·모바일 viewport, percentage / calc / margin inset, Hug 폰트 치수 변경, 양쪽 inset의 auto 크기, clipped 부모에서 분리, 내부 Absolute·Form·Grid 유지, 중첩 fixed 레이어 순서, 옵션 OFF 및 스크롤 고정 API 실패를 검사합니다. 추가 검증은 transform / filter / contain 부모에서 문서 기준 rect가 생성되는 실패를 재현하고, 1500 / 1800 / 3600px 문서·좁은 부모에서도 viewport 좌표·크기를 유지하는지 검사합니다. 네 preset의 높이, 직접 입력 왕복, font unit / min-max, 기존 version-1 JSON 호환, Debug 좌표와 메시지 검증도 포함합니다. 실제 iframe UI에서 동일 HTML을 viewport 크기와 preset을 바꾸며 연속 변환하는 흐름도 확인합니다. 테스트 HTML은 `test/fixed-position-regression.html`입니다.
 
-Dashboard 검증은 원본 Donut과 직렬화한 Arc SVG의 Chromium 픽셀 비교, 양·음 dashoffset / pathLength / full circle / seam / CSS 회전 기준, 일반 SVG 도형·Line dashoffset 및 Vector import 전달을 확인합니다. 세 Grid Line은 Paint matrix·stop을 별도 SVG로 표현해 원본 CSS 스크린샷과 픽셀 비교합니다. 다중 URL·Gradient 순서 / alpha / 이미지 캐시·옵션, 한 레이어의 파싱·Paint·이미지 실패 후 나머지 유지, 합성 Text·Grid Fill 중복 방지, wrapper / html / body / 기존 JSON 및 같은 Dashboard 연속 변환도 검사합니다.
+Dashboard 검증은 원본 Donut과 직렬화한 Arc SVG의 Chromium 픽셀 비교, 양·음 dashoffset / pathLength / full circle / seam / CSS 회전 기준, 일반 SVG 도형·Line dashoffset 및 Vector import 전달을 확인합니다. 세 Grid Line은 최종 Solid base·Rectangle을 별도 SVG로 표현해 25% / 50% / 75%의 1px 선과 정확히 픽셀 비교하고, 원본 CSS 스크린샷과도 비교합니다. computed CSS와 IR 4개 레이어·4개 Paint·alpha·stop, UI Debug 표시, Auto Layout 제외·최종 폭·opacity, 제한된 fallback 패턴과 Rectangle / Gradient API 실패도 검사합니다. 다중 URL·Gradient 순서 / alpha / 이미지 캐시·옵션, 한 레이어의 파싱·Paint·이미지 실패 후 나머지 유지, 합성 Text·Grid Fill 중복 방지, wrapper / html / body / 기존 JSON 및 같은 Dashboard 연속 변환도 검사합니다.
 
-전체 73개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+전체 78개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

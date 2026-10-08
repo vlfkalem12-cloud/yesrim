@@ -8,6 +8,7 @@ import { collectCSSVariableNames, readCSSVariables } from './css-variables';
 import { allowedAsset, collectImages, resolveLocalAsset } from './assets';
 import { measureFormText, readFormContent } from './form-controls';
 import { parseLinearGradient } from './gradients';
+import { backgroundLayers, thinHorizontalGridLines } from './backgrounds';
 import { isAccessibilityHidden } from './dom-visibility';
 import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
 
@@ -198,6 +199,15 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         if (result.warning) warn('GRADIENT_FALLBACK', node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} — ${result.warning}`);
       } else if (layer !== 'none') warn('BACKGROUND_LAYER', node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`);
     });
+    node.style.backgroundLayers = backgroundLayers(node.style);
+    // A sized/repeated background tile needs different geometry. Leave those gradients unchanged.
+    const fullBox = splitCSSList(style.backgroundSize).every(size => ['auto', 'auto auto', '100% 100%'].includes(size));
+    const allParsed = node.style.backgroundLayers.filter(layer => !(layer.type === 'SOLID' && layer.base)).length === layers.filter(layer => layer !== 'none').length;
+    node.style.backgroundGridFallback = fullBox && allParsed && thinHorizontalGridLines(node.style.backgroundLayers) !== null;
+    if (options.debug) node.style.backgroundSource = {
+      background: style.background, backgroundImage: style.backgroundImage, backgroundColor: style.backgroundColor,
+      backgroundSize: style.backgroundSize, backgroundPosition: style.backgroundPosition
+    };
   }
   function parse(el: Element, depth: number): ParsedNode[] {
     if (OMIT_TAGS.has(el.localName)) return [];
@@ -261,7 +271,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         // Keep decorated text editable, with a frame carrying its box styling.
         node.type = 'FRAME';
         const child: ParsedNode = { ...node, type: 'TEXT', name: `${name} / text`, rect: bounds(range.getBoundingClientRect()),
-          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, backgroundLayers: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
+          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, backgroundLayers: undefined, backgroundGridFallback: undefined, backgroundSource: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
           layout: { ...node.layout, direction: 'NONE', padding: zero(), margin: zero(), absolute: false }, children: [] };
         child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === 'HUG' ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
@@ -381,6 +391,11 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   if (bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)') {
     const htmlBackground = parseColor(view.getComputedStyle(doc.documentElement).backgroundColor);
     if (htmlBackground && !root.style.background?.a) root.style.background = htmlBackground;
+  }
+  // html's canvas background may have replaced body's transparent base after parsing.
+  if (root.style.backgroundLayers) {
+    root.style.backgroundLayers = root.style.backgroundLayers.filter(layer => !(layer.type === 'SOLID' && layer.base));
+    root.style.backgroundLayers = backgroundLayers(root.style);
   }
   if (options.optimizeWrappers) optimizeEmptyWrappers(root);
   await collectImages(root, doc, options, assets, warn);

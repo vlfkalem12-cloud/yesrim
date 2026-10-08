@@ -1,5 +1,6 @@
 import type { ConversionWarning, ParsedNode } from './types';
 export function warningCategory(code: string): string {
+  if (code === 'BACKGROUND_DEBUG') return 'Debug';
   if (/FONT/.test(code)) return 'Fonts';
   if (/GRADIENT|BACKGROUND_LAYER/.test(code)) return 'Unsupported CSS';
   if (/IMAGE|ASSET|BACKGROUND/.test(code)) return 'Images';

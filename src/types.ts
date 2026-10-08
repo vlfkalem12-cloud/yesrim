@@ -40,7 +40,7 @@ export interface ParsedSize {
 }
 export interface ParsedImage { key: string; src: string; alt: string; fit: string; position?: string; repeat?: string; layerIndex?: number }
 export interface ParsedGradient { angle: 0 | 90 | 180 | 270; stops: { position: number; color: Color }[]; layerIndex: number }
-export type ParsedBackgroundLayer = { type: 'GRADIENT'; gradient: ParsedGradient } | { type: 'IMAGE'; image: ParsedImage } | { type: 'SOLID'; color: Color; layerIndex: number };
+export type ParsedBackgroundLayer = { type: 'GRADIENT'; gradient: ParsedGradient } | { type: 'IMAGE'; image: ParsedImage } | { type: 'SOLID'; color: Color; layerIndex: number; base?: boolean };
 export interface ParsedShadow { color: Color; x: number; y: number; blur: number; spread: number; inset: boolean }
 export interface CSSVariableInfo { name: string; value: string; scope: string }
 export interface ParsedStyle {
@@ -62,7 +62,9 @@ export interface ParsedStyle {
   clipsContent: boolean;
   backgroundImage?: ParsedImage;
   backgroundGradient?: ParsedGradient;
-  backgroundLayers?: ParsedBackgroundLayer[]; // CSS order: first layer is topmost; background is the solid base.
+  backgroundLayers?: ParsedBackgroundLayer[]; // CSS order: first layer is topmost, including the solid base last.
+  backgroundGridFallback?: boolean; // Only full-box, repeated thin horizontal gradient lines.
+  backgroundSource?: { background: string; backgroundImage: string; backgroundColor: string; backgroundSize: string; backgroundPosition: string };
   shadow?: ParsedShadow;
   textTransform?: string;
 }

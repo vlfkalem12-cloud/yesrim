@@ -176,7 +176,9 @@ function showReport(report: ConversionReport): void {
     const title = document.createElement('strong'); title.textContent = `${category}: ${count}`; group.append(title);
     const items = document.createElement('ul');
     for (const warning of report.warnings.filter(warning => warning.category === category)) {
-      const li = document.createElement('li'); li.textContent = `${warning.element || warning.node} — ${warning.code}: ${warning.message}`; items.append(li);
+      const li = document.createElement('li'); li.textContent = `${warning.element || warning.node} — ${warning.code}: ${warning.message}`;
+      if (warning.category === 'Debug') li.style.whiteSpace = 'pre-line';
+      items.append(li);
     }
     group.append(items); list.append(group);
   }

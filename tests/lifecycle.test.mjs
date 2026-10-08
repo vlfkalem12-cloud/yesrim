@@ -152,6 +152,7 @@ test('Dashboard HTML converts repeatedly with one Donut arc, all gradient layers
       const nodes = node => [node, ...node.children.flatMap(nodes)];
       const chart = nodes(root).find(node => node.name === 'chart-wrap');
       assert.deepEqual(Array.from(chart.fills, paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+      assert.deepEqual(Array.from(chart.children.filter(node => node.getPluginData('html-background-grid-line')), node => node.y), [75, 150, 225]);
       const donut = session.mock.svgImports[index * 3];
       assert.equal((donut.match(/\bM /g) || []).length, 1); assert.match(donut, /stroke-dasharray="none"/);
       const current = snapshot(root);
@@ -160,6 +161,19 @@ test('Dashboard HTML converts repeatedly with one Donut arc, all gradient layers
     }
     assert.equal(session.mock.svgImports.length, 6);
     assert.deepEqual(session.mock.svgImports.slice(0, 3), session.mock.svgImports.slice(3));
+  } finally { await session.page.close(); }
+});
+
+test('Background Debug report exposes computed CSS, four layers and four fills in the running plugin UI', async () => {
+  const session = await openSession();
+  const background = [25, 50, 75].map(percent => `linear-gradient(to bottom,transparent ${percent - 1}%,#F3F4F6 ${percent}%,transparent ${percent + 1}%)`).join(',');
+  try {
+    await session.ui.locator('#debug').check();
+    await choose(session, 'grid-debug.html', `<style>body{margin:0}.chart{width:600px;height:300px;background:${background},#fff}</style><main><div class="chart"><p>Chart Content</p></div></main>`);
+    await convertOnce(session); await assertUnlocked(session, 'success');
+    const text = await session.ui.locator('#warnings').textContent();
+    for (const message of ['Debug:', 'computed backgroundImage:', 'background layers: 4', 'layer 4: solid #FFFFFF', 'figma fills: 4', 'Grid Line fallback: 3']) assert.ok(text.includes(message), message);
+    assert.ok(await session.ui.locator('#warnings li').evaluateAll(items => items.some(item => item.style.whiteSpace === 'pre-line')));
   } finally { await session.page.close(); }
 });
 
