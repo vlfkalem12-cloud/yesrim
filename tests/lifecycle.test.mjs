@@ -300,9 +300,9 @@ test('FileReader failures release upload controls and permit a later file select
       FileReader.prototype.readAsText = function () { queueMicrotask(() => this.dispatchEvent(new Event('error'))); };
     });
     await session.ui.locator('#file').setInputFiles({ name: 'read-error.html', mimeType: 'text/html', buffer: Buffer.from(htmlFor('read error')) });
-    await session.ui.waitForFunction(() => document.getElementById('status').dataset.state === 'error');
-    await assertUnlocked(session, 'error', false);
-    assert.ok((await session.ui.locator('#status').textContent()).includes('파일 읽기'));
+    await session.ui.waitForFunction(() => !document.getElementById('upload-error').hidden);
+    await assertUnlocked(session, 'idle', false);
+    assert.equal(await session.ui.locator('#upload-error-message').textContent(), '파일을 읽지 못했습니다. 다시 선택해 주세요.');
     await session.ui.evaluate(() => { FileReader.prototype.readAsText = window.originalReadAsText; });
     await choose(session, 'read-error.html'); await convertOnce(session); await assertUnlocked(session, 'success');
   } finally { await session.page.close(); }
@@ -443,7 +443,7 @@ test('A rejected replacement preserves the valid selection and its accurately na
   try {
     await choose(session, 'valid.html'); await convertOnce(session);
     await session.ui.locator('#file').setInputFiles({ name: 'invalid.txt', mimeType: 'text/plain', buffer: Buffer.from('invalid') });
-    assert.equal(await session.ui.locator('#status').textContent(), 'HTML 파일만 업로드할 수 있습니다.');
+    assert.equal(await session.ui.locator('#upload-error-message').textContent(), 'HTML 파일만 업로드할 수 있습니다.');
     assert.equal(await session.ui.locator('#report-file').textContent(), 'valid.html');
     assert.equal(await session.ui.locator('#filename').textContent(), 'valid.html');
     assert.ok(await session.ui.locator('#convert').isEnabled());

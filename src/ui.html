@@ -60,6 +60,14 @@
     .file-viewport summary { font-weight: 400; font-size: 11px; }
     .file-viewport .dimensions { margin-top: 8px; }
     #file-viewport-error { color: var(--figma-color-text-danger, #b13247); }
+    #upload-error { color: var(--figma-color-text-danger, #b13247); line-height: 1.6; margin: 10px 0; }
+    .file-list-header, .file-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .file-actions { grid-column: 1 / -1; justify-content: flex-end; }
+    button:disabled { cursor: default; opacity: .45; }
+    dialog { max-width: 360px; border: 1px solid var(--figma-color-border, #dadde5); border-radius: 12px; padding: 20px; background: var(--figma-color-bg, #fff); color: inherit; }
+    dialog::backdrop { background: #0005; }
+    dialog h2 { font-size: 15px; margin: 0 0 12px; }
+    dialog p { line-height: 1.7; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -72,8 +80,10 @@
     <strong id="filename">HTML 파일 업로드</strong>
     <span class="muted" id="fileinfo">드래그하거나 클릭하여 선택 · .html / .htm · 최대 10개 · 파일당 5MB</span>
   </label>
-  <input class="sr-only" type="file" id="file" multiple accept=".html,.htm,text/html" aria-label="HTML 파일 선택">
-  <section id="file-list-section" hidden aria-label="선택한 파일"><strong id="file-list-title"></strong><ol id="file-list"></ol></section>
+  <input class="sr-only" type="file" id="file" multiple accept=".html,.htm,text/html" aria-label="HTML 파일 선택" aria-describedby="fileinfo upload-error">
+  <p id="upload-error" role="alert" hidden><span aria-hidden="true">⚠ </span><span id="upload-error-message"></span></p>
+  <section id="file-list-section" hidden aria-label="선택한 파일"><div class="file-list-header"><strong id="file-list-title"></strong><button id="clear-files" class="secondary" type="button">전체 삭제</button></div><ol id="file-list"></ol></section>
+  <dialog id="clear-confirm" aria-labelledby="clear-confirm-title" aria-describedby="clear-confirm-description"><h2 id="clear-confirm-title">선택한 파일을 모두 삭제하시겠습니까?</h2><p id="clear-confirm-description">업로드한 파일과 변환 결과 목록이 삭제됩니다. Figma에 생성된 화면은 유지됩니다.</p><div class="file-actions"><button id="clear-confirm-cancel" class="secondary" type="button" autofocus>취소</button><button id="clear-confirm-submit" class="secondary" type="button">전체 삭제</button></div></dialog>
   <p id="file-viewport-error" role="alert" hidden>파일별 Viewport도 1~10,000px의 정수로 입력하세요. 빈 값은 공통 설정을 사용합니다.</p>
   <div class="asset-picker"><label class="secondary" for="asset-files">이미지 파일 추가 (선택)</label><span class="muted" id="asset-count">상대 경로 이미지용</span></div>
   <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">

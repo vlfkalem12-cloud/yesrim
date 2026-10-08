@@ -136,7 +136,7 @@ test('10 files wait for each terminal before parsing the next file and show prog
     assert.equal(creates(s).length, 1); assert.deepEqual(await states(s), ['CONVERTING', ...Array(9).fill('WAITING')]);
     assert.match(await s.ui.locator('#status').textContent(), /1 \/ 10개 파일 처리 중 · 완료 0개/);
     assert.ok(await s.ui.locator('#file').isDisabled()); assert.ok(await s.ui.locator('#convert').isDisabled());
-    assert.equal(await s.ui.locator('.remove-file').count(), 0); assert.ok(await s.ui.locator('.file-viewport input').first().isDisabled());
+    assert.ok(await s.ui.locator('.remove-file').evaluateAll(buttons => buttons.every(button => button.disabled))); assert.ok(await s.ui.locator('.file-viewport input').first().isDisabled());
     await choose(s, [file('ignored.html')], true, false); assert.equal(await s.ui.locator('#file-list li').count(), 10);
     s.release(); await s.ui.waitForFunction(() => document.getElementById('status').dataset.state === 'success'); await s.drain();
     assert.equal(creates(s).length, 10); assert.equal(s.maxActive, 1); assert.equal(s.mock.figma.currentPage.children.length, 10);
@@ -155,16 +155,16 @@ test('11 files, mixed extensions, oversize, empty and unreadable replacements pr
     for (const [files, message, drop] of [
       [Array.from({ length: 11 }, (_, i) => file(`${i}.html`)), 'HTML 파일은 최대 10개까지 선택할 수 있습니다.', false],
       [[file('good.html'), file('bad.txt')], 'HTML 파일만 업로드할 수 있습니다.', true],
-      [[file('empty.html', '')], 'HTML 파일이 비어 있습니다.', false],
-      [[file('large.html', 'x'.repeat(5 * 1024 * 1024 + 1))], '파일이 5MB 제한을 초과했습니다.', false]
+      [[file('empty.html', '')], '내용이 없는 HTML 파일은 업로드할 수 없습니다.', false],
+      [[file('large.html', 'x'.repeat(5 * 1024 * 1024 + 1))], '파일당 최대 5MB까지 업로드할 수 있습니다.', false]
     ]) {
-      await choose(s, files, drop, false); await s.ui.waitForFunction(() => document.getElementById('status').dataset.state === 'error');
-      assert.ok((await s.ui.locator('#status').textContent()).includes(message));
+      await choose(s, files, drop, false); await s.ui.waitForFunction(message => document.getElementById('upload-error-message').textContent === message, message);
+      assert.equal(await s.ui.locator('#upload-error-message').textContent(), message);
       assert.deepEqual(await s.ui.locator('#file-list li').evaluateAll(rows => rows.map(row => row.dataset.itemId)), original);
       await unlocked(s);
     }
     await s.ui.evaluate(() => { window.readText = FileReader.prototype.readAsText; FileReader.prototype.readAsText = function () { queueMicrotask(() => this.dispatchEvent(new Event('error'))); }; });
-    await choose(s, [file('read.html')], false, false); await s.ui.waitForFunction(() => document.getElementById('status').textContent.includes('파일 읽기'));
+    await choose(s, [file('read.html')], false, false); await s.ui.waitForFunction(() => document.getElementById('upload-error-message').textContent === '파일을 읽지 못했습니다. 다시 선택해 주세요.');
     await s.ui.evaluate(() => { FileReader.prototype.readAsText = window.readText; });
     assert.deepEqual(await s.ui.locator('#file-list li').evaluateAll(rows => rows.map(row => row.dataset.itemId)), original);
     await convert(s); assert.equal(s.mock.figma.currentPage.children.length, 2);

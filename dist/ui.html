@@ -60,6 +60,14 @@
     .file-viewport summary { font-weight: 400; font-size: 11px; }
     .file-viewport .dimensions { margin-top: 8px; }
     #file-viewport-error { color: var(--figma-color-text-danger, #b13247); }
+    #upload-error { color: var(--figma-color-text-danger, #b13247); line-height: 1.6; margin: 10px 0; }
+    .file-list-header, .file-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .file-actions { grid-column: 1 / -1; justify-content: flex-end; }
+    button:disabled { cursor: default; opacity: .45; }
+    dialog { max-width: 360px; border: 1px solid var(--figma-color-border, #dadde5); border-radius: 12px; padding: 20px; background: var(--figma-color-bg, #fff); color: inherit; }
+    dialog::backdrop { background: #0005; }
+    dialog h2 { font-size: 15px; margin: 0 0 12px; }
+    dialog p { line-height: 1.7; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -72,8 +80,10 @@
     <strong id="filename">HTML 파일 업로드</strong>
     <span class="muted" id="fileinfo">드래그하거나 클릭하여 선택 · .html / .htm · 최대 10개 · 파일당 5MB</span>
   </label>
-  <input class="sr-only" type="file" id="file" multiple accept=".html,.htm,text/html" aria-label="HTML 파일 선택">
-  <section id="file-list-section" hidden aria-label="선택한 파일"><strong id="file-list-title"></strong><ol id="file-list"></ol></section>
+  <input class="sr-only" type="file" id="file" multiple accept=".html,.htm,text/html" aria-label="HTML 파일 선택" aria-describedby="fileinfo upload-error">
+  <p id="upload-error" role="alert" hidden><span aria-hidden="true">⚠ </span><span id="upload-error-message"></span></p>
+  <section id="file-list-section" hidden aria-label="선택한 파일"><div class="file-list-header"><strong id="file-list-title"></strong><button id="clear-files" class="secondary" type="button">전체 삭제</button></div><ol id="file-list"></ol></section>
+  <dialog id="clear-confirm" aria-labelledby="clear-confirm-title" aria-describedby="clear-confirm-description"><h2 id="clear-confirm-title">선택한 파일을 모두 삭제하시겠습니까?</h2><p id="clear-confirm-description">업로드한 파일과 변환 결과 목록이 삭제됩니다. Figma에 생성된 화면은 유지됩니다.</p><div class="file-actions"><button id="clear-confirm-cancel" class="secondary" type="button" autofocus>취소</button><button id="clear-confirm-submit" class="secondary" type="button">전체 삭제</button></div></dialog>
   <p id="file-viewport-error" role="alert" hidden>파일별 Viewport도 1~10,000px의 정수로 입력하세요. 빈 값은 공통 설정을 사용합니다.</p>
   <div class="asset-picker"><label class="secondary" for="asset-files">이미지 파일 추가 (선택)</label><span class="muted" id="asset-count">상대 경로 이미지용</span></div>
   <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">
@@ -2043,6 +2053,44 @@
     };
   }
 
+  // src/upload-files.ts
+  var UPLOAD_ERRORS = {
+    count: "HTML \uD30C\uC77C\uC740 \uCD5C\uB300 10\uAC1C\uAE4C\uC9C0 \uC120\uD0DD\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+    duplicate: "\uC774\uBBF8 \uCD94\uAC00\uB41C \uD30C\uC77C\uC785\uB2C8\uB2E4.",
+    extension: "HTML \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+    size: "\uD30C\uC77C\uB2F9 \uCD5C\uB300 5MB\uAE4C\uC9C0 \uC5C5\uB85C\uB4DC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+    empty: "\uB0B4\uC6A9\uC774 \uC5C6\uB294 HTML \uD30C\uC77C\uC740 \uC5C5\uB85C\uB4DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+    read: "\uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC120\uD0DD\uD574 \uC8FC\uC138\uC694."
+  };
+  function readHTMLFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error(UPLOAD_ERRORS.read));
+      reader.onerror = reader.onabort = () => reject(new Error(UPLOAD_ERRORS.read));
+      reader.readAsText(file);
+    });
+  }
+  async function validateHTMLSelection(files, cancelled2) {
+    if (files.length > MAX_HTML_FILES) throw new Error(UPLOAD_ERRORS.count);
+    if (files.some((file) => !/\.html?$/i.test(file.name))) throw new Error(UPLOAD_ERRORS.extension);
+    if (files.some((file) => file.size > LIMITS.fileBytes)) throw new Error(UPLOAD_ERRORS.size);
+    const key = (file) => JSON.stringify([file.webkitRelativePath || file.name, file.size]);
+    const counts = /* @__PURE__ */ new Map();
+    for (const file of files) counts.set(key(file), (counts.get(key(file)) || 0) + 1);
+    const contentKeys = /* @__PURE__ */ new Map();
+    for (const file of files) {
+      const content = await readHTMLFile(file);
+      if (cancelled2()) return;
+      if (!content.trim()) throw new Error(UPLOAD_ERRORS.empty);
+      if (counts.get(key(file)) < 2) continue;
+      const fingerprint = globalThis.crypto?.subtle ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))).map((byte) => byte.toString(16).padStart(2, "0")).join("") : content;
+      const seen = contentKeys.get(key(file)) || /* @__PURE__ */ new Set();
+      if (seen.has(fingerprint)) throw new Error(UPLOAD_ERRORS.duplicate);
+      seen.add(fingerprint);
+      contentKeys.set(key(file), seen);
+    }
+  }
+
   // src/ui.ts
   function get(id) {
     const element = document.getElementById(id);
@@ -2068,6 +2116,7 @@
   var items = [];
   var batchId = null;
   var currentItem = null;
+  var selectedItemId = null;
   var parsedItemId = null;
   var pendingFile = null;
   var pendingBatch = null;
@@ -2119,6 +2168,8 @@
     for (const field of document.querySelectorAll(".file-viewport input")) field.disabled = value;
     cancel.hidden = !value;
     if (!value) cancel.disabled = false;
+    get("clear-files").disabled = value;
+    for (const button of document.querySelectorAll("#file-list button")) button.disabled = value || button.dataset.boundary === "true";
     convert.textContent = conversionStatus === "converting" ? "\uBCC0\uD658 \uC911\u2026" : "Figma\uB85C \uBCC0\uD658";
   }
   function renderItems() {
@@ -2127,12 +2178,12 @@
     const list = get("file-list");
     list.replaceChildren();
     const labels = { WAITING: "\uB300\uAE30", CONVERTING: "\uBCC0\uD658 \uC911", SUCCESS: "\uBCC0\uD658 \uC644\uB8CC", SUCCESS_WITH_WARNINGS: "\uACBD\uACE0\uC640 \uD568\uAED8 \uBCC0\uD658 \uC644\uB8CC", ERROR: "\uBCC0\uD658 \uC2E4\uD328" };
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const row = document.createElement("li");
       row.dataset.itemId = item.id;
       row.dataset.state = item.state;
       const name = document.createElement("strong");
-      name.textContent = item.file.name;
+      name.textContent = `${index + 1}. ${item.file.name}`;
       row.append(name);
       const state = document.createElement("span");
       state.className = "muted";
@@ -2174,21 +2225,28 @@
         dimensions.append(fields);
         row.append(dimensions);
       }
-      if (!isBusy() && items.every((entry) => entry.state === "WAITING")) {
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "secondary remove-file";
-        remove.textContent = "\uC81C\uAC70";
-        remove.setAttribute("aria-label", `${item.file.name} \uC81C\uAC70`);
-        remove.onclick = () => {
-          if (isBusy()) return;
-          items = items.filter((entry) => entry.id !== item.id);
-          updateSelectionLabel();
-          renderItems();
-          renderControls();
-        };
-        row.append(remove);
+      const actions = document.createElement("div");
+      actions.className = "file-actions";
+      for (const [direction, label] of [[-1, "\uC704\uB85C"], [1, "\uC544\uB798\uB85C"]]) {
+        const move = document.createElement("button");
+        move.type = "button";
+        move.className = `secondary move-${direction === -1 ? "up" : "down"}`;
+        move.textContent = label;
+        move.dataset.boundary = String(index + direction < 0 || index + direction >= items.length);
+        move.disabled = isBusy() || move.dataset.boundary === "true";
+        move.setAttribute("aria-label", `${item.file.name} ${label} \uC774\uB3D9`);
+        move.onclick = () => moveItem(item.id, direction);
+        actions.append(move);
       }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "secondary remove-file";
+      remove.textContent = "\uC0AD\uC81C";
+      remove.disabled = isBusy();
+      remove.setAttribute("aria-label", `${item.file.name} \uC0AD\uC81C`);
+      remove.onclick = () => removeItem(item.id);
+      actions.append(remove);
+      row.append(actions);
       if (item.outcome) {
         const detail = document.createElement("button");
         detail.type = "button";
@@ -2196,6 +2254,7 @@
         detail.textContent = item.state === "ERROR" ? "\uC624\uB958 \uC0C1\uC138 \uBCF4\uAE30" : "\uC0C1\uC138 \uB0B4\uC6A9 \uBCF4\uAE30";
         detail.disabled = isBusy();
         detail.onclick = () => {
+          selectedItemId = item.id;
           displayReport(item);
           json.hidden = !parsed || parsedItemId !== item.id;
         };
@@ -2231,59 +2290,125 @@
     input.value = "";
     dropzone.classList.remove("drag");
     status(message, state);
-    if (currentItem) displayReport(currentItem);
+    if (currentItem) {
+      selectedItemId = currentItem.id;
+      displayReport(currentItem);
+    }
     renderItems();
     renderControls();
   }
-  function readFile(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("HTML \uD30C\uC77C\uC744 \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."));
-      reader.onerror = () => reject(new Error("\uD30C\uC77C \uC77D\uAE30\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4."));
-      reader.onabort = () => reject(new Error("\uD30C\uC77C \uC77D\uAE30\uAC00 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4."));
-      reader.readAsText(file);
-    });
+  function uploadError(message = "") {
+    get("upload-error").hidden = !message;
+    get("upload-error-message").textContent = message;
+    input.setAttribute("aria-invalid", String(!!message));
+    dropzone.setAttribute("aria-invalid", String(!!message));
   }
+  function refreshSummary() {
+    const outcomes = items.flatMap((item) => item.outcome ? [item.outcome] : []);
+    get("batch-summary").hidden = items.length < 2 || !outcomes.length;
+    if (!outcomes.length) return;
+    const summary = batchSummary(items.length, outcomes);
+    get("batch-summary").textContent = `\uCD1D ${summary.total}\uAC1C \uD30C\uC77C \xB7 \uC815\uC0C1 \uC644\uB8CC ${summary.success}\uAC1C \xB7 \uACBD\uACE0 \uD3EC\uD568 \uC644\uB8CC ${summary.warnings}\uAC1C \xB7 \uC2E4\uD328 ${summary.errors}\uAC1C${summary.waiting ? ` \xB7 \uBBF8\uCC98\uB9AC ${summary.waiting}\uAC1C` : ""}`;
+  }
+  function moveItem(id, direction) {
+    if (isBusy()) return;
+    const from = items.findIndex((item2) => item2.id === id), to = from + direction;
+    if (from < 0 || to < 0 || to >= items.length) return;
+    const [item] = items.splice(from, 1);
+    items.splice(to, 0, item);
+    renderItems();
+    renderControls();
+  }
+  function removeItem(id) {
+    if (isBusy()) return;
+    const index = items.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    const [removed] = items.splice(index, 1);
+    if (currentItem === removed) currentItem = null;
+    if (parsedItemId === id) {
+      parsed = null;
+      parsedItemId = null;
+      json.hidden = true;
+    }
+    if (selectedItemId === id || !selectedItemId) {
+      const candidates = [...items.slice(index), ...items.slice(0, index).reverse()];
+      const next = candidates.find((item) => item.outcome) || candidates[0];
+      selectedItemId = next?.id || null;
+      clearReport();
+      if (next?.outcome) displayReport(next);
+    }
+    if (!items.length) {
+      status("", "idle");
+      clearReport();
+      selectedItemId = null;
+    }
+    updateSelectionLabel();
+    refreshSummary();
+    renderItems();
+    renderControls();
+  }
+  function clearFiles() {
+    if (isBusy()) return;
+    items = [];
+    selectedItemId = null;
+    currentItem = null;
+    parsed = null;
+    parsedItemId = null;
+    requestId = batchId = null;
+    localAssets = {};
+    assetFiles.value = "";
+    get("asset-count").textContent = "\uC0C1\uB300 \uACBD\uB85C \uC774\uBBF8\uC9C0\uC6A9";
+    json.hidden = true;
+    input.value = "";
+    clearReport();
+    get("batch-summary").hidden = true;
+    get("batch-summary").textContent = "";
+    uploadError();
+    status("", "idle");
+    updateSelectionLabel();
+    renderItems();
+    renderControls();
+  }
+  var clearConfirm = get("clear-confirm");
+  get("clear-files").onclick = () => {
+    if (isBusy()) return;
+    if (items.some((item) => item.outcome)) clearConfirm.showModal();
+    else clearFiles();
+  };
+  get("clear-confirm-cancel").onclick = () => clearConfirm.close();
+  get("clear-confirm-submit").onclick = () => {
+    clearConfirm.close();
+    clearFiles();
+  };
   async function selectFiles(files) {
     if (isBusy() || !files.length) return;
     input.value = "";
-    if (files.length > MAX_HTML_FILES) {
-      status("HTML \uD30C\uC77C\uC740 \uCD5C\uB300 10\uAC1C\uAE4C\uC9C0 \uC120\uD0DD\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
-      return;
-    }
-    if (files.some((file) => !/\.html?$/i.test(file.name))) {
-      status("HTML \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
-      return;
-    }
-    if (files.some((file) => file.size > LIMITS.fileBytes)) {
-      status("\uD30C\uC77C\uC774 5MB \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.", "error");
-      return;
-    }
+    const previousState = conversionStatus, previousStatus = get("status").textContent || "";
     cancelled = false;
     readingFiles = true;
     status("HTML \uD30C\uC77C\uC744 \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.", "idle");
     renderControls();
     renderItems();
     try {
-      for (const file of files) {
-        const content = await readFile(file);
-        if (cancelled) return;
-        if (!content.trim()) throw new Error(`${file.name}: HTML \uD30C\uC77C\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.`);
-      }
+      await validateHTMLSelection(files, () => cancelled);
+      if (cancelled) return;
       items = files.map((file) => ({ id: newId(), file, state: "WAITING" }));
       requestId = batchId = null;
       currentItem = null;
+      selectedItemId = null;
       parsed = null;
       parsedItemId = null;
       json.hidden = true;
       clearReport();
       get("batch-summary").hidden = true;
+      uploadError();
       updateSelectionLabel();
       status("\uC900\uBE44\uB418\uC5C8\uC2B5\uB2C8\uB2E4. Viewport\uB97C \uC124\uC815\uD558\uACE0 \uBCC0\uD658\uD558\uC138\uC694.", "idle");
     } catch (error) {
-      status(errorMessage(error), "error");
+      uploadError(errorMessage(error));
+      status(previousStatus, previousState);
     } finally {
-      if (cancelled) status("\uD30C\uC77C \uC120\uD0DD\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.", "idle");
+      if (cancelled) status(previousStatus, previousState);
       cancelled = false;
       readingFiles = false;
       renderItems();
@@ -2425,7 +2550,7 @@
         renderItems();
         let parseError = null;
         try {
-          const source = await readFile(item.file);
+          const source = await readHTMLFile(item.file);
           if (!source.trim()) throw new Error("HTML \uD30C\uC77C\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
           const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
           if (!cancelled) parsed = await parseHTML(source, fileOptions, get("render-host"), assets);
