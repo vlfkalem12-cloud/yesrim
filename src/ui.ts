@@ -1,6 +1,7 @@
 import { parseHTML } from './parser';
-import { LIMITS, VIEWPORT_PRESETS, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type ParsedDocument, type UIMessage } from './types';
+import { LIMITS, VIEWPORT_PRESETS, type ConversionOutcome, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type ParsedDocument, type UIMessage } from './types';
 import { errorMessage, isViewportDimension } from './utils';
+import { failedOutcome, REPORT_LABELS, reportText } from './report';
 
 function get<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -29,6 +30,7 @@ let conversionStatus: ConversionStatus = 'idle';
 let readingFiles = false;
 let cancelled = false;
 let requestId: string | null = null;
+let selectedFileName = '';
 
 const send = (message: UIMessage) => parent.postMessage({ pluginMessage: message }, '*');
 const isBusy = () => conversionStatus === 'converting' || readingFiles;
@@ -67,14 +69,15 @@ function renderControls(): void {
   if (!value) cancel.disabled = false;
   convert.textContent = conversionStatus === 'converting' ? '변환 중…' : 'Figma로 변환';
 }
-function finishConversion(state: 'success' | 'error', message: string, report?: ConversionReport): void {
+function finishConversion(state: 'success' | 'error', message: string, report?: ConversionReport, outcome?: ConversionOutcome): void {
   requestId = null; cancelled = false;
   input.value = ''; dropzone.classList.remove('drag');
   status(message, state);
-  try { if (report) showReport(report); }
+  try { showReport(report, outcome || failedOutcome(selectedFileName, message)); }
   catch (error) {
     get('report').hidden = true;
-    status(`${message} 보고서를 표시할 수 없습니다: ${errorMessage(error)}`, state);
+    console.warn('Conversion report display failed', error);
+    status(`${message} 보고서를 표시하지 못했습니다. Figma에서 결과를 확인해 주세요.`, state);
   } finally { renderControls(); }
 }
 function readFile(file: File): Promise<string> {
@@ -89,9 +92,10 @@ function readFile(file: File): Promise<string> {
 async function selectFile(file: File | undefined): Promise<void> {
   if (isBusy() || !file) return;
   cancelled = false; requestId = null; input.value = '';
+  html = null; parsed = null; json.hidden = true; get('report').hidden = true;
+  selectedFileName = file.name; renderControls();
   if (!/\.html?$/i.test(file.name)) { status('.html 또는 .htm 파일을 선택하세요.', 'error'); return; }
   if (file.size > LIMITS.fileBytes) { status('파일이 5MB 제한을 초과했습니다.', 'error'); return; }
-  html = null; parsed = null; json.hidden = true; get('report').hidden = true;
   readingFiles = true; status('HTML 파일을 읽고 있습니다.', 'idle'); renderControls();
   try {
     const content = await readFile(file);
@@ -155,8 +159,11 @@ convert.addEventListener('click', async () => {
     console.info('HTML → Figma intermediate document', parsed);
     json.hidden = false;
     status('Figma 레이어를 생성합니다…');
-    send({ type: 'CREATE_FIGMA', requestId, payload: parsed });
-  } catch (error) { finishConversion('error', errorMessage(error)); }
+    send({ type: 'CREATE_FIGMA', requestId, fileName: selectedFileName, payload: parsed });
+  } catch (error) {
+    console.warn('HTML analysis failed', error);
+    finishConversion('error', `HTML을 변환하지 못했습니다. ${reportText(errorMessage(error))}`);
+  }
 });
 cancel.addEventListener('click', () => { cancelled = true; if (conversionStatus === 'converting') send({ type: 'CANCEL' }); status('변환을 취소하고 있습니다…'); cancel.disabled = true; });
 json.addEventListener('click', () => {
@@ -165,32 +172,59 @@ json.addEventListener('click', () => {
   const link = document.createElement('a'); link.href = url; link.download = 'html-to-figma.json'; document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-function showReport(report: ConversionReport): void {
+function showReport(report: ConversionReport | undefined, outcome: ConversionOutcome): void {
   get('report').hidden = false;
-  for (const [id, value] of [['total-count', report.total], ['frame-count', report.frames], ['layout-count', report.autoLayout], ['text-count', report.text], ['image-count', report.image], ['grid-count', report.grid], ['absolute-count', report.absolute], ['svg-count', report.svg]] as const) get(id).textContent = String(value);
-  get('duration').textContent = `Figma 노드 생성: ${(report.durationMs / 1000).toFixed(2)}초`;
-  get('warning-summary').textContent = `Warning ${report.warnings.length}`;
-  const list = get('warnings'); list.replaceChildren();
-  for (const [category, count] of Object.entries(report.warningGroups)) {
-    const group = document.createElement('li');
-    const title = document.createElement('strong'); title.textContent = `${category}: ${count}`; group.append(title);
-    const items = document.createElement('ul');
-    for (const warning of report.warnings.filter(warning => warning.category === category)) {
-      const li = document.createElement('li'); li.textContent = `${warning.element || warning.node} — ${warning.code}: ${warning.message}`;
-      if (warning.category === 'Debug') li.style.whiteSpace = 'pre-line';
-      items.append(li);
-    }
-    group.append(items); list.append(group);
+  get('report').dataset.result = outcome.status;
+  get('report-file').textContent = outcome.fileName;
+  get('report-result').textContent = outcome.result.frameCreated ? 'Figma Frame 생성 완료' : '결과 Frame을 생성하지 못했습니다.';
+  get('report-error').hidden = outcome.status !== 'ERROR';
+  get('report-error').textContent = outcome.errorMessage || '';
+  get('report-stats').hidden = !report;
+  get<HTMLDetailsElement>('report-stats').open = false;
+  if (report) {
+    for (const [id, value] of [['total-count', report.total], ['frame-count', report.frames], ['layout-count', report.autoLayout], ['text-count', report.text], ['image-count', report.image], ['grid-count', report.grid], ['absolute-count', report.absolute], ['svg-count', report.svg]] as const) get(id).textContent = String(value);
+    get('duration').textContent = `Figma 노드 생성: ${(report.durationMs / 1000).toFixed(2)}초`;
   }
-  get('warning-details').hidden = report.warnings.length === 0;
+  get('warning-count').textContent = outcome.warningCount ? `경고 ${outcome.warningCount}건 (동일 원인은 묶어서 표시)` : outcome.status === 'ERROR' ? '' : '확인된 경고가 없습니다.';
+  get('warning-types').textContent = Object.entries(outcome.warningTypes).map(([code, count]) => `${REPORT_LABELS[code as keyof typeof REPORT_LABELS]} ${count}건`).join(' · ');
+  get('warning-summary').textContent = '상세 내용 보기';
+  get<HTMLDetailsElement>('warning-details').open = false;
+  const list = get('warnings'); list.replaceChildren();
+  let shown = 0;
+  const detailLabels: Record<string, string> = { reason: '원인', originalFont: '원본 글꼴', originalWeight: '원본 굵기', originalStyle: '원본 스타일', fallbackFont: '대체 글꼴', fallbackStyle: '대체 스타일', cssProperty: 'CSS 속성', cssValue: 'CSS 값', resource: '리소스', resourceType: '리소스 종류', stage: '처리 단계' };
+  const more = get<HTMLButtonElement>('warning-more');
+  const appendWarnings = () => {
+    for (const warning of outcome.warnings.slice(shown, shown + 30)) {
+      const group = document.createElement('li');
+      const title = document.createElement('strong'); title.textContent = `${REPORT_LABELS[warning.code]} · ${warning.count}회`; group.append(title);
+      for (const text of [warning.message, ...Object.entries(warning.detail).map(([key, value]) => `${detailLabels[key] || key}: ${value}`), warning.locations.length ? `위치: ${warning.locations.join(', ')}` : '']) {
+        if (!text) continue;
+        const line = document.createElement('div'); line.textContent = text; group.append(line);
+      }
+      list.append(group);
+    }
+    shown += 30; more.hidden = shown >= outcome.warnings.length;
+  };
+  more.onclick = appendWarnings; appendWarnings();
+  get('warning-details').hidden = outcome.warningCount === 0;
+  const debugList = get('debug-warnings'); debugList.replaceChildren();
+  get<HTMLDetailsElement>('debug-details').open = false;
+  get('debug-details').hidden = !debug.checked || !report;
+  if (debug.checked && report) for (const warning of report.warnings) {
+    const item = document.createElement('li'); item.style.whiteSpace = 'pre-line';
+    item.textContent = `${warning.category}: ${warning.element || warning.node} — ${warning.code}: ${warning.message}`; debugList.append(item);
+  }
 }
 window.addEventListener('message', (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
   const message = event.data?.pluginMessage;
   // Figma may relay messages without parent as event.source; correlate the active request instead.
   if (!message || typeof message !== 'object' || message.requestId !== requestId || conversionStatus !== 'converting') return;
   if (message.type === 'PROGRESS') { status(`${message.count}개의 레이어를 생성했습니다…`); return; }
-  if (message.type === 'CONVERSION_COMPLETE') finishConversion('success', '✓ 변환 완료 · 다른 HTML 파일을 선택하거나 다시 변환할 수 있습니다.', message.payload?.report);
-  else if (message.type === 'CONVERSION_ERROR') finishConversion('error', message.payload?.message || '변환 중 알 수 없는 오류가 발생했습니다.');
+  if (message.type === 'CONVERSION_COMPLETE') {
+    const { report, outcome } = message.payload || {};
+    if (!outcome?.result.frameCreated || outcome.status === 'ERROR' || !report) { finishConversion('error', 'HTML을 변환하지 못했습니다. 결과 정보를 확인할 수 없습니다.'); return; }
+    finishConversion('success', outcome.status === 'SUCCESS_WITH_WARNINGS' ? '변환이 완료되었습니다. 일부 항목을 확인해 주세요.' : '변환이 완료되었습니다.', report, outcome);
+  } else if (message.type === 'CONVERSION_ERROR') finishConversion('error', 'HTML을 변환하지 못했습니다.', undefined, message.payload?.outcome || failedOutcome(selectedFileName, message.payload?.message || '변환 중 알 수 없는 오류가 발생했습니다.'));
 });
 get('status').dataset.state = conversionStatus;
 renderControls();

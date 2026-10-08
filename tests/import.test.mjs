@@ -6,7 +6,7 @@ import { chromium } from 'playwright';
 import { build } from 'esbuild';
 import { createFigmaMock, flatten } from './figma-mock.mjs';
 
-let browser, server, base, converter, parserBundle, utilities, gradients;
+let browser, server, base, converter, parserBundle, utilities, gradients, reports;
 const sample = await readFile('examples/mvp.html', 'utf8');
 before(async () => {
   await mkdir('test-results', { recursive: true });
@@ -17,6 +17,8 @@ before(async () => {
   utilities = await import('../test-results/utils.mjs');
   await build({ entryPoints: ['src/gradients.ts'], bundle: true, outfile: 'test-results/gradients.mjs', format: 'esm', platform: 'node' });
   gradients = await import('../test-results/gradients.mjs');
+  await build({ entryPoints: ['src/report.ts'], bundle: true, outfile: 'test-results/import-report-utils.mjs', format: 'esm', platform: 'node' });
+  reports = await import('../test-results/import-report-utils.mjs');
   const ui = await readFile('dist/ui.html', 'utf8');
   server = createServer((req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(req.url === '/ui' ? ui : '<!doctype html><html><body><div id="host"></div></body></html>'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -847,7 +849,7 @@ test('real UI: file upload, mobile viewport, conversion message and report rende
     assert.equal(message.payload.root.size.width, 375);
     assert.equal(message.payload.options.viewportHeight, 812);
     const { report } = await convert(message.payload);
-    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
+    await page.evaluate(({ requestId, report, outcome }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report, outcome } } }, '*'), { requestId: message.requestId, report, outcome: reports.conversionOutcome(report, message.fileName, message.payload.options) });
     await page.waitForFunction(() => document.getElementById('status').dataset.state === 'success');
     assert.equal(await page.locator('#text-count').textContent(), '2');
     assert.ok(await page.locator('#convert').isEnabled());
@@ -894,7 +896,7 @@ test('custom viewport inputs drive CSS viewport units, media queries and Figma w
     const { frame, report } = await convert(doc);
     assert.equal(frame.width, 1111);
     assert.equal(report.warnings.filter(w => w.code === 'NODE_FAILED').length, 0);
-    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
+    await page.evaluate(({ requestId, report, outcome }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report, outcome } } }, '*'), { requestId: message.requestId, report, outcome: reports.conversionOutcome(report, message.fileName, doc.options) });
     await page.waitForFunction(() => !document.getElementById('viewport-width').disabled);
     await page.locator('#viewport').selectOption('1280');
     assert.equal(await page.locator('#viewport-width').inputValue(), '1280');
@@ -1393,12 +1395,12 @@ test('UI exposes phase 2 options, local image upload, debug mode and grouped rep
     assert.equal(message.payload.options.debug, true);
     assert.ok(!message.payload.warnings.some(warning => warning.code === 'IMAGE_SOURCE'));
     const { report } = await convert(message.payload);
-    await page.evaluate(({ requestId, report }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report } } }, '*'), { requestId: message.requestId, report });
+    await page.evaluate(({ requestId, report, outcome }) => window.postMessage({ pluginMessage: { type: 'CONVERSION_COMPLETE', requestId, payload: { success: true, report, outcome } } }, '*'), { requestId: message.requestId, report, outcome: reports.conversionOutcome(report, message.fileName, message.payload.options) });
     await page.waitForFunction(() => document.getElementById('status').dataset.state === 'success');
     assert.equal(await page.locator('#grid-count').textContent(), '2');
     assert.equal(await page.locator('#svg-count').textContent(), '1');
     assert.equal(await page.locator('#absolute-count').textContent(), '2');
-    assert.ok((await page.locator('#warnings').textContent()).includes('Grid Fallback:'));
+    assert.ok((await page.locator('#warnings').textContent()).includes('크기 설정 대체'));
     await page.screenshot({ path: 'test-results/phase2-ui.png', fullPage: true });
   } finally { await page.close(); }
 });

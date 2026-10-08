@@ -94,7 +94,32 @@ export interface ParsedNode {
   style: ParsedStyle;
   children: ParsedNode[];
 }
-export interface ConversionWarning { code: string; node: string; message: string; category?: string; element?: string }
+export interface ConversionWarning {
+  code: string; node: string; message: string; category?: string; element?: string;
+  detail?: Record<string, string | number>;
+  occurrences?: number; // Repeated diagnostics retained without growing the raw list.
+  locations?: string[]; // Bounded representative locations, never inferred from duplicate names.
+}
+export type WarningContext = Pick<ConversionWarning, 'element' | 'detail'>;
+export type ReportWarningCode = 'EXTERNAL_RESOURCE' | 'UNSUPPORTED_STYLE' | 'FONT_FALLBACK' | 'IMAGE_ERROR' | 'SVG_ERROR' | 'SIZING_FALLBACK' | 'CONVERSION_WARNING';
+export interface ReportWarning {
+  code: ReportWarningCode;
+  sourceCode: string;
+  severity: 'warning';
+  message: string;
+  count: number;
+  locations: string[];
+  detail: Record<string, string | number>;
+}
+export interface ConversionOutcome {
+  status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'ERROR';
+  fileName: string;
+  result: { frameCreated: boolean; frameCount: number };
+  warningCount: number; // Distinct causes; occurrence counts are on each group.
+  warningTypes: Partial<Record<ReportWarningCode, number>>;
+  warnings: ReportWarning[];
+  errorMessage?: string;
+}
 export interface ImportOptions { viewport: number; viewportHeight: number; autoLayout: boolean; styles: boolean; images?: boolean; shadows?: boolean; optimizeWrappers?: boolean; debug?: boolean }
 export type LocalAssets = Record<string, string>;
 export interface ParsedDocument {
@@ -139,12 +164,12 @@ export interface HeightHierarchyEntry {
   parsedReason: string;
   reason: string;
 }
-export type UIMessage = { type: 'CREATE_FIGMA'; requestId: string; payload: ParsedDocument } | { type: 'CANCEL' };
+export type UIMessage = { type: 'CREATE_FIGMA'; requestId: string; fileName?: string; payload: ParsedDocument } | { type: 'CANCEL' };
 export type ConversionStatus = 'idle' | 'converting' | 'success' | 'error';
 export type MainMessage =
   | { type: 'PROGRESS'; requestId: string; count: number }
-  | { type: 'CONVERSION_COMPLETE'; requestId: string; payload: { success: true; report: ConversionReport } }
-  | { type: 'CONVERSION_ERROR'; requestId: string; payload: { success: false; message: string } };
+  | { type: 'CONVERSION_COMPLETE'; requestId: string; payload: { success: true; report: ConversionReport; outcome: ConversionOutcome } }
+  | { type: 'CONVERSION_ERROR'; requestId: string; payload: { success: false; message: string; outcome: ConversionOutcome } };
 export const LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3000, depth: 80, loadMs: 8000, dimension: 100000 } as const;
 export const VIEWPORT_PRESETS: Readonly<Record<string, Readonly<ViewportPreset>>> = {
   '1440': { width: 1440, height: 900 },

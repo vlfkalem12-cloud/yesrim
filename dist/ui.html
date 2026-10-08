@@ -46,6 +46,11 @@
     summary { cursor: pointer; font-weight: 600; }
     #warnings { padding-left: 18px; max-height: 160px; overflow-y: auto; line-height: 1.6; font-size: 11px; color: var(--figma-color-text-secondary, #687080); }
     #warnings li { margin-bottom: 8px; overflow-wrap: anywhere; }
+    .result-info { display: grid; grid-template-columns: 48px 1fr; gap: 7px 10px; line-height: 1.6; }
+    .result-info dt { color: var(--figma-color-text-secondary, #687080); }
+    .result-info dd { margin: 0; overflow-wrap: anywhere; }
+    #report-error { color: var(--figma-color-text-danger, #b13247); overflow-wrap: anywhere; }
+    #debug-warnings { max-height: 160px; overflow-y: auto; padding-left: 18px; overflow-wrap: anywhere; font-size: 11px; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -83,9 +88,15 @@
   <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
   <p id="status" role="status" aria-live="polite"></p>
   <section id="report" hidden aria-label="변환 결과">
+    <dl class="result-info"><dt>파일명</dt><dd id="report-file"></dd><dt>결과</dt><dd id="report-result"></dd></dl>
+    <p id="report-error" hidden></p>
+    <p id="warning-count"></p><p class="muted" id="warning-types"></p>
+    <details id="report-stats"><summary>생성된 레이어 통계</summary>
     <div class="stats"><div class="stat"><strong id="total-count">0</strong><span>총 Node</span></div><div class="stat"><strong id="frame-count">0</strong><span>Frames</span></div><div class="stat"><strong id="text-count">0</strong><span>Text</span></div><div class="stat"><strong id="image-count">0</strong><span>Images</span></div><div class="stat"><strong id="layout-count">0</strong><span>Auto Layout</span></div><div class="stat"><strong id="grid-count">0</strong><span>Grid</span></div><div class="stat"><strong id="absolute-count">0</strong><span>Absolute</span></div><div class="stat"><strong id="svg-count">0</strong><span>SVG Vector</span></div></div>
     <p class="muted" id="duration"></p>
-    <details id="warning-details"><summary id="warning-summary">Warning 0</summary><ul id="warnings"></ul></details>
+    </details>
+    <details id="warning-details"><summary id="warning-summary">상세 내용 보기</summary><ul id="warnings"></ul><button class="secondary" id="warning-more" type="button" hidden>경고 더 보기</button></details>
+    <details id="debug-details" hidden><summary>Debug 정보</summary><ul id="debug-warnings"></ul></details>
   </section>
   <div id="render-host"></div>
   <script>"use strict";
@@ -546,6 +557,51 @@
     return names.map((name) => ({ name, value: style.getPropertyValue(name).trim(), scope })).filter((variable) => variable.value);
   }
 
+  // src/report.ts
+  var REPORT_LABELS = {
+    EXTERNAL_RESOURCE: "\uC678\uBD80 \uB9AC\uC18C\uC2A4",
+    UNSUPPORTED_STYLE: "\uC9C0\uC6D0\uD558\uC9C0 \uC54A\uB294 \uC2A4\uD0C0\uC77C",
+    FONT_FALLBACK: "\uAE00\uAF34 \uB300\uCCB4",
+    IMAGE_ERROR: "\uC774\uBBF8\uC9C0 \uC624\uB958",
+    SVG_ERROR: "SVG \uC624\uB958",
+    SIZING_FALLBACK: "\uD06C\uAE30 \uC124\uC815 \uB300\uCCB4",
+    CONVERSION_WARNING: "\uBCC0\uD658 \uD655\uC778"
+  };
+  function reportText(value) {
+    return value.split(/[\r\n]/)[0].slice(0, 400);
+  }
+  function warningElement(el) {
+    const tag = el.localName;
+    if (el.id) return `${tag}#${el.id}`;
+    const label = el.getAttribute("aria-label")?.trim();
+    if (label) return `${tag}[aria-label=${JSON.stringify(label)}]`;
+    return `${tag}${[...el.classList].slice(0, 3).map((name) => `.${name}`).join("")}`;
+  }
+  function warningNode(node) {
+    return node.source?.selector || node.name;
+  }
+  function failedOutcome(fileName, message) {
+    return { status: "ERROR", fileName, result: { frameCreated: false, frameCount: 0 }, warningCount: 0, warningTypes: {}, warnings: [], errorMessage: reportText(message) };
+  }
+  function warningCollector(warnings, limit) {
+    const seen = new Map(warnings.map((w) => [JSON.stringify([w.code, w.node, w.message, w.detail]), w]));
+    return (code, node, message, context = {}) => {
+      const key = JSON.stringify([code, node, message, context.detail]);
+      const existing = seen.get(key);
+      if (existing) {
+        existing.occurrences = (existing.occurrences || 1) + 1;
+        if (context.element && !existing.locations?.includes(context.element)) {
+          existing.locations || (existing.locations = existing.element ? [existing.element] : []);
+          if (existing.locations.length < 5 && !existing.locations.includes(context.element)) existing.locations.push(context.element);
+        }
+      } else if (warnings.length < limit) {
+        const warning = { code, node, message, ...context };
+        warnings.push(warning);
+        seen.set(key, warning);
+      }
+    };
+  }
+
   // src/assets.ts
   var allowedAsset = (url) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
   function resolveLocalAsset(url, files) {
@@ -566,10 +622,10 @@
     while (stack.length) {
       const node = stack.pop();
       stack.push(...node.children);
-      if (node.image) requests.push({ image: node.image, name: node.name });
+      if (node.image) requests.push({ image: node.image, name: node.name, element: warningNode(node) });
       if (options.styles) {
         const backgrounds = node.style.backgroundLayers ? node.style.backgroundLayers.flatMap((layer) => layer.type === "IMAGE" ? [layer.image] : []) : node.style.backgroundImage ? [node.style.backgroundImage] : [];
-        for (const image of backgrounds) requests.push({ image, name: node.name });
+        for (const image of backgrounds) requests.push({ image, name: node.name, element: warningNode(node) });
       }
     }
     const cache = /* @__PURE__ */ new Map();
@@ -610,7 +666,7 @@
         try {
           request.image.key = await cache.get(request.image.src);
         } catch (error) {
-          warn("IMAGE_LOAD", request.name, `Image Load Failed: ${request.image.src.slice(0, 180)} \u2014 ${errorMessage(error)}`);
+          warn("IMAGE_LOAD", request.name, `Image Load Failed: ${request.image.src.slice(0, 180)} \u2014 ${errorMessage(error)}`, { element: request.element, detail: { resource: request.image.src, stage: "load", reason: errorMessage(error) } });
         }
       }
     }
@@ -1385,11 +1441,11 @@
   var selector = (el) => `${el.localName}${el.id ? `#${el.id}` : ""}${[...el.classList].map((name) => `.${name}`).join("")}`;
   function sanitizeHTML(html2, warnings, localAssets2) {
     const doc = new DOMParser().parseFromString(html2, "text/html");
-    const warn = (code, node, message) => warnings.push({ code, node, message });
+    const warn = warningCollector(warnings, 500);
     const scripts = doc.querySelectorAll("script");
     if (scripts.length) warn("SCRIPT_IGNORED", "document", `${scripts.length}\uAC1C\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB294 \uC2E4\uD589\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.`);
     doc.querySelectorAll("script, base, meta, object, embed, iframe, noscript").forEach((el) => {
-      if (["iframe", "object", "embed"].includes(el.localName)) warn("UNSUPPORTED_ELEMENT", layerName(el), `${el.localName} \uC694\uC18C\uB294 \uC81C\uC678\uD588\uC2B5\uB2C8\uB2E4.`);
+      if (["iframe", "object", "embed"].includes(el.localName)) warn("UNSUPPORTED_ELEMENT", layerName(el), `${el.localName} \uC694\uC18C\uB294 \uC81C\uC678\uD588\uC2B5\uB2C8\uB2E4.`, { element: warningElement(el) });
       el.remove();
     });
     for (const el of doc.querySelectorAll("*")) {
@@ -1406,7 +1462,7 @@
       if (el.localName === "link") {
         const href = el.getAttribute("href") || "";
         if (el.getAttribute("rel") !== "stylesheet" || !/^https:\/\//i.test(href)) {
-          if (el.getAttribute("rel") === "stylesheet") warn("RELATIVE_ASSET", layerName(el), `CSS \uACBD\uB85C ${href}\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC778\uB77C\uC778 CSS \uB610\uB294 HTTPS URL\uC744 \uC0AC\uC6A9\uD558\uC138\uC694.`);
+          if (el.getAttribute("rel") === "stylesheet") warn("RELATIVE_ASSET", layerName(el), `CSS \uACBD\uB85C ${href}\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC778\uB77C\uC778 CSS \uB610\uB294 HTTPS URL\uC744 \uC0AC\uC6A9\uD558\uC138\uC694.`, { element: warningElement(el), detail: { resource: href, resourceType: "stylesheet" } });
           el.remove();
         }
       }
@@ -1420,7 +1476,7 @@
           el.setAttribute("data-original-src", originalSrc);
         }
         if (!allowedAsset(src)) {
-          warn("IMAGE_SOURCE", layerName(el), "\uC0C1\uB300 \uACBD\uB85C \uB610\uB294 HTTP \uC774\uBBF8\uC9C0\uB294 \uC5C5\uB85C\uB4DC\uD55C HTML\uB9CC\uC73C\uB85C \uBD88\uB7EC\uC62C \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+          warn("IMAGE_SOURCE", layerName(el), "\uC0C1\uB300 \uACBD\uB85C \uB610\uB294 HTTP \uC774\uBBF8\uC9C0\uB294 \uC5C5\uB85C\uB4DC\uD55C HTML\uB9CC\uC73C\uB85C \uBD88\uB7EC\uC62C \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.", { element: warningElement(el), detail: { resource: src, stage: "source" } });
           el.setAttribute("data-original-src", src);
           el.removeAttribute("src");
         } else if (/^https:/i.test(src)) el.setAttribute("crossorigin", "anonymous");
@@ -1446,11 +1502,29 @@
     iframe.srcdoc = sanitizeHTML(html2, warnings, localAssets2);
     const loaded = new Promise((resolve) => iframe.addEventListener("load", () => resolve(), { once: true }));
     host.append(iframe);
+    const failedStylesheets = /* @__PURE__ */ new Set();
+    const observedDocuments = /* @__PURE__ */ new Set();
+    const resourceError = (event) => {
+      const target = event.target;
+      if (target?.localName === "link" && target.getAttribute("rel") === "stylesheet") failedStylesheets.add(target);
+    };
+    let resourceTimer;
+    const observeResources = () => {
+      const document2 = iframe.contentDocument;
+      if (document2 && !observedDocuments.has(document2)) {
+        observedDocuments.add(document2);
+        document2.addEventListener("error", resourceError, true);
+      }
+      resourceTimer = setTimeout(observeResources, 5);
+    };
+    observeResources();
     try {
       await withTimeout(loaded, LIMITS.loadMs, "\uC678\uBD80 \uB9AC\uC18C\uC2A4 \uB85C\uB529 \uC2DC\uAC04 \uCD08\uACFC");
     } catch {
       warnings.push({ code: "RESOURCE_TIMEOUT", node: "document", message: "\uC77C\uBD80 \uC678\uBD80 \uB9AC\uC18C\uC2A4\uAC00 \uB2A6\uC5B4 \uD604\uC7AC \uB80C\uB354\uB9C1\uB41C \uC2A4\uD0C0\uC77C\uB85C \uBCC0\uD658\uD569\uB2C8\uB2E4." });
     }
+    clearTimeout(resourceTimer);
+    for (const document2 of observedDocuments) document2.removeEventListener("error", resourceError, true);
     const doc = iframe.contentDocument;
     if (!doc?.body) {
       iframe.remove();
@@ -1463,8 +1537,10 @@
     }
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     for (const link of doc.querySelectorAll('link[rel="stylesheet"]')) {
-      if (!link.sheet) warnings.push({ code: "STYLESHEET_LOAD", node: "document", message: `\uC678\uBD80 CSS\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${link.getAttribute("href")}` });
+      const resource = iframe.contentWindow?.performance.getEntriesByName(link.href).find((entry) => entry.responseStatus >= 400);
+      if (!link.sheet && !link.disabled || failedStylesheets.has(link) || resource) warnings.push({ code: "STYLESHEET_LOAD", node: "document", message: `\uC678\uBD80 CSS\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${link.getAttribute("href")}`, element: warningElement(link), detail: { resource: link.getAttribute("href") || "", resourceType: "stylesheet" } });
     }
+    for (const font of doc.fonts) if (font.status === "error") warnings.push({ code: "WEB_FONT_LOAD", node: "document", message: `\uC6F9 \uD3F0\uD2B8\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${font.family}`, detail: { originalFont: font.family, fontStyle: font.style, fontWeight: font.weight } });
     return { iframe, document: doc, warnings, dispose: () => iframe.remove() };
   }
   function readStyle(style) {
@@ -1565,9 +1641,7 @@
       const style = computed(el);
       return OMIT_TAGS.has(el.localName) || style.display === "none" || ["hidden", "collapse"].includes(style.visibility) || isAccessibilityHidden(style);
     };
-    const warn = (code, node, message) => {
-      if (warnings.length < 500) warnings.push({ code, node, message });
-    };
+    const warn = warningCollector(warnings, 500);
     let count = 0;
     const bounds = (rect) => ({ x: rect.left, y: rect.top, width: clamp(rect.width), height: clamp(rect.height) });
     const hasBlockChildren = (el) => [...el.children].some((child) => !["inline", "inline-block", "contents", "none"].includes(computed(child).display) || ["img", "svg"].includes(child.localName));
@@ -1594,8 +1668,8 @@
             node.style.backgroundLayers.push({ type: "GRADIENT", gradient });
             (_b = node.style).backgroundGradient ?? (_b.backgroundGradient = gradient);
           } else if (result.fallback) node.style.backgroundLayers.push({ type: "SOLID", color: result.fallback, layerIndex: index });
-          if (result.warning) warn("GRADIENT_FALLBACK", node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} \u2014 ${result.warning}`);
-        } else if (layer !== "none") warn("BACKGROUND_LAYER", node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`);
+          if (result.warning) warn("GRADIENT_FALLBACK", node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} \u2014 ${result.warning}`, { element: warningNode(node), detail: { cssProperty: "background-image", cssValue: layer, reason: result.warning } });
+        } else if (layer !== "none") warn("BACKGROUND_LAYER", node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`, { element: warningNode(node), detail: { cssProperty: "background-image", cssValue: layer } });
       });
       node.style.backgroundLayers = backgroundLayers(node.style);
       const fullBox = splitCSSList(style.backgroundSize).every((size) => ["auto", "auto auto", "100% 100%"].includes(size));
@@ -1610,6 +1684,8 @@
       };
     }
     function parse(el, depth) {
+      const emit = warn;
+      const warnForElement = (code, node2, message, context = {}) => emit(code, node2, message, { element: warningElement(el), ...context });
       if (OMIT_TAGS.has(el.localName)) return [];
       if (count >= LIMITS.nodes || depth > LIMITS.depth) {
         warn("TREE_LIMIT", layerName(el), "\uB178\uB4DC \uC218 \uB610\uB294 \uC911\uCCA9 \uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C \uC77C\uBD80 \uC694\uC18C\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
@@ -1657,13 +1733,13 @@
         node.layout.direction = "NONE";
         if (node.size.heightMode !== "FILL") node.size.heightMode = "FIXED";
       }
-      if (style.display.includes("grid")) parseGrid(node, style, el, warn);
+      if (style.display.includes("grid")) parseGrid(node, style, el, warnForElement);
       if (style.transform !== "none") warn("TRANSFORM", name, "CSS transform\uC740 \uCE21\uC815\uB41C \uACBD\uACC4 \uC0C1\uC790\uB85C \uB2E8\uC21C\uD654\uD588\uC2B5\uB2C8\uB2E4.");
       if (style.cssFloat !== "none") warn("FLOAT", name, "float\uB294 \uCE21\uC815\uB41C \uC704\uCE58\uB9CC \uC720\uC9C0\uD569\uB2C8\uB2E4.");
       readBackground(node, style);
       if (style.boxShadow !== "none" && splitCSSList(style.boxShadow).length > 1) warn("MULTIPLE_SHADOWS", name, "\uB2E4\uC911 shadow\uB294 \uCCAB \uBC88\uC9F8 \uD6A8\uACFC\uB9CC \uBC18\uC601\uD569\uB2C8\uB2E4.");
       if (style.boxShadow !== "none" && !node.style.shadow) warn("BOX_SHADOW", name, "\uADF8\uB9BC\uC790 \uBB38\uBC95\uC744 \uD574\uC11D\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
-      if (style.getPropertyValue("backdrop-filter") && style.getPropertyValue("backdrop-filter") !== "none") warn("UNSUPPORTED_CSS", name, `Unsupported: backdrop-filter (${selector(el)})`);
+      if (style.getPropertyValue("backdrop-filter") && style.getPropertyValue("backdrop-filter") !== "none") warnForElement("UNSUPPORTED_CSS", name, `Unsupported: backdrop-filter (${selector(el)})`, { detail: { cssProperty: "backdrop-filter", cssValue: style.getPropertyValue("backdrop-filter") } });
       if (["space-around", "space-evenly"].includes(style.justifyContent)) warn("JUSTIFY_CONTENT", name, `${style.justifyContent}\uB97C \uC2DC\uC791 \uC815\uB82C\uB85C \uB2E8\uC21C\uD654\uD569\uB2C8\uB2E4.`);
       if (style.alignItems.includes("baseline")) warn("BASELINE", name, "baseline \uC815\uB82C\uC744 \uC2DC\uC791 \uC815\uB82C\uB85C \uB2E8\uC21C\uD654\uD569\uB2C8\uB2E4.");
       for (const pseudo of ["::before", "::after"]) {
@@ -1729,9 +1805,9 @@
         } else if (content.text) warn("TREE_LIMIT", name, "\uB178\uB4DC \uC218 \uB610\uB294 \uC911\uCCA9 \uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C control \uD14D\uC2A4\uD2B8\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
       } else if (node.type === "SVG") {
         try {
-          node.svg = serializeSVG(el, (message) => warn("SVG_DASH", name, message));
+          node.svg = serializeSVG(el, (message) => warnForElement("SVG_DASH", name, message));
         } catch (error) {
-          warn("SVG_SERIALIZE", name, errorMessage(error));
+          warnForElement("SVG_SERIALIZE", name, errorMessage(error));
         }
       } else if (node.type === "IMAGE") {
         const img = el;
@@ -1918,6 +1994,7 @@
   var readingFiles = false;
   var cancelled = false;
   var requestId = null;
+  var selectedFileName = "";
   var send = (message) => parent.postMessage({ pluginMessage: message }, "*");
   var isBusy = () => conversionStatus === "converting" || readingFiles;
   function status(message, state = conversionStatus) {
@@ -1957,17 +2034,18 @@
     if (!value) cancel.disabled = false;
     convert.textContent = conversionStatus === "converting" ? "\uBCC0\uD658 \uC911\u2026" : "Figma\uB85C \uBCC0\uD658";
   }
-  function finishConversion(state, message, report) {
+  function finishConversion(state, message, report, outcome) {
     requestId = null;
     cancelled = false;
     input.value = "";
     dropzone.classList.remove("drag");
     status(message, state);
     try {
-      if (report) showReport(report);
+      showReport(report, outcome || failedOutcome(selectedFileName, message));
     } catch (error) {
       get("report").hidden = true;
-      status(`${message} \uBCF4\uACE0\uC11C\uB97C \uD45C\uC2DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${errorMessage(error)}`, state);
+      console.warn("Conversion report display failed", error);
+      status(`${message} \uBCF4\uACE0\uC11C\uB97C \uD45C\uC2DC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. Figma\uC5D0\uC11C \uACB0\uACFC\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694.`, state);
     } finally {
       renderControls();
     }
@@ -1986,6 +2064,12 @@
     cancelled = false;
     requestId = null;
     input.value = "";
+    html = null;
+    parsed = null;
+    json.hidden = true;
+    get("report").hidden = true;
+    selectedFileName = file.name;
+    renderControls();
     if (!/\.html?$/i.test(file.name)) {
       status(".html \uB610\uB294 .htm \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uC138\uC694.", "error");
       return;
@@ -1994,10 +2078,6 @@
       status("\uD30C\uC77C\uC774 5MB \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.", "error");
       return;
     }
-    html = null;
-    parsed = null;
-    json.hidden = true;
-    get("report").hidden = true;
     readingFiles = true;
     status("HTML \uD30C\uC77C\uC744 \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.", "idle");
     renderControls();
@@ -2113,9 +2193,10 @@
       console.info("HTML \u2192 Figma intermediate document", parsed);
       json.hidden = false;
       status("Figma \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4\u2026");
-      send({ type: "CREATE_FIGMA", requestId, payload: parsed });
+      send({ type: "CREATE_FIGMA", requestId, fileName: selectedFileName, payload: parsed });
     } catch (error) {
-      finishConversion("error", errorMessage(error));
+      console.warn("HTML analysis failed", error);
+      finishConversion("error", `HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. ${reportText(errorMessage(error))}`);
     }
   });
   cancel.addEventListener("click", () => {
@@ -2135,29 +2216,58 @@
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1e3);
   });
-  function showReport(report) {
+  function showReport(report, outcome) {
     get("report").hidden = false;
-    for (const [id, value] of [["total-count", report.total], ["frame-count", report.frames], ["layout-count", report.autoLayout], ["text-count", report.text], ["image-count", report.image], ["grid-count", report.grid], ["absolute-count", report.absolute], ["svg-count", report.svg]]) get(id).textContent = String(value);
-    get("duration").textContent = `Figma \uB178\uB4DC \uC0DD\uC131: ${(report.durationMs / 1e3).toFixed(2)}\uCD08`;
-    get("warning-summary").textContent = `Warning ${report.warnings.length}`;
+    get("report").dataset.result = outcome.status;
+    get("report-file").textContent = outcome.fileName;
+    get("report-result").textContent = outcome.result.frameCreated ? "Figma Frame \uC0DD\uC131 \uC644\uB8CC" : "\uACB0\uACFC Frame\uC744 \uC0DD\uC131\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+    get("report-error").hidden = outcome.status !== "ERROR";
+    get("report-error").textContent = outcome.errorMessage || "";
+    get("report-stats").hidden = !report;
+    get("report-stats").open = false;
+    if (report) {
+      for (const [id, value] of [["total-count", report.total], ["frame-count", report.frames], ["layout-count", report.autoLayout], ["text-count", report.text], ["image-count", report.image], ["grid-count", report.grid], ["absolute-count", report.absolute], ["svg-count", report.svg]]) get(id).textContent = String(value);
+      get("duration").textContent = `Figma \uB178\uB4DC \uC0DD\uC131: ${(report.durationMs / 1e3).toFixed(2)}\uCD08`;
+    }
+    get("warning-count").textContent = outcome.warningCount ? `\uACBD\uACE0 ${outcome.warningCount}\uAC74 (\uB3D9\uC77C \uC6D0\uC778\uC740 \uBB36\uC5B4\uC11C \uD45C\uC2DC)` : outcome.status === "ERROR" ? "" : "\uD655\uC778\uB41C \uACBD\uACE0\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    get("warning-types").textContent = Object.entries(outcome.warningTypes).map(([code, count]) => `${REPORT_LABELS[code]} ${count}\uAC74`).join(" \xB7 ");
+    get("warning-summary").textContent = "\uC0C1\uC138 \uB0B4\uC6A9 \uBCF4\uAE30";
+    get("warning-details").open = false;
     const list = get("warnings");
     list.replaceChildren();
-    for (const [category, count] of Object.entries(report.warningGroups)) {
-      const group = document.createElement("li");
-      const title = document.createElement("strong");
-      title.textContent = `${category}: ${count}`;
-      group.append(title);
-      const items = document.createElement("ul");
-      for (const warning of report.warnings.filter((warning2) => warning2.category === category)) {
-        const li = document.createElement("li");
-        li.textContent = `${warning.element || warning.node} \u2014 ${warning.code}: ${warning.message}`;
-        if (warning.category === "Debug") li.style.whiteSpace = "pre-line";
-        items.append(li);
+    let shown = 0;
+    const detailLabels = { reason: "\uC6D0\uC778", originalFont: "\uC6D0\uBCF8 \uAE00\uAF34", originalWeight: "\uC6D0\uBCF8 \uAD75\uAE30", originalStyle: "\uC6D0\uBCF8 \uC2A4\uD0C0\uC77C", fallbackFont: "\uB300\uCCB4 \uAE00\uAF34", fallbackStyle: "\uB300\uCCB4 \uC2A4\uD0C0\uC77C", cssProperty: "CSS \uC18D\uC131", cssValue: "CSS \uAC12", resource: "\uB9AC\uC18C\uC2A4", resourceType: "\uB9AC\uC18C\uC2A4 \uC885\uB958", stage: "\uCC98\uB9AC \uB2E8\uACC4" };
+    const more = get("warning-more");
+    const appendWarnings = () => {
+      for (const warning of outcome.warnings.slice(shown, shown + 30)) {
+        const group = document.createElement("li");
+        const title = document.createElement("strong");
+        title.textContent = `${REPORT_LABELS[warning.code]} \xB7 ${warning.count}\uD68C`;
+        group.append(title);
+        for (const text of [warning.message, ...Object.entries(warning.detail).map(([key, value]) => `${detailLabels[key] || key}: ${value}`), warning.locations.length ? `\uC704\uCE58: ${warning.locations.join(", ")}` : ""]) {
+          if (!text) continue;
+          const line = document.createElement("div");
+          line.textContent = text;
+          group.append(line);
+        }
+        list.append(group);
       }
-      group.append(items);
-      list.append(group);
+      shown += 30;
+      more.hidden = shown >= outcome.warnings.length;
+    };
+    more.onclick = appendWarnings;
+    appendWarnings();
+    get("warning-details").hidden = outcome.warningCount === 0;
+    const debugList = get("debug-warnings");
+    debugList.replaceChildren();
+    get("debug-details").open = false;
+    get("debug-details").hidden = !debug.checked || !report;
+    if (debug.checked && report) for (const warning of report.warnings) {
+      const item = document.createElement("li");
+      item.style.whiteSpace = "pre-line";
+      item.textContent = `${warning.category}: ${warning.element || warning.node} \u2014 ${warning.code}: ${warning.message}`;
+      debugList.append(item);
     }
-    get("warning-details").hidden = report.warnings.length === 0;
   }
   window.addEventListener("message", (event) => {
     const message = event.data?.pluginMessage;
@@ -2166,8 +2276,14 @@
       status(`${message.count}\uAC1C\uC758 \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4\u2026`);
       return;
     }
-    if (message.type === "CONVERSION_COMPLETE") finishConversion("success", "\u2713 \uBCC0\uD658 \uC644\uB8CC \xB7 \uB2E4\uB978 HTML \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uAC70\uB098 \uB2E4\uC2DC \uBCC0\uD658\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", message.payload?.report);
-    else if (message.type === "CONVERSION_ERROR") finishConversion("error", message.payload?.message || "\uBCC0\uD658 \uC911 \uC54C \uC218 \uC5C6\uB294 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4.");
+    if (message.type === "CONVERSION_COMPLETE") {
+      const { report, outcome } = message.payload || {};
+      if (!outcome?.result.frameCreated || outcome.status === "ERROR" || !report) {
+        finishConversion("error", "HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uACB0\uACFC \uC815\uBCF4\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+        return;
+      }
+      finishConversion("success", outcome.status === "SUCCESS_WITH_WARNINGS" ? "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC77C\uBD80 \uD56D\uBAA9\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.", report, outcome);
+    } else if (message.type === "CONVERSION_ERROR") finishConversion("error", "HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.", void 0, message.payload?.outcome || failedOutcome(selectedFileName, message.payload?.message || "\uBCC0\uD658 \uC911 \uC54C \uC218 \uC5C6\uB294 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4."));
   });
   get("status").dataset.state = conversionStatus;
   renderControls();

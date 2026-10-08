@@ -38,15 +38,102 @@
     while (stack.length) {
       const node = stack.pop();
       stack.push(...node.children);
-      if (node.source && !elements.has(node.name)) elements.set(node.name, node.source.selector);
+      if (node.source) {
+        if (!elements.has(node.name)) elements.set(node.name, /* @__PURE__ */ new Set());
+        elements.get(node.name).add(node.source.selector);
+      }
     }
     const groups = {};
     for (const warning of warnings) {
       warning.category || (warning.category = warningCategory(warning.code));
-      warning.element || (warning.element = elements.get(warning.node) || warning.node);
+      const sources = elements.get(warning.node);
+      warning.element || (warning.element = sources?.size === 1 ? [...sources][0] : warning.node);
       groups[warning.category] = (groups[warning.category] || 0) + 1;
     }
     return groups;
+  }
+  var REPORT_MESSAGES = {
+    EXTERNAL_RESOURCE: "\uC678\uBD80 \uB9AC\uC18C\uC2A4\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD574 \uC77C\uBD80 \uC2A4\uD0C0\uC77C\uC774\uB098 \uAE00\uAF34\uC774 \uC801\uC6A9\uB418\uC9C0 \uC54A\uC558\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+    UNSUPPORTED_STYLE: "\uC9C0\uC6D0\uD558\uC9C0 \uC54A\uB294 \uC2A4\uD0C0\uC77C\uC774 \uC801\uC6A9\uB418\uC9C0 \uC54A\uC558\uAC70\uB098 \uB300\uCCB4 \uBC29\uC2DD\uC73C\uB85C \uD45C\uD604\uB418\uC5C8\uC2B5\uB2C8\uB2E4.",
+    FONT_FALLBACK: "\uC77C\uBD80 \uAE00\uAF34\uC774 \uB2E4\uB978 \uAE00\uAF34\uB85C \uB300\uCCB4\uB418\uC5C8\uAC70\uB098 \uD14D\uC2A4\uD2B8\uB97C \uD45C\uC2DC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+    IMAGE_ERROR: "\uC77C\uBD80 \uC774\uBBF8\uC9C0\uB97C \uBD88\uB7EC\uC624\uAC70\uB098 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+    SVG_ERROR: "\uC77C\uBD80 SVG \uC694\uC18C\uB97C \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+    SIZING_FALLBACK: "\uC77C\uBD80 \uC694\uC18C\uC758 \uD06C\uAE30 \uC124\uC815\uC774 \uB300\uCCB4 \uBC29\uC2DD\uC73C\uB85C \uC801\uC6A9\uB418\uC5C8\uC2B5\uB2C8\uB2E4.",
+    CONVERSION_WARNING: "\uC77C\uBD80 \uC694\uC18C\uAC00 \uC0DD\uB7B5\uB418\uAC70\uB098 \uB300\uCCB4\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uACB0\uACFC\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694."
+  };
+  var INFORMATION = /* @__PURE__ */ new Set(["FIXED_ELEMENT", "ABSOLUTE_ELEMENT", "FIXED_POSITION", "DISPLAY_CONTENTS", "ACCESSIBILITY_HIDDEN", "BACKGROUND_DEBUG", "HEIGHT_SIZING", "HEIGHT_HIERARCHY"]);
+  var EXTERNAL = /* @__PURE__ */ new Set(["RELATIVE_ASSET", "STYLESHEET_LOAD", "RESOURCE_TIMEOUT", "WEB_FONT_TIMEOUT", "WEB_FONT_LOAD"]);
+  var SIZING = /* @__PURE__ */ new Set(["SIZING_CYCLE", "SIZING_API", "SIZE_CONSTRAINT", "HEIGHT_LAYOUT", "FLEX_WRAP", "FLEX_GROW_RATIO", "GRID_FALLBACK", "VIEWPORT_CONSTRAINT", "VIEWPORT_OVERFLOW"]);
+  var STYLES = /* @__PURE__ */ new Set(["UNSUPPORTED_CSS", "TRANSFORM", "FLOAT", "MULTIPLE_SHADOWS", "BOX_SHADOW", "JUSTIFY_CONTENT", "BASELINE", "PSEUDO_ELEMENT", "INLINE_TEXT", "GRADIENT_FALLBACK", "BACKGROUND_LAYER", "BACKGROUND_POSITION", "BACKGROUND_REPEAT", "BACKGROUND_SIZE", "SHADOW_SPREAD", "BORDER_COLORS", "IMAGE_STRETCH", "Z_INDEX_FLOW", "ALIGN_SELF", "NEGATIVE_MARGIN", "TEXT_RANGE_STYLE"]);
+  function reportCode(warning, options) {
+    if (INFORMATION.has(warning.code) || warning.category === "Debug") return null;
+    if (EXTERNAL.has(warning.code)) return "EXTERNAL_RESOURCE";
+    if (/FONT/.test(warning.code)) return "FONT_FALLBACK";
+    if (["IMAGE_SOURCE", "IMAGE_LOAD", "IMAGE_PLACEHOLDER"].includes(warning.code)) return options?.images === false ? null : "IMAGE_ERROR";
+    if (["SVG_IMPORT", "SVG_SERIALIZE", "SVG_DASH"].includes(warning.code)) return "SVG_ERROR";
+    if (SIZING.has(warning.code)) return "SIZING_FALLBACK";
+    if (STYLES.has(warning.code)) return options?.styles === false ? null : "UNSUPPORTED_STYLE";
+    return "CONVERSION_WARNING";
+  }
+  function reportText(value) {
+    return value.split(/[\r\n]/)[0].slice(0, 400);
+  }
+  function warningNode(node) {
+    return node.source?.selector || node.name;
+  }
+  function groupReportWarnings(warnings, options) {
+    const grouped = /* @__PURE__ */ new Map();
+    for (const warning of warnings) {
+      const code = reportCode(warning, options);
+      if (!code) continue;
+      const detail = {};
+      for (const [key2, value] of Object.entries(warning.detail || {}).sort(([a], [b]) => a.localeCompare(b))) {
+        if (typeof value === "string") detail[key2] = reportText(value);
+        else if (typeof value === "number" && Number.isFinite(value)) detail[key2] = value;
+      }
+      if (!Object.keys(detail).length) detail.reason = reportText(warning.message);
+      const cause = warning.detail && Object.keys(warning.detail).length ? warning.detail : { reason: warning.message };
+      const key = JSON.stringify([code, warning.code, Object.entries(cause).sort(([a], [b]) => a.localeCompare(b))]);
+      let group = grouped.get(key);
+      if (!group) {
+        group = { code, sourceCode: warning.code, severity: "warning", message: REPORT_MESSAGES[code], count: 0, locations: [], detail };
+        if (["RELATIVE_ASSET", "STYLESHEET_LOAD"].includes(warning.code)) group.message = "\uC678\uBD80 \uC2A4\uD0C0\uC77C\uC2DC\uD2B8\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD574 \uC77C\uBD80 \uC2A4\uD0C0\uC77C\uC774 \uC801\uC6A9\uB418\uC9C0 \uC54A\uC558\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.";
+        grouped.set(key, group);
+      }
+      group.count += warning.occurrences || 1;
+      for (const location of warning.locations || [warning.element || warning.node]) {
+        const text = reportText(location);
+        if (text && group.locations.length < 5 && !group.locations.includes(text)) group.locations.push(text);
+      }
+    }
+    return [...grouped.values()];
+  }
+  function conversionOutcome(report, fileName, options) {
+    const warnings = groupReportWarnings(report.warnings, options);
+    const warningTypes = {};
+    for (const warning of warnings) warningTypes[warning.code] = (warningTypes[warning.code] || 0) + 1;
+    return { status: warnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS", fileName, result: { frameCreated: true, frameCount: 1 }, warningCount: warnings.length, warningTypes, warnings };
+  }
+  function failedOutcome(fileName, message) {
+    return { status: "ERROR", fileName, result: { frameCreated: false, frameCount: 0 }, warningCount: 0, warningTypes: {}, warnings: [], errorMessage: reportText(message) };
+  }
+  function warningCollector(warnings, limit) {
+    const seen = new Map(warnings.map((w) => [JSON.stringify([w.code, w.node, w.message, w.detail]), w]));
+    return (code, node, message, context = {}) => {
+      const key = JSON.stringify([code, node, message, context.detail]);
+      const existing = seen.get(key);
+      if (existing) {
+        existing.occurrences = (existing.occurrences || 1) + 1;
+        if (context.element && !existing.locations?.includes(context.element)) {
+          existing.locations || (existing.locations = existing.element ? [existing.element] : []);
+          if (existing.locations.length < 5 && !existing.locations.includes(context.element)) existing.locations.push(context.element);
+        }
+      } else if (warnings.length < limit) {
+        const warning = { code, node, message, ...context };
+        warnings.push(warning);
+        seen.set(key, warning);
+      }
+    };
   }
 
   // src/gradients.ts
@@ -167,12 +254,13 @@
       const key = `${requested.join(",")}|${weight}|${italic}|${korean}`;
       if (!this.cache.has(key)) this.cache.set(key, this.find(requested, weight, italic, korean));
       const selected = await this.cache.get(key);
+      const context = { element: warningNode(node), detail: { originalFont: requested.join(", "), originalWeight: weight, originalStyle: italic ? "italic" : "normal", fallbackFont: selected?.family || "(placeholder)", fallbackStyle: selected?.style || "" } };
       if (selected && !requested.some((name) => name.toLowerCase() === selected.family.toLowerCase())) {
-        this.warn("FONT_REPLACED", node.name, `${requested.join(", ")} ${weight}${italic ? " Italic" : ""} \u2192 ${selected.family} ${selected.style}`);
+        this.warn("FONT_REPLACED", node.name, `${requested.join(", ")} ${weight}${italic ? " Italic" : ""} \u2192 ${selected.family} ${selected.style}`, context);
       } else if (selected && (Math.abs(fontWeight(selected.style) - weight) >= 100 || /italic|oblique/i.test(selected.style) !== italic)) {
-        this.warn("FONT_STYLE_REPLACED", node.name, `\uC0AC\uC6A9 \uAC00\uB2A5\uD55C ${selected.family} ${selected.style}\uB85C \uD3F0\uD2B8 \uC2A4\uD0C0\uC77C\uC744 \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.`);
+        this.warn("FONT_STYLE_REPLACED", node.name, `\uC0AC\uC6A9 \uAC00\uB2A5\uD55C ${selected.family} ${selected.style}\uB85C \uD3F0\uD2B8 \uC2A4\uD0C0\uC77C\uC744 \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.`, context);
       }
-      if (!selected && korean) this.warn("KOREAN_FONT_UNAVAILABLE", node.name, "\uD55C\uAE00 \uC9C0\uC6D0\uC744 \uD655\uC778\uD560 \uC218 \uC788\uB294 \uD3F0\uD2B8\uAC00 \uC5C6\uC5B4 Latin \uD3F0\uD2B8 \uB300\uC2E0 placeholder\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4.");
+      if (!selected && korean) this.warn("KOREAN_FONT_UNAVAILABLE", node.name, "\uD55C\uAE00 \uC9C0\uC6D0\uC744 \uD655\uC778\uD560 \uC218 \uC788\uB294 \uD3F0\uD2B8\uAC00 \uC5C6\uC5B4 Latin \uD3F0\uD2B8 \uB300\uC2E0 placeholder\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4.", context);
       return selected;
     }
     async load(font) {
@@ -275,15 +363,8 @@
   }, cancelled2 = () => false) {
     validateDocument(doc);
     const started = Date.now();
-    const report = { total: 0, autoLayout: 0, text: 0, image: 0, frames: 0, grid: 0, absolute: 0, svg: 0, durationMs: 0, warningGroups: {}, warnings: doc.warnings.map((warning) => ({ ...warning })) };
-    const seen = new Set(report.warnings.map((w) => `${w.code}|${w.node}|${w.message}`));
-    const warn = (code, node, message) => {
-      const key = `${code}|${node}|${message}`;
-      if (!seen.has(key) && report.warnings.length < 1e3) {
-        report.warnings.push({ code, node, message });
-        seen.add(key);
-      }
-    };
+    const report = { total: 0, autoLayout: 0, text: 0, image: 0, frames: 0, grid: 0, absolute: 0, svg: 0, durationMs: 0, warningGroups: {}, warnings: doc.warnings.map((warning) => ({ ...warning, ...warning.locations ? { locations: [...warning.locations] } : {} })) };
+    const warn = warningCollector(report.warnings, 1e3);
     const fonts = new FontResolver(warn);
     await fonts.initialize();
     const imageHashes = /* @__PURE__ */ new Map();
@@ -692,7 +773,7 @@ reason: ${entry.reason}`);
           if (!font) {
             node = figma.createRectangle();
             node.fills = [solid({ r: 0.95, g: 0.8, b: 0.8, a: 1 })];
-            warn("FONT_UNAVAILABLE", parsed.name, "\uB85C\uB4DC\uD560 \uC218 \uC788\uB294 \uD3F0\uD2B8\uAC00 \uC5C6\uC5B4 \uD14D\uC2A4\uD2B8\uB97C placeholder\uB85C \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.");
+            warn("FONT_UNAVAILABLE", parsed.name, "\uB85C\uB4DC\uD560 \uC218 \uC788\uB294 \uD3F0\uD2B8\uAC00 \uC5C6\uC5B4 \uD14D\uC2A4\uD2B8\uB97C placeholder\uB85C \uB300\uCCB4\uD588\uC2B5\uB2C8\uB2E4.", { element: warningNode(parsed), detail: { originalFont: parsed.style.fontFamily, fallbackFont: "(placeholder)" } });
           } else {
             const text = figma.createText();
             node = text;
@@ -730,7 +811,7 @@ reason: ${entry.reason}`);
           } catch (error) {
             node = figma.createFrame();
             node.fills = [];
-            warn("SVG_IMPORT", parsed.name, `Vector \uBCC0\uD658 \uC2E4\uD328: ${errorMessage(error)}`);
+            warn("SVG_IMPORT", parsed.name, `Vector \uBCC0\uD658 \uC2E4\uD328: ${errorMessage(error)}`, { element: warningNode(parsed), detail: { stage: "figma-import", reason: errorMessage(error) } });
           }
           node.opacity = doc.options.styles ? parsed.style.opacity : 1;
         } else if (parsed.type === "IMAGE") {
@@ -801,7 +882,7 @@ reason: ${entry.reason}`);
               childNodes.push({ parsed: child, node: await create(child, node, parsed) });
             } catch (error) {
               if (cancelled2()) throw error;
-              warn("NODE_FAILED", child.name, `\uC774 \uC694\uC18C\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4: ${errorMessage(error)}`);
+              warn("NODE_FAILED", child.name, `\uC774 \uC694\uC18C\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4: ${errorMessage(error)}`, { element: warningNode(child), detail: { reason: errorMessage(error) } });
             }
           }
           applyStacking(node, childNodes);
@@ -892,19 +973,24 @@ reason: ${entry.reason}`);
     }
     if (message.type !== "CREATE_FIGMA" || typeof message.requestId !== "string") return;
     if (busy) {
-      send({ type: "CONVERSION_ERROR", requestId: message.requestId, payload: { success: false, message: "\uC774\uBBF8 \uBCC0\uD658\uC774 \uC9C4\uD589 \uC911\uC785\uB2C8\uB2E4." } });
+      const text = "\uC774\uBBF8 \uBCC0\uD658\uC774 \uC9C4\uD589 \uC911\uC785\uB2C8\uB2E4.";
+      send({ type: "CONVERSION_ERROR", requestId: message.requestId, payload: { success: false, message: text, outcome: failedOutcome(message.fileName || "", text) } });
       return;
     }
     busy = true;
     cancelled = false;
     const requestId = message.requestId;
+    const fileName = typeof message.fileName === "string" ? message.fileName : "";
     let result;
     try {
       validateDocument(message.payload);
-      const { report } = await convertDocument(message.payload, (count) => send({ type: "PROGRESS", requestId, count }), () => cancelled);
-      result = { type: "CONVERSION_COMPLETE", requestId, payload: { success: true, report } };
+      const { frame, report } = await convertDocument(message.payload, (count) => send({ type: "PROGRESS", requestId, count }), () => cancelled);
+      if (frame.removed) throw new Error("\uACB0\uACFC Frame\uC774 \uC0DD\uC131\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
+      result = { type: "CONVERSION_COMPLETE", requestId, payload: { success: true, report, outcome: conversionOutcome(report, fileName, message.payload.options) } };
     } catch (error) {
-      result = { type: "CONVERSION_ERROR", requestId, payload: { success: false, message: errorMessage(error) } };
+      const text = errorMessage(error);
+      console.warn("HTML \u2192 Figma conversion failed", error);
+      result = { type: "CONVERSION_ERROR", requestId, payload: { success: false, message: text, outcome: failedOutcome(fileName, text) } };
     } finally {
       busy = false;
     }

@@ -199,6 +199,8 @@ test('Debug report exposes author intent/rendered size/final mode; malformed met
 
 function withoutHeight(doc) {
   const copy = structuredClone(doc);
+  // Report metadata is additive; this historical test protects the conversion data.
+  copy.warnings = copy.warnings.filter(w => w.code !== 'WEB_FONT_LOAD').map(({ code, node, message }) => ({ code, node, message }));
   for (const node of nodes(copy.root)) {
     // Explicitly permit only the intentional height/layout change on eligible containers.
     if (node.layout.normalFlow || (node.size.heightSource && ['Measured vertical normal flow', 'Content-driven horizontal Wrap'].includes(node.size.heightSource.reason))) node.layout.direction = 'NONE';

@@ -14,6 +14,7 @@ import { configureRichGridHeights, configureRichIconRow, configureRichWrapper, r
 import { isAccessibilityHidden } from './dom-visibility';
 import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
 import { configureContentHeight, preserveWrappedViewportGeometry, readHeightSource, rootHeightMode } from './height-sizing';
+import { warningCollector, warningElement, warningNode } from './report';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
@@ -24,11 +25,11 @@ const selector = (el: Element) => `${el.localName}${el.id ? `#${el.id}` : ''}${[
 
 function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: LocalAssets): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  const warn = (code: string, node: string, message: string) => warnings.push({ code, node, message });
+  const warn = warningCollector(warnings, 500);
   const scripts = doc.querySelectorAll('script');
   if (scripts.length) warn('SCRIPT_IGNORED', 'document', `${scripts.length}개의 스크립트는 실행하지 않습니다.`);
   doc.querySelectorAll('script, base, meta, object, embed, iframe, noscript').forEach(el => {
-    if (['iframe', 'object', 'embed'].includes(el.localName)) warn('UNSUPPORTED_ELEMENT', layerName(el), `${el.localName} 요소는 제외했습니다.`);
+    if (['iframe', 'object', 'embed'].includes(el.localName)) warn('UNSUPPORTED_ELEMENT', layerName(el), `${el.localName} 요소는 제외했습니다.`, { element: warningElement(el) });
     el.remove();
   });
   for (const el of doc.querySelectorAll('*')) {
@@ -45,7 +46,7 @@ function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: 
     if (el.localName === 'link') {
       const href = el.getAttribute('href') || '';
       if (el.getAttribute('rel') !== 'stylesheet' || !/^https:\/\//i.test(href)) {
-        if (el.getAttribute('rel') === 'stylesheet') warn('RELATIVE_ASSET', layerName(el), `CSS 경로 ${href}를 읽을 수 없습니다. 인라인 CSS 또는 HTTPS URL을 사용하세요.`);
+        if (el.getAttribute('rel') === 'stylesheet') warn('RELATIVE_ASSET', layerName(el), `CSS 경로 ${href}를 읽을 수 없습니다. 인라인 CSS 또는 HTTPS URL을 사용하세요.`, { element: warningElement(el), detail: { resource: href, resourceType: 'stylesheet' } });
         el.remove();
       }
     }
@@ -56,7 +57,7 @@ function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: 
       const src = resolveLocalAsset(originalSrc, localAssets) || originalSrc;
       if (src !== originalSrc) { el.setAttribute('src', src); el.setAttribute('data-original-src', originalSrc); }
       if (!allowedAsset(src)) {
-        warn('IMAGE_SOURCE', layerName(el), '상대 경로 또는 HTTP 이미지는 업로드한 HTML만으로 불러올 수 없습니다.');
+        warn('IMAGE_SOURCE', layerName(el), '상대 경로 또는 HTTP 이미지는 업로드한 HTML만으로 불러올 수 없습니다.', { element: warningElement(el), detail: { resource: src, stage: 'source' } });
         el.setAttribute('data-original-src', src);
         el.removeAttribute('src');
       } else if (/^https:/i.test(src)) el.setAttribute('crossorigin', 'anonymous');
@@ -86,19 +87,38 @@ export async function renderHTML(html: string, viewport: number, viewportHeight:
   iframe.srcdoc = sanitizeHTML(html, warnings, localAssets);
   const loaded = new Promise<void>(resolve => iframe.addEventListener('load', () => resolve(), { once: true }));
   host.append(iframe);
+  // Chromium can expose an opaque, empty sheet even on HTTP failure. Observe actual
+  // resource errors during navigation rather than inferring failure from empty cssRules.
+  const failedStylesheets = new Set<Element>();
+  const observedDocuments = new Set<Document>();
+  const resourceError = (event: Event) => {
+    const target = event.target as Element | null;
+    if (target?.localName === 'link' && target.getAttribute('rel') === 'stylesheet') failedStylesheets.add(target);
+  };
+  let resourceTimer: ReturnType<typeof setTimeout>;
+  const observeResources = () => {
+    const document = iframe.contentDocument;
+    if (document && !observedDocuments.has(document)) { observedDocuments.add(document); document.addEventListener('error', resourceError, true); }
+    resourceTimer = setTimeout(observeResources, 5);
+  };
+  observeResources();
   try {
     await withTimeout(loaded, LIMITS.loadMs, '외부 리소스 로딩 시간 초과');
   } catch {
     warnings.push({ code: 'RESOURCE_TIMEOUT', node: 'document', message: '일부 외부 리소스가 늦어 현재 렌더링된 스타일로 변환합니다.' });
   }
+  clearTimeout(resourceTimer!);
+  for (const document of observedDocuments) document.removeEventListener('error', resourceError, true);
   const doc = iframe.contentDocument;
   if (!doc?.body) { iframe.remove(); throw new Error('HTML 문서를 렌더링할 수 없습니다.'); }
   try { await withTimeout(doc.fonts.ready, LIMITS.loadMs, '폰트 로딩 시간 초과'); }
   catch { warnings.push({ code: 'WEB_FONT_TIMEOUT', node: 'document', message: '웹 폰트 대신 브라우저 대체 폰트로 치수를 측정했습니다.' }); }
   await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   for (const link of doc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
-    if (!link.sheet) warnings.push({ code: 'STYLESHEET_LOAD', node: 'document', message: `외부 CSS를 불러오지 못했습니다: ${link.getAttribute('href')}` });
+    const resource = iframe.contentWindow?.performance.getEntriesByName(link.href).find(entry => (entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus! >= 400);
+    if ((!link.sheet && !link.disabled) || failedStylesheets.has(link) || resource) warnings.push({ code: 'STYLESHEET_LOAD', node: 'document', message: `외부 CSS를 불러오지 못했습니다: ${link.getAttribute('href')}`, element: warningElement(link), detail: { resource: link.getAttribute('href') || '', resourceType: 'stylesheet' } });
   }
+  for (const font of doc.fonts) if (font.status === 'error') warnings.push({ code: 'WEB_FONT_LOAD', node: 'document', message: `웹 폰트를 불러오지 못했습니다: ${font.family}`, detail: { originalFont: font.family, fontStyle: font.style, fontWeight: font.weight } });
   return { iframe, document: doc, warnings, dispose: () => iframe.remove() };
 }
 
@@ -176,7 +196,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     const style = computed(el);
     return OMIT_TAGS.has(el.localName) || style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || isAccessibilityHidden(style);
   };
-  const warn = (code: string, node: string, message: string) => { if (warnings.length < 500) warnings.push({ code, node, message }); };
+  const warn = warningCollector(warnings, 500);
   let count = 0;
   const bounds = (rect: DOMRect): Bounds => ({ x: rect.left, y: rect.top, width: clamp(rect.width), height: clamp(rect.height) });
   const hasBlockChildren = (el: Element) => [...el.children].some(child => !['inline', 'inline-block', 'contents', 'none'].includes(computed(child).display) || ['img', 'svg'].includes(child.localName));
@@ -199,8 +219,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
           node.style.backgroundLayers!.push({ type: 'GRADIENT', gradient });
           node.style.backgroundGradient ??= gradient;
         } else if (result.fallback) node.style.backgroundLayers!.push({ type: 'SOLID', color: result.fallback, layerIndex: index });
-        if (result.warning) warn('GRADIENT_FALLBACK', node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} — ${result.warning}`);
-      } else if (layer !== 'none') warn('BACKGROUND_LAYER', node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`);
+        if (result.warning) warn('GRADIENT_FALLBACK', node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} — ${result.warning}`, { element: warningNode(node), detail: { cssProperty: 'background-image', cssValue: layer, reason: result.warning } });
+      } else if (layer !== 'none') warn('BACKGROUND_LAYER', node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`, { element: warningNode(node), detail: { cssProperty: 'background-image', cssValue: layer } });
     });
     node.style.backgroundLayers = backgroundLayers(node.style);
     // A sized/repeated background tile needs different geometry. Leave those gradients unchanged.
@@ -213,6 +233,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     };
   }
   function parse(el: Element, depth: number): ParsedNode[] {
+    const emit = warn;
+    const warnForElement: typeof warn = (code, node, message, context = {}) => emit(code, node, message, { element: warningElement(el), ...context });
     if (OMIT_TAGS.has(el.localName)) return [];
     if (count >= LIMITS.nodes || depth > LIMITS.depth) { warn('TREE_LIMIT', layerName(el), '노드 수 또는 중첩 깊이 제한으로 일부 요소를 생략했습니다.'); return []; }
     const style = computed(el);
@@ -249,13 +271,13 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     if (node.layout.position === 'fixed') warn('FIXED_ELEMENT', name, '선택한 Viewport 기준 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
     else if (node.layout.absolute) warn('ABSOLUTE_ELEMENT', name, '절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
     if (node.layout.wrap) { node.layout.direction = 'NONE'; if (node.size.heightMode !== 'FILL') node.size.heightMode = 'FIXED'; }
-    if (style.display.includes('grid')) parseGrid(node, style, el, warn);
+    if (style.display.includes('grid')) parseGrid(node, style, el, warnForElement);
     if (style.transform !== 'none') warn('TRANSFORM', name, 'CSS transform은 측정된 경계 상자로 단순화했습니다.');
     if (style.cssFloat !== 'none') warn('FLOAT', name, 'float는 측정된 위치만 유지합니다.');
     readBackground(node, style);
     if (style.boxShadow !== 'none' && splitCSSList(style.boxShadow).length > 1) warn('MULTIPLE_SHADOWS', name, '다중 shadow는 첫 번째 효과만 반영합니다.');
     if (style.boxShadow !== 'none' && !node.style.shadow) warn('BOX_SHADOW', name, '그림자 문법을 해석할 수 없습니다.');
-    if (style.getPropertyValue('backdrop-filter') && style.getPropertyValue('backdrop-filter') !== 'none') warn('UNSUPPORTED_CSS', name, `Unsupported: backdrop-filter (${selector(el)})`);
+    if (style.getPropertyValue('backdrop-filter') && style.getPropertyValue('backdrop-filter') !== 'none') warnForElement('UNSUPPORTED_CSS', name, `Unsupported: backdrop-filter (${selector(el)})`, { detail: { cssProperty: 'backdrop-filter', cssValue: style.getPropertyValue('backdrop-filter') } });
     if (['space-around', 'space-evenly'].includes(style.justifyContent)) warn('JUSTIFY_CONTENT', name, `${style.justifyContent}를 시작 정렬로 단순화합니다.`);
     if (style.alignItems.includes('baseline')) warn('BASELINE', name, 'baseline 정렬을 시작 정렬로 단순화합니다.');
     for (const pseudo of ['::before', '::after']) {
@@ -304,8 +326,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         node.children = [child]; count++;
       } else if (content.text) warn('TREE_LIMIT', name, '노드 수 또는 중첩 깊이 제한으로 control 텍스트를 생략했습니다.');
     } else if (node.type === 'SVG') {
-      try { node.svg = serializeSVG(el, message => warn('SVG_DASH', name, message)); }
-      catch (error) { warn('SVG_SERIALIZE', name, errorMessage(error)); }
+      try { node.svg = serializeSVG(el, message => warnForElement('SVG_DASH', name, message)); }
+      catch (error) { warnForElement('SVG_SERIALIZE', name, errorMessage(error)); }
     } else if (node.type === 'IMAGE') {
       const img = el as HTMLImageElement;
       node.image = { key: '', src: img.getAttribute('src') || img.getAttribute('data-original-src') || '', alt: img.alt, fit: style.objectFit };

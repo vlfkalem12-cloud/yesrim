@@ -1,5 +1,6 @@
-import { LIMITS, type ImportOptions, type LocalAssets, type ParsedImage, type ParsedNode } from './types';
+import { LIMITS, type ImportOptions, type LocalAssets, type ParsedImage, type ParsedNode, type WarningContext } from './types';
 import { errorMessage, withTimeout } from './utils';
+import { warningNode } from './report';
 
 export const allowedAsset = (url: string) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
 export function resolveLocalAsset(url: string, files: LocalAssets): string | undefined {
@@ -9,15 +10,15 @@ export function resolveLocalAsset(url: string, files: LocalAssets): string | und
   const found = files[path] || files[path.split('/').pop()!];
   return found && allowedAsset(found) ? found : undefined;
 }
-export async function collectImages(root: ParsedNode, doc: Document, options: ImportOptions, assets: Record<string, number[]>, warn: (code: string, node: string, message: string) => void): Promise<void> {
+export async function collectImages(root: ParsedNode, doc: Document, options: ImportOptions, assets: Record<string, number[]>, warn: (code: string, node: string, message: string, context?: WarningContext) => void): Promise<void> {
   if (options.images === false) return;
-  const stack = [root]; const requests: { image: ParsedImage; name: string }[] = [];
+  const stack = [root]; const requests: { image: ParsedImage; name: string; element: string }[] = [];
   while (stack.length) {
     const node = stack.pop()!; stack.push(...node.children);
-    if (node.image) requests.push({ image: node.image, name: node.name });
+    if (node.image) requests.push({ image: node.image, name: node.name, element: warningNode(node) });
     if (options.styles) {
       const backgrounds = node.style.backgroundLayers ? node.style.backgroundLayers.flatMap(layer => layer.type === 'IMAGE' ? [layer.image] : []) : node.style.backgroundImage ? [node.style.backgroundImage] : [];
-      for (const image of backgrounds) requests.push({ image, name: node.name });
+      for (const image of backgrounds) requests.push({ image, name: node.name, element: warningNode(node) });
     }
   }
   const cache = new Map<string, Promise<string>>();
@@ -44,7 +45,7 @@ export async function collectImages(root: ParsedNode, doc: Document, options: Im
       const request = requests[nextRequest++]!;
       if (!cache.has(request.image.src)) cache.set(request.image.src, load(request.image.src));
       try { request.image.key = await cache.get(request.image.src)!; }
-      catch (error) { warn('IMAGE_LOAD', request.name, `Image Load Failed: ${request.image.src.slice(0, 180)} — ${errorMessage(error)}`); }
+      catch (error) { warn('IMAGE_LOAD', request.name, `Image Load Failed: ${request.image.src.slice(0, 180)} — ${errorMessage(error)}`, { element: request.element, detail: { resource: request.image.src, stage: 'load', reason: errorMessage(error) } }); }
     }
   }
   await Promise.all(Array.from({ length: Math.min(4, requests.length) }, () => worker()));

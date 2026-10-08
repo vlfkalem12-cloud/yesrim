@@ -46,6 +46,11 @@
     summary { cursor: pointer; font-weight: 600; }
     #warnings { padding-left: 18px; max-height: 160px; overflow-y: auto; line-height: 1.6; font-size: 11px; color: var(--figma-color-text-secondary, #687080); }
     #warnings li { margin-bottom: 8px; overflow-wrap: anywhere; }
+    .result-info { display: grid; grid-template-columns: 48px 1fr; gap: 7px 10px; line-height: 1.6; }
+    .result-info dt { color: var(--figma-color-text-secondary, #687080); }
+    .result-info dd { margin: 0; overflow-wrap: anywhere; }
+    #report-error { color: var(--figma-color-text-danger, #b13247); overflow-wrap: anywhere; }
+    #debug-warnings { max-height: 160px; overflow-y: auto; padding-left: 18px; overflow-wrap: anywhere; font-size: 11px; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -83,9 +88,15 @@
   <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
   <p id="status" role="status" aria-live="polite"></p>
   <section id="report" hidden aria-label="변환 결과">
+    <dl class="result-info"><dt>파일명</dt><dd id="report-file"></dd><dt>결과</dt><dd id="report-result"></dd></dl>
+    <p id="report-error" hidden></p>
+    <p id="warning-count"></p><p class="muted" id="warning-types"></p>
+    <details id="report-stats"><summary>생성된 레이어 통계</summary>
     <div class="stats"><div class="stat"><strong id="total-count">0</strong><span>총 Node</span></div><div class="stat"><strong id="frame-count">0</strong><span>Frames</span></div><div class="stat"><strong id="text-count">0</strong><span>Text</span></div><div class="stat"><strong id="image-count">0</strong><span>Images</span></div><div class="stat"><strong id="layout-count">0</strong><span>Auto Layout</span></div><div class="stat"><strong id="grid-count">0</strong><span>Grid</span></div><div class="stat"><strong id="absolute-count">0</strong><span>Absolute</span></div><div class="stat"><strong id="svg-count">0</strong><span>SVG Vector</span></div></div>
     <p class="muted" id="duration"></p>
-    <details id="warning-details"><summary id="warning-summary">Warning 0</summary><ul id="warnings"></ul></details>
+    </details>
+    <details id="warning-details"><summary id="warning-summary">상세 내용 보기</summary><ul id="warnings"></ul><button class="secondary" id="warning-more" type="button" hidden>경고 더 보기</button></details>
+    <details id="debug-details" hidden><summary>Debug 정보</summary><ul id="debug-warnings"></ul></details>
   </section>
   <div id="render-host"></div>
   <!-- UI_SCRIPT -->

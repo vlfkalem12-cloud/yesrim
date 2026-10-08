@@ -1,6 +1,6 @@
-import { LIMITS, type Color, type ConversionReport, type ParsedBackgroundLayer, type ParsedDocument, type ParsedGradient, type ParsedImage, type ParsedNode, type SizingMode } from './types';
+import { LIMITS, type Color, type ConversionReport, type ParsedBackgroundLayer, type ParsedDocument, type ParsedGradient, type ParsedImage, type ParsedNode, type SizingMode, type WarningContext } from './types';
 import { clamp, errorMessage, isViewportDimension } from './utils';
-import { enrichWarnings } from './report';
+import { enrichWarnings, warningCollector, warningNode } from './report';
 import { linearGradientPaint } from './gradients';
 import { backgroundLayers, thinHorizontalGridLines, type BackgroundGridLine } from './backgrounds';
 import { applyLayerNames } from './layer-naming';
@@ -23,7 +23,7 @@ class FontResolver {
   private available: FontName[] = [];
   private cache = new Map<string, Promise<FontName | null>>();
   private loaded = new Map<string, Promise<boolean>>();
-  constructor(private warn: (code: string, name: string, message: string) => void) {}
+  constructor(private warn: (code: string, name: string, message: string, context?: WarningContext) => void) {}
   async initialize(): Promise<void> {
     try { this.available = (await figma.listAvailableFontsAsync()).map(font => font.fontName); }
     catch { this.warn('FONT_LIST', 'document', '폰트 목록을 읽지 못해 기본 폰트를 직접 확인합니다.'); }
@@ -36,12 +36,13 @@ class FontResolver {
     const key = `${requested.join(',')}|${weight}|${italic}|${korean}`;
     if (!this.cache.has(key)) this.cache.set(key, this.find(requested, weight, italic, korean));
     const selected = await this.cache.get(key)!;
+    const context: WarningContext = { element: warningNode(node), detail: { originalFont: requested.join(', '), originalWeight: weight, originalStyle: italic ? 'italic' : 'normal', fallbackFont: selected?.family || '(placeholder)', fallbackStyle: selected?.style || '' } };
     if (selected && !requested.some(name => name.toLowerCase() === selected.family.toLowerCase())) {
-      this.warn('FONT_REPLACED', node.name, `${requested.join(', ')} ${weight}${italic ? ' Italic' : ''} → ${selected.family} ${selected.style}`);
+      this.warn('FONT_REPLACED', node.name, `${requested.join(', ')} ${weight}${italic ? ' Italic' : ''} → ${selected.family} ${selected.style}`, context);
     } else if (selected && (Math.abs(fontWeight(selected.style) - weight) >= 100 || /italic|oblique/i.test(selected.style) !== italic)) {
-      this.warn('FONT_STYLE_REPLACED', node.name, `사용 가능한 ${selected.family} ${selected.style}로 폰트 스타일을 대체했습니다.`);
+      this.warn('FONT_STYLE_REPLACED', node.name, `사용 가능한 ${selected.family} ${selected.style}로 폰트 스타일을 대체했습니다.`, context);
     }
-    if (!selected && korean) this.warn('KOREAN_FONT_UNAVAILABLE', node.name, '한글 지원을 확인할 수 있는 폰트가 없어 Latin 폰트 대신 placeholder를 생성합니다.');
+    if (!selected && korean) this.warn('KOREAN_FONT_UNAVAILABLE', node.name, '한글 지원을 확인할 수 있는 폰트가 없어 Latin 폰트 대신 placeholder를 생성합니다.', context);
     return selected;
   }
   private async load(font: FontName): Promise<boolean> {
@@ -154,12 +155,8 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
 export async function convertDocument(doc: ParsedDocument, onProgress: (count: number) => void = () => {}, cancelled: () => boolean = () => false): Promise<{ frame: FrameNode; report: ConversionReport }> {
   validateDocument(doc);
   const started = Date.now();
-  const report: ConversionReport = { total: 0, autoLayout: 0, text: 0, image: 0, frames: 0, grid: 0, absolute: 0, svg: 0, durationMs: 0, warningGroups: {}, warnings: doc.warnings.map(warning => ({ ...warning })) };
-  const seen = new Set(report.warnings.map(w => `${w.code}|${w.node}|${w.message}`));
-  const warn = (code: string, node: string, message: string) => {
-    const key = `${code}|${node}|${message}`;
-    if (!seen.has(key) && report.warnings.length < 1000) { report.warnings.push({ code, node, message }); seen.add(key); }
-  };
+  const report: ConversionReport = { total: 0, autoLayout: 0, text: 0, image: 0, frames: 0, grid: 0, absolute: 0, svg: 0, durationMs: 0, warningGroups: {}, warnings: doc.warnings.map(warning => ({ ...warning, ...(warning.locations ? { locations: [...warning.locations] } : {}) })) };
+  const warn = warningCollector(report.warnings, 1000);
   const fonts = new FontResolver(warn);
   await fonts.initialize();
   const imageHashes = new Map<string, string>();
@@ -513,7 +510,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         const font = await fonts.resolve(parsed, doc.options.styles);
         if (!font) {
           node = figma.createRectangle(); node.fills = [solid({ r: 0.95, g: 0.8, b: 0.8, a: 1 })];
-          warn('FONT_UNAVAILABLE', parsed.name, '로드할 수 있는 폰트가 없어 텍스트를 placeholder로 대체했습니다.');
+          warn('FONT_UNAVAILABLE', parsed.name, '로드할 수 있는 폰트가 없어 텍스트를 placeholder로 대체했습니다.', { element: warningNode(parsed), detail: { originalFont: parsed.style.fontFamily, fallbackFont: '(placeholder)' } });
         } else {
           const text = figma.createText(); node = text;
           // Load before setting characters or text properties, including fontName.
@@ -543,7 +540,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         }
       } else if (parsed.type === 'SVG') {
         try { if (!parsed.svg) throw new Error('SVG 데이터가 없습니다.'); node = figma.createNodeFromSvg(parsed.svg); node.setPluginData('html-type', 'svg'); }
-        catch (error) { node = figma.createFrame(); node.fills = []; warn('SVG_IMPORT', parsed.name, `Vector 변환 실패: ${errorMessage(error)}`); }
+        catch (error) { node = figma.createFrame(); node.fills = []; warn('SVG_IMPORT', parsed.name, `Vector 변환 실패: ${errorMessage(error)}`, { element: warningNode(parsed), detail: { stage: 'figma-import', reason: errorMessage(error) } }); }
         node.opacity = doc.options.styles ? parsed.style.opacity : 1;
       } else if (parsed.type === 'IMAGE') {
         const image = figma.createRectangle(); node = image;
@@ -605,7 +602,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
           try { childNodes.push({ parsed: child, node: await create(child, node, parsed) }); }
           catch (error) {
             if (cancelled()) throw error;
-            warn('NODE_FAILED', child.name, `이 요소를 생략했습니다: ${errorMessage(error)}`);
+            warn('NODE_FAILED', child.name, `이 요소를 생략했습니다: ${errorMessage(error)}`, { element: warningNode(child), detail: { reason: errorMessage(error) } });
           }
         }
         applyStacking(node, childNodes);

@@ -327,7 +327,7 @@ function allowedHeightChange(current, previous) {
     node.children.forEach((child, index) => visit(child, old.children[index]));
   }
   visit(copy.root, previous.root);
-  copy.warnings = copy.warnings.filter(warning => warning.code !== 'HEIGHT_LAYOUT');
+  copy.warnings = copy.warnings.filter(warning => !['HEIGHT_LAYOUT', 'WEB_FONT_LOAD'].includes(warning.code)).map(({ code, node, message }) => ({ code, node, message }));
   return copy;
 }
 function unchangedVisuals(node) {

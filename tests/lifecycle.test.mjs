@@ -22,12 +22,17 @@ before(async () => {
 after(async () => { await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve()); });
 
 const htmlFor = name => `<style>body{margin:0;font-family:Inter}p{margin:0}</style><main><p>${name}</p></main>`;
-async function openSession({ failFrameOnce = false, corruptReport = false, sourceParent = false } = {}) {
+async function openSession({ failFrameOnce = false, corruptReport = false, sourceParent = false, mockOptions = {}, routes = {} } = {}) {
   const page = await browser.newPage();
+  for (const [url, response] of Object.entries(routes)) await page.route(url, async route => {
+    const { delayMs = 0, ...reply } = response;
+    if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
+    await route.fulfill(reply);
+  });
   await page.goto(base);
   const ui = page.frames().find(frame => frame.url() === `${base}/ui`);
   await ui.locator('#file').waitFor();
-  const mock = createFigmaMock(), requests = [], replies = [], deliveries = [], heldTerminals = [];
+  const mock = createFigmaMock(mockOptions), requests = [], replies = [], deliveries = [], heldTerminals = [];
   let holdTerminals = false;
   if (failFrameOnce) {
     const createFrame = mock.figma.createFrame;
@@ -44,7 +49,7 @@ async function openSession({ failFrameOnce = false, corruptReport = false, sourc
   mock.figma.ui.postMessage = message => {
     replies.push(message);
     const delivered = structuredClone(message);
-    if (corruptReport && delivered.type === 'CONVERSION_COMPLETE') delete delivered.payload.report.warningGroups;
+    if (corruptReport && delivered.type === 'CONVERSION_COMPLETE') delete delivered.payload.outcome.warningTypes;
     if (holdTerminals && ['CONVERSION_COMPLETE', 'CONVERSION_ERROR'].includes(delivered.type)) heldTerminals.push(delivered);
     else deliver(delivered);
   };
@@ -199,9 +204,9 @@ test('Background Debug report exposes computed CSS, four layers and four fills i
     await session.ui.locator('#debug').check();
     await choose(session, 'grid-debug.html', `<style>body{margin:0}.chart{width:600px;height:300px;background:${background},#fff}</style><main><div class="chart"><p>Chart Content</p></div></main>`);
     await convertOnce(session); await assertUnlocked(session, 'success');
-    const text = await session.ui.locator('#warnings').textContent();
+    const text = await session.ui.locator('#debug-warnings').textContent();
     for (const message of ['Debug:', 'computed backgroundImage:', 'background layers: 4', 'layer 4: solid #FFFFFF', 'figma fills: 4', 'Grid Line fallback: 3']) assert.ok(text.includes(message), message);
-    assert.ok(await session.ui.locator('#warnings li').evaluateAll(items => items.some(item => item.style.whiteSpace === 'pre-line')));
+    assert.ok(await session.ui.locator('#debug-warnings li').evaluateAll(items => items.some(item => item.style.whiteSpace === 'pre-line')));
   } finally { await session.page.close(); }
 });
 
@@ -235,12 +240,17 @@ test('Main conversion failure releases UI controls and allows the same HTML to s
   try {
     await choose(session, 'retry.html'); await convertOnce(session);
     await assertUnlocked(session, 'error');
-    assert.ok((await session.ui.locator('#status').textContent()).includes('Lifecycle root failure'));
+    assert.equal(await session.ui.locator('#status').textContent(), 'HTML을 변환하지 못했습니다.');
+    assert.ok((await session.ui.locator('#report-error').textContent()).includes('Lifecycle root failure'));
+    assert.equal(await session.ui.locator('#report').getAttribute('data-result'), 'ERROR');
+    assert.equal(await session.ui.locator('#report-result').textContent(), '결과 Frame을 생성하지 못했습니다.');
     assert.equal(session.mock.figma.currentPage.children.length, 0);
     await choose(session, 'retry.html', htmlFor('retry.html'), true);
     assert.equal(await session.ui.locator('#status').getAttribute('data-state'), 'idle');
     await convertOnce(session); await assertUnlocked(session, 'success');
     assert.equal(session.mock.figma.currentPage.children.length, 1);
+    assert.ok(await session.ui.locator('#report-error').isHidden());
+    assert.equal(await session.ui.locator('#report-file').textContent(), 'retry.html');
   } finally { await session.page.close(); }
 });
 
@@ -271,6 +281,10 @@ test('Local parse failure releases loading state and ignores stale terminal repl
     await session.ui.evaluate(id => window.dispatchEvent(new MessageEvent('message', { data: { pluginMessage: { type: 'CONVERSION_ERROR', requestId: id, payload: { success: false, message: 'stale failure' } } }, source: null })), oldId);
     assert.equal(await session.ui.locator('#status').getAttribute('data-state'), 'converting');
     assert.ok(await session.ui.locator('#file').isDisabled());
+    const oldComplete = structuredClone(session.replies.find(message => message.type === 'CONVERSION_COMPLETE' && message.requestId === oldId));
+    await session.ui.evaluate(message => window.dispatchEvent(new MessageEvent('message', { data: { pluginMessage: message }, source: null })), oldComplete);
+    assert.equal(await session.ui.locator('#status').getAttribute('data-state'), 'converting');
+    assert.ok(await session.ui.locator('#report').isHidden());
     session.releaseTerminalReplies();
     await session.ui.waitForFunction(id => window.lastTerminalId && window.lastTerminalId !== id, oldId);
     await Promise.all(session.deliveries);
@@ -317,7 +331,129 @@ test('Main responds once per request, releases its busy state and retains succes
       ['busy', 'CONVERSION_ERROR', false], ['first', 'CONVERSION_COMPLETE', true],
       ['invalid', 'CONVERSION_ERROR', false], ['again', 'CONVERSION_COMPLETE', true]
     ]);
-    assert.equal(notificationErrors.length, 2);
+    assert.equal(notificationErrors.filter(args => args[0] === 'Conversion notification failed').length, 2);
+    assert.equal(notificationErrors.filter(args => args[0] === 'HTML → Figma conversion failed').length, 1);
     assert.equal(mock.figma.currentPage.children.length, 2);
+  } finally { await session.page.close(); }
+});
+
+const outcomeFor = session => structuredClone(session.replies.filter(message => message.type === 'CONVERSION_COMPLETE').at(-1).payload.outcome);
+test('Report shows SUCCESS with zero warnings, collapses details and replaces filenames on repeated uploads', async () => {
+  const session = await openSession();
+  try {
+    await session.ui.locator('#debug').check();
+    for (const name of ['A.html', 'B.html', 'B.html']) {
+      await choose(session, name); assert.ok(await session.ui.locator('#report').isHidden());
+      await convertOnce(session); await assertUnlocked(session, 'success');
+      const outcome = outcomeFor(session);
+      assert.equal(outcome.status, 'SUCCESS'); assert.equal(outcome.warningCount, 0);
+      assert.deepEqual(outcome.result, { frameCreated: true, frameCount: 1 });
+      assert.equal(await session.ui.locator('#report-file').textContent(), name);
+      assert.equal(await session.ui.locator('#status').textContent(), '변환이 완료되었습니다.');
+      assert.equal(await session.ui.locator('#warning-count').textContent(), '확인된 경고가 없습니다.');
+      assert.ok(await session.ui.locator('#warning-details').isHidden());
+      assert.equal(await session.ui.locator('#debug-details').evaluate(el => el.open), false);
+    }
+  } finally { await session.page.close(); }
+});
+
+test('Only unprocessable or failed stylesheets warn; a loaded external CSS URL does not', async () => {
+  const session = await openSession({ routes: {
+    'https://assets.example.test/good.css': { contentType: 'text/css', body: 'p { color: rgb(12,34,56) }' },
+    'https://assets.example.test/missing.css': { status: 404, contentType: 'text/plain', body: 'missing', delayMs: 50 }
+  } });
+  try {
+    for (const [source, warned] of [['./bootstrap.min.css', true], ['https://assets.example.test/good.css', false], ['https://assets.example.test/missing.css', true]]) {
+      await choose(session, 'external.html', `<link rel="stylesheet" href="${source}">${htmlFor('CSS')}`);
+      await convertOnce(session);
+      const result = outcomeFor(session);
+      assert.equal(result.status, warned ? 'SUCCESS_WITH_WARNINGS' : 'SUCCESS', JSON.stringify({ source, raw: session.replies.filter(m => m.type === 'CONVERSION_COMPLETE').at(-1).payload.report.warnings }));
+      assert.equal(result.warnings.some(w => w.code === 'EXTERNAL_RESOURCE' && w.detail.resource === source), warned);
+      assert.equal(await session.ui.locator('#warning-details').evaluate(el => el.open), false);
+    }
+  } finally { await session.page.close(); }
+});
+
+test('100 identical font fallbacks become one cause with accurate occurrences and representative element locations', async () => {
+  const session = await openSession();
+  try {
+    await choose(session, 'font.html', `<style>body{margin:0;font-family:MissingExampleFont}p{margin:0}</style><main>${Array.from({ length: 100 }, (_, i) => `<p id="text-${i}">Test</p>`).join('')}</main>`);
+    await convertOnce(session);
+    const warnings = outcomeFor(session).warnings.filter(w => w.sourceCode === 'FONT_REPLACED');
+    assert.equal(warnings.length, 1); assert.equal(warnings[0].count, 100);
+    assert.equal(warnings[0].detail.originalFont, 'MissingExampleFont'); assert.equal(warnings[0].detail.fallbackFont, 'Inter');
+    assert.equal(warnings[0].locations.length, 5); assert.ok(warnings[0].locations.includes('p#text-0'));
+    assert.equal(await session.ui.locator('#status').textContent(), '변환이 완료되었습니다. 일부 항목을 확인해 주세요.');
+    await session.ui.locator('#warning-summary').click();
+    assert.match(await session.ui.locator('#warnings').textContent(), /글꼴 대체 · 100회/);
+    await choose(session, 'clean.html'); assert.ok(await session.ui.locator('#report').isHidden());
+    await convertOnce(session); assert.equal(outcomeFor(session).warningCount, 0);
+  } finally { await session.page.close(); }
+});
+
+test('Actual failed image decoding and rejected Figma image creation warn while retaining the result Frame', async () => {
+  const session = await openSession({ routes: { 'https://assets.example.test/missing.png': { status: 404, body: 'missing' } } });
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  try {
+    await choose(session, 'image.html', `${htmlFor('Image')}<img id="photo" src="https://assets.example.test/missing.png" width="40" height="40">`);
+    await convertOnce(session);
+    assert.ok(outcomeFor(session).warnings.some(w => w.code === 'IMAGE_ERROR' && w.locations.includes('img#photo') && w.detail.resource.includes('missing.png')));
+    const createImage = session.mock.figma.createImage;
+    session.mock.figma.createImage = () => { throw new Error('Image API rejected'); };
+    await choose(session, 'image-api.html', `${htmlFor('Image')}<img id="photo" src="${png}" width="40" height="40">`);
+    await convertOnce(session);
+    assert.ok(outcomeFor(session).warnings.some(w => w.sourceCode === 'IMAGE_PLACEHOLDER'));
+    assert.ok(!outcomeFor(session).warnings.some(w => w.sourceCode === 'IMAGE_LOAD'), 'The valid PNG decoded before the API rejected it');
+    assert.equal(outcomeFor(session).result.frameCreated, true);
+    session.mock.figma.createImage = createImage;
+  } finally { await session.page.close(); }
+});
+
+test('Ignored backdrop-filter reports its value and aria label; hidden and disabled-style targets do not warn', async () => {
+  const session = await openSession();
+  const content = `${htmlFor('Style')}<div aria-label="Preview" style="width:100px;height:20px;backdrop-filter:blur(4px)">Blur</div><div style="display:none;backdrop-filter:blur(9px)">Hidden</div>`;
+  try {
+    await choose(session, 'unsupported.html', content); await convertOnce(session);
+    const warnings = outcomeFor(session).warnings.filter(w => w.code === 'UNSUPPORTED_STYLE');
+    assert.equal(warnings.length, 1); assert.equal(warnings[0].detail.cssProperty, 'backdrop-filter');
+    assert.deepEqual(warnings[0].locations, ['div[aria-label="Preview"]']);
+    await session.ui.locator('#styles').uncheck(); await convertOnce(session);
+    assert.ok(!outcomeFor(session).warnings.some(w => w.code === 'UNSUPPORTED_STYLE'));
+  } finally { await session.page.close(); }
+});
+
+test('SVG and child failures finish with warnings and surviving content, while sizing failures keep retries enabled', async () => {
+  const session = await openSession({ mockOptions: { failSvg: true, failText: 'omit-this' } });
+  try {
+    await choose(session, 'partial.html', `${htmlFor('Keep')}<p id="omit">omit-this</p><svg id="icon" width="20" height="20"><path d="M0 0L20 20"/></svg>`);
+    await convertOnce(session); await assertUnlocked(session, 'success');
+    const outcome = outcomeFor(session);
+    assert.equal(outcome.status, 'SUCCESS_WITH_WARNINGS'); assert.equal(outcome.result.frameCreated, true);
+    assert.ok(outcome.warnings.some(w => w.code === 'SVG_ERROR' && w.locations.includes('svg#icon')));
+    assert.ok(outcome.warnings.some(w => w.sourceCode === 'NODE_FAILED' && w.locations.includes('p#omit')));
+    assert.equal(session.mock.figma.currentPage.children.length, 1);
+    await choose(session, 'sizing.html', `${htmlFor('Sizing')}<div style="display:flex; flex-direction:column"><p style="height:100%;margin:0">Fill</p></div>`);
+    await convertOnce(session); await assertUnlocked(session, 'success');
+    assert.ok(outcomeFor(session).warnings.some(w => w.code === 'SIZING_FALLBACK'));
+  } finally { await session.page.close(); }
+});
+
+test('An invalid next file clears the old report and cannot reconvert stale HTML', async () => {
+  const session = await openSession();
+  try {
+    await choose(session, 'valid.html'); await convertOnce(session);
+    await session.ui.locator('#file').setInputFiles({ name: 'invalid.txt', mimeType: 'text/plain', buffer: Buffer.from('invalid') });
+    assert.ok(await session.ui.locator('#report').isHidden()); assert.ok(await session.ui.locator('#convert').isDisabled());
+    await choose(session, 'valid.html'); await convertOnce(session); assert.equal(outcomeFor(session).status, 'SUCCESS');
+  } finally { await session.page.close(); }
+});
+
+test('A used web font with a confirmed loading error produces an external-resource warning', async () => {
+  const session = await openSession({ routes: { 'https://assets.example.test/missing.woff2': { status: 404, body: 'missing' } } });
+  try {
+    await choose(session, 'web-font.html', '<style>@font-face{font-family:MissingWebFont;src:url(https://assets.example.test/missing.woff2)}body{font-family:MissingWebFont;margin:0}</style><p>Web Font</p>');
+    await convertOnce(session);
+    assert.ok(outcomeFor(session).warnings.some(w => w.sourceCode === 'WEB_FONT_LOAD' && w.detail.originalFont.includes('MissingWebFont')));
+    await assertUnlocked(session, 'success');
   } finally { await session.page.close(); }
 });
