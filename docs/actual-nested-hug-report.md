@@ -1,5 +1,7 @@
 # 실제 09-01 원본의 Nested Hug 후속 조사
 
+이 문서는 `e3556dc` 단계의 1440px/scrollbar 공간 없는 검증 기록입니다. 이후 실제 `1920 Fill / NONE / Fixed` 결과의 원본 재현과 좁힌 수정은 [Viewport Block Hug 후속 보고서](viewport-block-hug-report.md)를 참조하세요.
+
 첨부한 `09-01_A-pc-list.html`을 수정하지 않고 `test/actual/09-01_A-pc-list.html`에 보관했습니다. SHA-256은 `d0ed7452148a49938b0dd003d790f997725c13fe19939a0a94acffff71f013ff`입니다. 이전의 간단한 재현 파일과 구분합니다.
 
 **실제 Figma 편집에서 문제가 해결됐다고 아직 확인하지 못했습니다.** 이 환경에서는 Chromium과 Figma API 모의 환경을 실행할 수 있지만 Figma Canvas의 실제 편집 엔진을 실행할 수 없습니다. 원본의 기본 모의 실행에서는 이전 엔진 `c682e41`도 Section 높이 전파를 통과했습니다. 따라서 아래에서 확인한 API 실패 경로가 사용자의 실제 실행에서 발생한 원인이라고 단정하지 않습니다.

@@ -389,6 +389,14 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   root.name = 'Imported HTML';
   root.layout.absolute = false;
   root.layout.margin = zero();
+  // Classic scrollbars reduce clientWidth; a stable gutter in Chromium can reduce only the html rect.
+  // Do not treat an authored html/root width constraint as a scrollbar discrepancy.
+  const htmlRect = doc.documentElement.getBoundingClientRect();
+  const stableGutter = htmlStyle.scrollbarGutter === 'stable' && authoredDimension(doc.documentElement, 'width') === 'auto' &&
+    htmlStyle.maxWidth === 'none' && htmlStyle.transform === 'none' && htmlRect.x === 0 &&
+    [readInsets(htmlStyle, 'margin'), readInsets(htmlStyle, 'padding'), readInsets(htmlStyle, 'border')].every(insets => Object.values(insets).every(value => value === 0));
+  const scrollbarGutter = root.size.authoredWidth === 'auto' && root.size.maxWidth == null && (root.size.minWidth || 0) <= root.rect.width ?
+    Math.max(0, view.innerWidth - doc.documentElement.clientWidth, stableGutter ? view.innerWidth - htmlRect.width : 0) : 0;
   root.size.width = options.viewport;
   root.size.widthMode = 'FIXED';
   if ((root.size.minWidth != null && root.size.minWidth > options.viewport) || (root.size.maxWidth != null && root.size.maxWidth < options.viewport)) {
@@ -397,7 +405,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   }
   preserveWrappedViewportGeometry(root,
     node => warn('FLEX_WRAP', node.name, 'Viewport 폭 적용 시 Wrap의 행 배치가 바뀌므로 기존 좌표·높이를 유지했습니다.'),
-    node => warn('HEIGHT_LAYOUT', node.name, 'Viewport 폭 적용 시 Block 정렬이 바뀌므로 기존 좌표·높이를 유지했습니다.'));
+    node => warn('HEIGHT_LAYOUT', node.name, `Viewport 폭 적용 시 Block 정렬이 바뀌므로 기존 좌표·높이를 유지했습니다. ${node.size.heightSource?.reason || ''}`), scrollbarGutter);
   const descendants = [root];
   let contentBottom = root.rect.y + root.rect.height;
   while (descendants.length) {

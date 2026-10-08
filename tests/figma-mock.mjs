@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -95,6 +95,23 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       layoutGrow: { enumerable: true, get: () => grow, set: value => { grow = value; } },
       layoutAlign: { enumerable: true, get: () => align, set: value => { align = value; } }
     });
+    if (simulateAutoWidth) {
+      let measuredWidth = 100;
+      Object.defineProperty(node, 'width', { enumerable: true, get: () => {
+        const parent = node.parent;
+        if (!parent?.layoutMode || parent.layoutMode === 'NONE' || node.layoutPositioning === 'ABSOLUTE' || node.layoutSizingHorizontal !== 'FILL') return measuredWidth;
+        const available = parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0) -
+          (parent.strokesIncludedInLayout ? (parent.strokeLeftWeight || 0) + (parent.strokeRightWeight || 0) : 0);
+        let width = available;
+        if (parent.layoutMode === 'HORIZONTAL') {
+          const flow = parent.children.filter(child => child.layoutPositioning !== 'ABSOLUTE');
+          const fills = flow.filter(child => child.layoutSizingHorizontal === 'FILL');
+          width = (available - flow.filter(child => child.layoutSizingHorizontal !== 'FILL').reduce((sum, child) => sum + child.width, 0) -
+            Math.max(0, flow.length - 1) * (parent.itemSpacing || 0)) / Math.max(1, fills.length);
+        }
+        return Math.max(node.minWidth || .01, Math.min(node.maxWidth ?? Infinity, width));
+      }, set: value => { measuredWidth = value; } });
+    }
     if (simulateAutoHeight) Object.defineProperty(node, 'height', { enumerable: true, get: () => {
       // A deliberately limited box-only height model; text metrics and full Figma layout remain outside this double.
       if (node.layoutSizingVertical !== 'HUG' || type !== 'FRAME' || node.layoutMode === 'NONE') return measuredHeight;
@@ -115,6 +132,14 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       return Math.max(node.minHeight || .01, Math.min(node.maxHeight ?? Infinity, contents + padding + stroke));
     }, set: value => { measuredHeight = value; } });
     if (simulateAutoPosition) {
+      let measuredX = 0;
+      Object.defineProperty(node, 'x', { enumerable: true, get: () => {
+        const parent = node.parent;
+        if (!parent?.layoutMode || parent.layoutMode !== 'VERTICAL' || node.layoutPositioning === 'ABSOLUTE') return measuredX;
+        const left = (parent.paddingLeft || 0) + (parent.strokesIncludedInLayout ? parent.strokeLeftWeight || 0 : 0);
+        const remaining = parent.width - left - (parent.paddingRight || 0) - (parent.strokesIncludedInLayout ? parent.strokeRightWeight || 0 : 0) - node.width;
+        return left + (parent.counterAxisAlignItems === 'CENTER' ? remaining / 2 : parent.counterAxisAlignItems === 'MAX' ? remaining : 0);
+      }, set: value => { measuredX = value; } });
       let measuredY = 0;
       Object.defineProperty(node, 'y', { enumerable: true, get: () => {
         const parent = node.parent;

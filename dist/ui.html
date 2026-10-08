@@ -1323,7 +1323,8 @@
     return close(y - rowGap + parent2.layout.padding.bottom + parent2.style.borderWidths.bottom, parent2.rect.y + parent2.rect.height);
   }
   function preserveWrappedViewportGeometry(root, fallback, flowFallback = () => {
-  }) {
+  }, scrollbarGutter = 0) {
+    const removesScrollbar = scrollbarGutter > 0 && root.size.authoredWidth === "auto" && close(root.rect.x, 0) && close(root.size.width - root.rect.width, scrollbarGutter);
     const groups = (node, width) => {
       const available = width - node.layout.padding.left - node.layout.padding.right - border(node, "x");
       const rows = [];
@@ -1341,11 +1342,17 @@
     };
     const visit = (node, width) => {
       if (node.layout.normalFlow && node.layout.normalFlow.align !== "MIN" && !close(width, node.rect.width)) {
-        delete node.layout.normalFlow;
-        node.layout.direction = "NONE";
-        node.size.heightMode = "FIXED";
-        if (node.size.heightSource) node.size.heightSource.reason = "Viewport width changes block alignment; measured geometry retained";
-        flowFallback(node);
+        const available = width - node.layout.normalFlow.padding.left - node.layout.normalFlow.padding.right - border(node, "x");
+        const keepsCenteredFlow = removesScrollbar && node.layout.normalFlow.align === "CENTER" && node.size.widthMode === "FILL" && node.size.authoredWidth === "auto" && close(width - node.rect.width, scrollbarGutter) && flowChildren(node).every((child) => child.size.widthMode === "FIXED" && child.size.width <= available + 1);
+        if (keepsCenteredFlow) {
+          if (node.size.heightSource) node.size.heightSource.reason = `${node.size.heightSource.reason || "Measured centered block flow"}; viewport scrollbar gutter ${scrollbarGutter}px removed (${node.rect.width} \u2192 ${width}px); centered flow retained`;
+        } else {
+          delete node.layout.normalFlow;
+          node.layout.direction = "NONE";
+          node.size.heightMode = "FIXED";
+          if (node.size.heightSource) node.size.heightSource.reason = `Viewport width changes block alignment; measured geometry retained (${node.rect.width} \u2192 ${width}px, scrollbar gutter ${scrollbarGutter}px)`;
+          flowFallback(node);
+        }
       }
       if (node.layout.wrapSpacing !== void 0 && !close(width, node.rect.width) && (node.layout.justify !== "MIN" || groups(node, width) !== groups(node, node.rect.width))) {
         delete node.layout.wrapSpacing;
@@ -1829,6 +1836,9 @@
     root.name = "Imported HTML";
     root.layout.absolute = false;
     root.layout.margin = zero2();
+    const htmlRect = doc.documentElement.getBoundingClientRect();
+    const stableGutter = htmlStyle.scrollbarGutter === "stable" && authoredDimension(doc.documentElement, "width") === "auto" && htmlStyle.maxWidth === "none" && htmlStyle.transform === "none" && htmlRect.x === 0 && [readInsets(htmlStyle, "margin"), readInsets(htmlStyle, "padding"), readInsets(htmlStyle, "border")].every((insets) => Object.values(insets).every((value) => value === 0));
+    const scrollbarGutter = root.size.authoredWidth === "auto" && root.size.maxWidth == null && (root.size.minWidth || 0) <= root.rect.width ? Math.max(0, view.innerWidth - doc.documentElement.clientWidth, stableGutter ? view.innerWidth - htmlRect.width : 0) : 0;
     root.size.width = options.viewport;
     root.size.widthMode = "FIXED";
     if (root.size.minWidth != null && root.size.minWidth > options.viewport || root.size.maxWidth != null && root.size.maxWidth < options.viewport) {
@@ -1839,7 +1849,8 @@
     preserveWrappedViewportGeometry(
       root,
       (node) => warn("FLEX_WRAP", node.name, "Viewport \uD3ED \uC801\uC6A9 \uC2DC Wrap\uC758 \uD589 \uBC30\uCE58\uAC00 \uBC14\uB00C\uBBC0\uB85C \uAE30\uC874 \uC88C\uD45C\xB7\uB192\uC774\uB97C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4."),
-      (node) => warn("HEIGHT_LAYOUT", node.name, "Viewport \uD3ED \uC801\uC6A9 \uC2DC Block \uC815\uB82C\uC774 \uBC14\uB00C\uBBC0\uB85C \uAE30\uC874 \uC88C\uD45C\xB7\uB192\uC774\uB97C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4.")
+      (node) => warn("HEIGHT_LAYOUT", node.name, `Viewport \uD3ED \uC801\uC6A9 \uC2DC Block \uC815\uB82C\uC774 \uBC14\uB00C\uBBC0\uB85C \uAE30\uC874 \uC88C\uD45C\xB7\uB192\uC774\uB97C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4. ${node.size.heightSource?.reason || ""}`),
+      scrollbarGutter
     );
     const descendants = [root];
     let contentBottom = root.rect.y + root.rect.height;

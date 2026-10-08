@@ -140,7 +140,11 @@ function matchesWrappedBoxes(parent: ParsedNode, children: ParsedNode[], rowGap:
 }
 
 /** The existing viewport-width override must not turn measured 3×2 rows into a different Wrap arrangement. */
-export function preserveWrappedViewportGeometry(root: ParsedNode, fallback: (node: ParsedNode) => void, flowFallback: (node: ParsedNode) => void = () => {}): void {
+export function preserveWrappedViewportGeometry(root: ParsedNode, fallback: (node: ParsedNode) => void, flowFallback: (node: ParsedNode) => void = () => {}, scrollbarGutter: number = 0): void {
+  // A browser's reserved scrollbar reduces its content width; the imported viewport has no scrollbar.
+  // Retain only already-verified centered block flows whose fixed-width contents still fit.
+  const removesScrollbar = scrollbarGutter > 0 && root.size.authoredWidth === 'auto' &&
+    close(root.rect.x, 0) && close(root.size.width - root.rect.width, scrollbarGutter);
   const groups = (node: ParsedNode, width: number) => {
     const available = width - node.layout.padding.left - node.layout.padding.right - border(node, 'x');
     const rows: string[][] = []; let used = 0;
@@ -152,9 +156,17 @@ export function preserveWrappedViewportGeometry(root: ParsedNode, fallback: (nod
   };
   const visit = (node: ParsedNode, width: number) => {
     if (node.layout.normalFlow && node.layout.normalFlow.align !== 'MIN' && !close(width, node.rect.width)) {
-      delete node.layout.normalFlow; node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED';
-      if (node.size.heightSource) node.size.heightSource.reason = 'Viewport width changes block alignment; measured geometry retained';
-      flowFallback(node);
+      const available = width - node.layout.normalFlow.padding.left - node.layout.normalFlow.padding.right - border(node, 'x');
+      const keepsCenteredFlow = removesScrollbar && node.layout.normalFlow.align === 'CENTER' &&
+        node.size.widthMode === 'FILL' && node.size.authoredWidth === 'auto' && close(width - node.rect.width, scrollbarGutter) &&
+        flowChildren(node).every(child => child.size.widthMode === 'FIXED' && child.size.width <= available + 1);
+      if (keepsCenteredFlow) {
+        if (node.size.heightSource) node.size.heightSource.reason = `${node.size.heightSource.reason || 'Measured centered block flow'}; viewport scrollbar gutter ${scrollbarGutter}px removed (${node.rect.width} → ${width}px); centered flow retained`;
+      } else {
+        delete node.layout.normalFlow; node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED';
+        if (node.size.heightSource) node.size.heightSource.reason = `Viewport width changes block alignment; measured geometry retained (${node.rect.width} → ${width}px, scrollbar gutter ${scrollbarGutter}px)`;
+        flowFallback(node);
+      }
     }
     if (node.layout.wrapSpacing !== undefined && !close(width, node.rect.width) &&
       (node.layout.justify !== 'MIN' || groups(node, width) !== groups(node, node.rect.width))) {
