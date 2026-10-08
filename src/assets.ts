@@ -15,7 +15,10 @@ export async function collectImages(root: ParsedNode, doc: Document, options: Im
   while (stack.length) {
     const node = stack.pop()!; stack.push(...node.children);
     if (node.image) requests.push({ image: node.image, name: node.name });
-    if (node.style.backgroundImage && options.styles) requests.push({ image: node.style.backgroundImage, name: node.name });
+    if (options.styles) {
+      const backgrounds = node.style.backgroundLayers ? node.style.backgroundLayers.flatMap(layer => layer.type === 'IMAGE' ? [layer.image] : []) : node.style.backgroundImage ? [node.style.backgroundImage] : [];
+      for (const image of backgrounds) requests.push({ image, name: node.name });
+    }
   }
   const cache = new Map<string, Promise<string>>();
   const existing = new Map<string, HTMLImageElement>();

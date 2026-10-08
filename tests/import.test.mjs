@@ -43,6 +43,194 @@ async function convert(doc, options) {
 const find = (root, name) => flatten(root).find(node => node.name === name);
 const parsedNodes = root => [root, ...root.children.flatMap(parsedNodes)];
 
+async function compareSvgPixels(original, serialized) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(base);
+    return await page.evaluate(async ({ original, serialized }) => {
+      const raster = async svg => {
+        const image = new Image(); image.src = svg.startsWith('data:') ? svg : 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); await image.decode();
+        const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      const source = await raster(original), result = await raster(serialized);
+      let error = 0, substantialPixels = 0;
+      for (let i = 0; i < source.length; i += 4) {
+        let pixelError = Math.abs(source[i + 3] - result[i + 3]);
+        // Compare premultiplied color; transparent pixels do not have a visible RGB value.
+        for (let channel = 0; channel < 3; channel++) pixelError += Math.abs(source[i + channel] * source[i + 3] / 255 - result[i + channel] * result[i + 3] / 255);
+        error += pixelError; if (pixelError > 100) substantialPixels++;
+      }
+      return { meanError: error / source.length, substantialPixels, pixels: source.length / 4 };
+    }, { original, serialized });
+  } finally { await page.close(); }
+}
+
+// Project Paint matrices/stops to SVG for an independent browser comparison with the CSS background.
+function backgroundPaintSvg(fills, width, height) {
+  const rgb = color => `rgb(${color.r * 255},${color.g * 255},${color.b * 255})`;
+  const defs = [], shapes = [];
+  for (const [index, paint] of [...fills].reverse().entries()) {
+    if (paint.type === 'SOLID') shapes.push(`<rect width="100%" height="100%" fill="${rgb(paint.color)}" opacity="${paint.opacity ?? 1}"/>`);
+    else if (paint.type === 'GRADIENT_LINEAR') {
+      const [[a, c, e], [b, d, f]] = paint.gradientTransform, determinant = a * d - b * c;
+      const inverse = [d / determinant, -b / determinant, -c / determinant, a / determinant, (c * f - d * e) / determinant, (b * e - a * f) / determinant];
+      defs.push(`<linearGradient id="g${index}" x1="0" y1=".5" x2="1" y2=".5" gradientTransform="matrix(${inverse.join(' ')})">${paint.gradientStops.map(stop => `<stop offset="${stop.position}" stop-color="${rgb(stop.color)}" stop-opacity="${stop.color.a}"/>`).join('')}</linearGradient>`);
+      shapes.push(`<rect width="100%" height="100%" fill="url(#g${index})" opacity="${paint.opacity ?? 1}"/>`);
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs>${defs.join('')}</defs>${shapes.join('')}</svg>`;
+}
+
+test('Dashboard Donut expands the blue dashed circle into one continuous Vector arc and retains rotation and round caps', async () => {
+  const doc = await parse(await readFile('test/dashboard-rendering-regression.html', 'utf8'));
+  const donut = parsedNodes(doc.root).find(node => node.name === 'donut');
+  assert.match(donut.svg, /<path[^>]*id="donut-arc"/);
+  assert.match(donut.svg, /stroke-linecap="round"/); assert.match(donut.svg, /stroke-width="18px"/);
+  assert.match(donut.svg, /transform="matrix\(/);
+  assert.equal((donut.svg.match(/\bM /g) || []).length, 1, 'one continuous segment');
+  assert.equal((donut.svg.match(/\bA /g) || []).length, 1, 'one large arc');
+  assert.match(donut.svg, /<circle[^>]*cx="60"[^>]*cy="60"[^>]*r="46"/);
+  const original = '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 120 120"><circle cx="60" cy="60" r="46" fill="none" stroke="#F3F4F6" stroke-width="18"/><circle cx="60" cy="60" r="46" fill="none" stroke="#2563EB" stroke-width="18" stroke-linecap="round" stroke-dasharray="196 289" transform="rotate(-90 60 60)"/></svg>';
+  const difference = await compareSvgPixels(original, donut.svg);
+  assert.ok(difference.meanError < 1, JSON.stringify(difference));
+  assert.ok(difference.substantialPixels < difference.pixels * .01, JSON.stringify(difference));
+  const { frame, report, svgImports } = await convert(doc);
+  assert.ok(svgImports.includes(donut.svg)); assert.equal(find(frame, 'donut').children[0].type, 'VECTOR');
+  assert.equal(find(frame, 'donut').getPluginData('html-type'), 'svg');
+  assert.equal(report.svg, 3); assert.ok(!report.warnings.some(warning => ['SVG_DASH', 'SVG_IMPORT', 'NODE_FAILED'].includes(warning.code)));
+});
+
+test('Donut dashoffset, CSS rotation, pathLength, full and seam-crossing arcs match browser rendering without raster imports', async () => {
+  const cases = [
+    ['196 289', '35', 'transform="rotate(-90 60 60)"'], ['196 289', '-35', 'transform="rotate(-90 60 60)"'],
+    ['196 289', '280', 'transform="rotate(-90 60 60)"'], ['75 100', '0', 'pathLength="100" transform="rotate(-90 60 60)"'],
+    ['400 400', '0', 'transform="rotate(-90 60 60)"'], ['220 30', '0', 'style="transform:rotate(-90deg);transform-origin:60px 60px"'],
+    ['196 289', '0', 'style="transform:rotate(-90deg);transform-origin:50% 50%;transform-box:fill-box"'],
+    ['196 289', '0', 'style="transform:rotate(-90deg);transform-origin:50% 50%;transform-box:stroke-box"']
+  ];
+  for (const [dash, offset, extra] of cases) {
+    const original = `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 120 120"><circle cx="60" cy="60" r="46" fill="none" stroke="#2563EB" stroke-width="18" stroke-opacity=".6" stroke-linecap="round" stroke-dasharray="${dash}" stroke-dashoffset="${offset}" ${extra}/></svg>`;
+    const doc = await parse(`<main>${original}</main>`);
+    const svg = parsedNodes(doc.root).find(node => node.type === 'SVG');
+    assert.match(svg.svg, /<path/); assert.match(svg.svg, /stroke-dasharray="none"/);
+    const difference = await compareSvgPixels(original, svg.svg);
+    assert.ok(difference.meanError < 1.5, `${dash}, ${offset}: ${JSON.stringify(difference)}`);
+    assert.ok(difference.substantialPixels < difference.pixels * .02, `${dash}, ${offset}: ${JSON.stringify(difference)}`);
+    const { images, svgImports } = await convert(doc);
+    assert.equal(images.length, 0); assert.equal(svgImports.length, 1);
+  }
+});
+
+test('Ordinary SVG shapes and dashed line offsets retain their native SVG import path', async () => {
+  const original = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><path d="M10 10h30v30H10z" fill="#123456"/><rect x="60" y="10" width="40" height="30" fill="#abcdef"/><circle cx="25" cy="70" r="12" fill="#2563eb"/><line x1="50" y1="70" x2="110" y2="70" stroke="black" stroke-dasharray="12 4" stroke-dashoffset="5"/><polyline points="10,100 40,90 80,110" fill="none" stroke="#123456"/></svg>';
+  const doc = await parse(`<main>${original}</main>`), svg = parsedNodes(doc.root).find(node => node.type === 'SVG');
+  for (const tag of ['path', 'rect', 'circle', 'line', 'polyline']) assert.ok(svg.svg.includes(`<${tag}`));
+  assert.match(svg.svg, /stroke-dashoffset="5px"/);
+  const difference = await compareSvgPixels(original, svg.svg);
+  assert.equal(difference.meanError, 0);
+  const { frame, report, svgImports } = await convert(doc);
+  assert.equal(svgImports.length, 1); assert.equal(report.svg, 1); assert.equal(flatten(frame).filter(node => node.type === 'VECTOR').length, 1);
+});
+
+test('Dashboard three-gradient grid lines retain all fills and their alpha without changing surrounding layout', async () => {
+  const html = await readFile('test/dashboard-rendering-regression.html', 'utf8'), doc = await parse(html);
+  const { frame, report } = await convert(doc);
+  const chart = find(frame, 'chart-wrap'), source = parsedNodes(doc.root).find(node => node.name === 'chart-wrap');
+  assert.deepEqual(source.style.backgroundLayers.map(layer => layer.type), ['GRADIENT', 'GRADIENT', 'GRADIENT']);
+  assert.deepEqual(chart.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+  assert.deepEqual(chart.fills.slice(0, 3).map(paint => paint.gradientStops.map(stop => stop.position)), [[.24, .25, .26], [.49, .5, .51], [.74, .75, .76]]);
+  for (const paint of chart.fills.slice(0, 3)) assert.deepEqual(paint.gradientStops.map(stop => stop.color.a), [0, 1, 0]);
+  assert.deepEqual(chart.fills[3].color, { r: 1, g: 1, b: 1 });
+  const summary = find(frame, 'summary');
+  assert.equal(summary.layoutMode, 'VERTICAL'); assert.equal(summary.children[0].children.length, 4);
+  assert.equal(find(frame, 'widgets').children[0].children.length, 2);
+  for (const grid of [summary, find(frame, 'widgets')]) for (const row of grid.children) {
+    assert.deepEqual(row.fills, []); for (const cell of row.children) assert.deepEqual(cell.fills, []);
+  }
+  assert.equal(find(frame, 'tooltip').getPluginData('html-absolute'), 'true');
+  assert.equal(find(frame, 'tooltip').parent, chart); assert.deepEqual([find(frame, 'tooltip').x, find(frame, 'tooltip').y], [280, 32]);
+  assert.equal(find(frame, 'legend').layoutMode, 'HORIZONTAL');
+  assert.equal(find(frame, 'summary-1').strokeTopWeight, 1); assert.equal(find(frame, 'summary-1').topLeftRadius, 12); assert.equal(find(frame, 'summary-1').effects[0].type, 'DROP_SHADOW');
+  for (const name of ['status', 'quick-links', 'error', 'progress-bar', 'axis-label', 'line-chart', 'icon']) assert.ok(find(frame, name), name);
+  assert.equal(report.grid, 2); assert.equal(report.svg, 3);
+  assert.ok(!report.warnings.some(warning => ['BACKGROUND_LAYER', 'BACKGROUND_LAYERS', 'NODE_FAILED'].includes(warning.code)));
+  const page = await browser.newPage();
+  try {
+    await page.setContent(html);
+    await page.locator('#chart-wrap').evaluate(element => element.replaceChildren());
+    const original = 'data:image/png;base64,' + (await page.locator('#chart-wrap').screenshot()).toString('base64');
+    const difference = await compareSvgPixels(original, backgroundPaintSvg(chart.fills, 600, 300));
+    assert.ok(difference.meanError < .2, JSON.stringify(difference));
+    assert.equal(difference.substantialPixels, 0);
+  } finally { await page.close(); }
+});
+
+test('Multiple URL and Gradient layers preserve order, per-layer image settings, cache reuse and options', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  const html = `<style>body{margin:0}main{display:flex}.layered{width:240px;height:120px;background-color:rgba(10,20,30,.6);background-image:linear-gradient(180deg,rgba(0,0,0,0) 0%,rgba(10,20,30,.1) 100%),url("${png}"),linear-gradient(90deg,#abc8,#fff),url("${png}");background-size:auto,contain,auto,cover;background-position:center;background-repeat:no-repeat;opacity:.5}</style><main><div class="layered"><strong>Keep content</strong></div><img id="regular-image" src="${png}"></main>`;
+  const doc = await parse(html), source = parsedNodes(doc.root).find(node => node.name === 'layered');
+  assert.equal(source.style.backgroundLayers.length, 4); assert.deepEqual(source.style.backgroundLayers.map(layer => layer.type), ['GRADIENT', 'IMAGE', 'GRADIENT', 'IMAGE']);
+  const { frame, report, images } = await convert(doc), target = find(frame, 'layered');
+  assert.deepEqual(target.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'IMAGE', 'GRADIENT_LINEAR', 'IMAGE', 'SOLID']);
+  assert.equal(target.fills[0].gradientStops[0].color.a, 0); assert.equal(target.fills[0].gradientStops[1].color.a, .1);
+  assert.ok(Math.abs(target.fills[2].gradientStops[0].color.a - 136 / 255) < .001, 'Chromium serializes hex alpha to three decimals');
+  assert.equal(target.fills[1].scaleMode, 'FIT'); assert.equal(target.fills[3].scaleMode, 'FILL'); assert.equal(target.fills[1].imageHash, target.fills[3].imageHash);
+  assert.equal(images.length, 1); assert.equal(report.image, 2); assert.equal(target.opacity, .5); assert.equal(target.fills[4].opacity, .6);
+  assert.equal(find(frame, 'regular-image').fills[0].type, 'IMAGE');
+  const noImages = await convert(await parse(html, { images: false }));
+  assert.deepEqual(find(noImages.frame, 'layered').fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']); assert.equal(noImages.images.length, 0);
+  const noStyles = await convert(await parse(html, { styles: false }));
+  assert.deepEqual(find(noStyles.frame, 'layered').fills, []); assert.equal(find(noStyles.frame, 'regular-image').fills[0].type, 'IMAGE');
+  assert.ok(!report.warnings.some(warning => ['BACKGROUND_LAYER', 'BACKGROUND_LAYERS', 'NODE_FAILED'].includes(warning.code)));
+});
+
+test('One unsupported, rejected or missing background layer leaves the other gradients, solid base and descendants intact', async () => {
+  const html = '<style>body{margin:0}.layered{width:240px;height:120px;background:linear-gradient(180deg,rgba(0,0,0,.1),#fff),linear-gradient(90deg,#ff00ff,#fff),radial-gradient(#fff,#000),linear-gradient(270deg,#abc8,#fff),url("missing.png"),#fff}</style><main><div class="layered"><strong>Survive</strong><p>Descendants</p></div></main>';
+  const { frame, report } = await convert(await parse(html), { rejectPaint: paint => paint.type === 'GRADIENT_LINEAR' && paint.gradientStops[0].color.r === 1 && paint.gradientStops[0].color.g === 0 && paint.gradientStops[0].color.b === 1 });
+  const layered = find(frame, 'layered');
+  assert.deepEqual(layered.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'SOLID', 'GRADIENT_LINEAR', 'SOLID']);
+  assert.deepEqual(layered.fills[1].color, { r: 1, g: 0, b: 1 });
+  assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_LAYER' && warning.message.includes('radial-gradient')));
+  assert.ok(report.warnings.some(warning => warning.code === 'GRADIENT_FALLBACK' && warning.message.includes('Layer 2')));
+  assert.ok(report.warnings.some(warning => warning.code === 'IMAGE_LOAD'));
+  assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+  assert.deepEqual(flatten(layered).filter(node => node.type === 'TEXT').map(node => node.characters), ['Survive', 'Descendants']);
+  const parseFailure = await convert(await parse('<style>body{margin:0}main{background:linear-gradient(180deg,#fff,#abc),linear-gradient(45deg,rgba(0,0,0,0),#fff),linear-gradient(0deg,#abc,#fff),#fff}</style><main><p>Still here</p></main>'));
+  assert.deepEqual(parseFailure.frame.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'SOLID', 'GRADIENT_LINEAR', 'SOLID']);
+  assert.equal(parseFailure.frame.fills[1].opacity, 0); assert.ok(parseFailure.report.warnings.some(warning => warning.code === 'GRADIENT_FALLBACK'));
+});
+
+test('Layered backgrounds survive html/body propagation and wrapper optimization without duplicating synthetic Text or Grid fills', async () => {
+  const background = 'linear-gradient(180deg,transparent 24%,#abc 25%,transparent 26%),linear-gradient(180deg,transparent 74%,#abc 75%,transparent 76%)';
+  for (const owner of ['html', 'body']) {
+    const result = await convert(await parse(`<style>body{margin:0}${owner}{background:${background},#fff}</style><main><p>Root content</p></main>`));
+    assert.deepEqual(result.frame.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+  }
+  const doc = await parse(`<style>body{margin:0}main>div,span{background:${background},#fff}span{padding:4px}</style><main><div><p>Wrapper content</p></div><span class="decorated">Text content</span></main>`);
+  const { frame } = await convert(doc);
+  const wrapper = find(frame, 'div'), decorated = find(frame, 'decorated');
+  assert.deepEqual(wrapper.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+  assert.deepEqual(decorated.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+  assert.deepEqual(decorated.children[0].fills.map(paint => paint.type), ['SOLID']);
+  const fallback = await convert(await parse('<style>body{margin:0}main>div{background:linear-gradient(45deg,#abcdef,#fff)}</style><main><div><p>Keep fallback wrapper</p></div></main>'));
+  assert.ok(find(fallback.frame, 'div')); assert.equal(find(fallback.frame, 'div').fills[0].type, 'SOLID');
+});
+
+test('Legacy single Gradient/Image JSON is compatible and malformed new layer data is rejected before allocating nodes', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  const doc = await parse(`<style>body{margin:0}main{background:linear-gradient(180deg,#fff,#abc),url("${png}"),#fff}</style><main><p>Legacy</p></main>`);
+  for (const node of parsedNodes(doc.root)) delete node.style.backgroundLayers;
+  const { frame } = await convert(doc);
+  assert.deepEqual(frame.fills.map(paint => paint.type), ['GRADIENT_LINEAR', 'IMAGE', 'SOLID']);
+  for (const layers of [[{ type: 'UNKNOWN' }], [{ type: 'GRADIENT', gradient: { angle: 45, stops: [] } }], [{ type: 'SOLID', color: { r: NaN, g: 0, b: 0, a: 1 } }], [{ type: 'IMAGE', image: { key: 2 } }]]) {
+    doc.root.style.backgroundLayers = layers;
+    await assert.rejects(() => convert(doc), /잘못된/);
+    assert.equal(globalThis.figma.currentPage.children.length, 0);
+  }
+});
+
 test('Accessibility clipping patterns skip hidden labels without dropping small SVG, dots, dividers or progress bars', async () => {
   const doc = await parse(await readFile('test/inline-accessibility-regression.html', 'utf8'));
   const { frame, report } = await convert(doc);
@@ -198,6 +386,13 @@ test('Gradient angles map CSS endpoints to the correct Figma stop coordinates, i
   assert.deepEqual(gradients.parseLinearGradient('linear-gradient(#fff, #abc, #000)').gradient.stops.map(stop => stop.position), [0, .5, 1]);
   assert.deepEqual(gradients.parseLinearGradient('linear-gradient(180deg, #fff 60%, #abc 40%, #000)').gradient.stops.map(stop => stop.position), [.6, .6, 1]);
   assert.equal(gradients.parseLinearGradient('linear-gradient(to left, #fff, #000)').gradient.angle, 270);
+  const source = gradients.parseLinearGradient('linear-gradient(180deg,#ff0000 0%,transparent 50%,#0000ff 100%)').gradient;
+  const original = JSON.stringify(source), paint = gradients.linearGradientPaint(source);
+  assert.deepEqual(paint.gradientStops.map(stop => stop.position), [0, .5, .5, 1]);
+  assert.deepEqual(paint.gradientStops.map(stop => stop.color.a), [1, 0, 0, 1]);
+  assert.deepEqual(paint.gradientStops[1].color, { r: 1, g: 0, b: 0, a: 0 });
+  assert.deepEqual(paint.gradientStops[2].color, { r: 0, g: 0, b: 1, a: 0 });
+  assert.equal(JSON.stringify(source), original, 'Paint conversion does not mutate CSS stops in intermediate JSON');
 });
 
 test('Unsupported and malformed Gradients use their first valid color and report a fallback without losing nodes', async () => {
@@ -917,8 +1112,8 @@ test('Multiple backgrounds preserve the first URL at any layer with its matching
     assert.deepEqual(flatten(target).filter(node => node.type === 'TEXT').map(node => node.characters), ['Keep title', 'Keep paragraph']);
     assert.equal(images.length, 1);
     assert.equal(report.image, 1);
-    assert.equal(report.warnings.some(warning => warning.code === 'BACKGROUND_IMAGE'), background.includes('radial-gradient'));
-    assert.ok(report.warnings.some(warning => warning.code === 'BACKGROUND_LAYERS'));
+    assert.equal(report.warnings.some(warning => warning.code === 'BACKGROUND_LAYER'), background.includes('radial-gradient'));
+    assert.ok(!report.warnings.some(warning => warning.code === 'BACKGROUND_LAYERS'));
     assert.ok(!report.warnings.some(warning => ['BACKGROUND_POSITION', 'BACKGROUND_REPEAT', 'NODE_FAILED'].includes(warning.code)));
   }
 });

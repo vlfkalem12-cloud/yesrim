@@ -1,8 +1,9 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
+  const svgImports = [];
   const page = { type: 'PAGE', children: [], selection: [], appendChild(node) { append(this, node); } };
   let nextId = 1;
   function append(parent, node) {
@@ -39,6 +40,7 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       } },
       fills: { get: () => fills, set: value => {
         if (failGradientPaint && value.some(paint => paint.type === 'GRADIENT_LINEAR')) throw new Error('Simulated Gradient Paint rejection');
+        if (value.some(rejectPaint)) throw new Error('Simulated individual Paint rejection');
         fills = value;
       } },
       textAutoResize: { get: () => textAutoResize, set: value => {
@@ -61,12 +63,12 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
     currentPage: page,
     viewport: { center: { x: 1000, y: 800 }, scrollAndZoomIntoView(nodes) { this.zoomed = nodes; } },
     createFrame: () => make('FRAME'), createText: () => make('TEXT'), createRectangle: () => make('RECTANGLE'),
-    createNodeFromSvg(svg) { if (failSvg || !svg.includes('<svg')) throw new Error('Unsupported SVG'); const frame = make('FRAME'); frame.appendChild(make('VECTOR')); return frame; },
+    createNodeFromSvg(svg) { svgImports.push(svg); if (failSvg || !svg.includes('<svg')) throw new Error('Unsupported SVG'); const frame = make('FRAME'); frame.appendChild(make('VECTOR')); return frame; },
     async listAvailableFontsAsync() { return fonts.map(fontName => ({ fontName })); },
     async loadFontAsync(font) { const key = `${font.family}|${font.style}`; fontLoads.push(key); if (failFonts.includes(font.family) || !fonts.some(f => f.family === font.family && f.style === font.style)) throw new Error('Unavailable font'); loaded.add(key); },
     createImage(bytes) { if (!bytes.length) throw new Error('Invalid image'); images.push(bytes); return { hash: `hash-${images.length}` }; },
     ui: { postMessage() {}, onmessage: undefined }, showUI() {}, notify() {}
   };
-  return { figma, fontLoads, images };
+  return { figma, fontLoads, images, svgImports };
 }
 export function flatten(root) { return [root, ...root.children.flatMap(flatten)]; }

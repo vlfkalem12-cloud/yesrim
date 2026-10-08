@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Dashboard SVG / layered background regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/24px Inter, sans-serif; background: #f8fafc; }
+  #dashboard { display: flex; flex-direction: column; gap: 24px; padding: 32px; }
+  #summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .card, .widget { padding: 16px; background: white; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 2px 8px #0001; }
+  .card { display: flex; flex-direction: column; gap: 8px; }
+  p { margin: 0; }
+  #widgets { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  #chart-wrap { position: relative; width: 600px; height: 300px; background: linear-gradient(to bottom, transparent 24%, #F3F4F6 25%, transparent 26%), linear-gradient(to bottom, transparent 49%, #F3F4F6 50%, transparent 51%), linear-gradient(to bottom, transparent 74%, #F3F4F6 75%, transparent 76%), #FFFFFF; }
+  #tooltip { position: absolute; left: 280px; top: 32px; padding: 4px 8px; border-radius: 6px; background: #111827; color: white; z-index: 10; }
+  #legend { display: flex; gap: 16px; }
+  #status { display: inline-block; padding: 2px 8px; border-radius: 12px; background: #dcfce7; color: #166534; }
+  #progress { width: 240px; height: 6px; background: #e5e7eb; border-radius: 3px; }
+  #progress-bar { width: 72%; height: 6px; background: #2563eb; border-radius: 3px; }
+  #error { border: 1px solid #fecaca; background: #fef2f2; padding: 12px; }
+  #quick-links { display: flex; gap: 16px; }
+</style>
+<main id="dashboard">
+  <section id="summary">
+    <div id="summary-1" class="card"><strong>Users</strong><span>1,204</span></div>
+    <div id="summary-2" class="card"><strong>Revenue</strong><span>₩12,400</span></div>
+    <div id="summary-3" class="card"><strong>Conversion</strong><span>72%</span></div>
+    <div id="summary-4" class="card"><strong>Status</strong><span id="status">Normal</span></div>
+  </section>
+  <section id="widgets">
+    <div id="donut-widget" class="widget">
+      <div style="width:180px;height:180px">
+        <svg id="donut" width="180" height="180" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="46" fill="none" stroke="#F3F4F6" stroke-width="18"/>
+          <circle id="donut-arc" cx="60" cy="60" r="46" fill="none" stroke="#2563EB" stroke-width="18" stroke-linecap="round" stroke-dasharray="196 289" transform="rotate(-90 60 60)"/>
+        </svg>
+      </div>
+      <p>Donut Vector · 72%</p>
+    </div>
+    <div id="line-widget" class="widget">
+      <div id="chart-wrap">
+        <svg id="line-chart" width="600" height="300" viewBox="0 0 600 300">
+          <path d="M20 240 L130 180 L240 200 L350 80 L460 100 L580 40" fill="none" stroke="#2563eb" stroke-width="3"/>
+          <circle id="chart-point" cx="350" cy="80" r="5" fill="#2563eb"/>
+          <line x1="20" y1="280" x2="580" y2="280" stroke="#9ca3af"/>
+          <polyline points="20,30 25,20 30,30" fill="none" stroke="#166534"/>
+          <rect x="560" y="255" width="12" height="12" fill="#dcfce7"/>
+        </svg>
+        <div id="tooltip">72% conversion</div>
+      </div>
+      <div id="legend"><span>Current</span><span>Previous</span></div>
+      <p id="axis-label">Mon · Tue · Wed · Thu · Fri</p>
+    </div>
+  </section>
+  <div id="progress"><div id="progress-bar"></div></div>
+  <div id="error"><strong>Retry later</strong><p>Some metrics are delayed.</p></div>
+  <nav id="quick-links"><a>Overview</a><a>Reports</a><a>Settings</a></nav>
+  <svg id="icon" width="24" height="24" viewBox="0 0 24 24"><path d="M2 2h20v20H2z" fill="#2563eb"/></svg>
+</main>
+</html>

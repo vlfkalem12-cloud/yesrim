@@ -56,5 +56,22 @@ export function linearGradientPaint(gradient: ParsedGradient): GradientPaint {
     0: [[0, -1, 1], [1, 0, 0]], 90: [[1, 0, 0], [0, 1, 0]],
     180: [[0, 1, 0], [-1, 0, 1]], 270: [[-1, 0, 1], [0, -1, 1]]
   };
-  return { type: 'GRADIENT_LINEAR', gradientTransform: transforms[gradient.angle], gradientStops: gradient.stops, opacity: 1, visible: true, blendMode: 'NORMAL' };
+  // RGB at alpha 0 is invisible in CSS premultiplied interpolation. Give it adjacent colors
+  // so SVG/Figma interpolation cannot introduce black fringes around transparent grid lines.
+  const nextColors: (Color | undefined)[] = [];
+  let next: Color | undefined;
+  for (let index = gradient.stops.length - 1; index >= 0; index--) {
+    if (gradient.stops[index]!.color.a > 0) next = gradient.stops[index]!.color;
+    nextColors[index] = next;
+  }
+  const stops: ColorStop[] = [];
+  let previous: Color | undefined;
+  gradient.stops.forEach((stop, index) => {
+    if (stop.color.a > 0) { previous = stop.color; stops.push(stop); return; }
+    const before = previous || nextColors[index] || stop.color, after = nextColors[index] || before;
+    stops.push({ position: stop.position, color: { ...before, a: 0 } });
+    // Different colors fade into/out of the same transparent position without a visible color seam.
+    if (before.r !== after.r || before.g !== after.g || before.b !== after.b) stops.push({ position: stop.position, color: { ...after, a: 0 } });
+  });
+  return { type: 'GRADIENT_LINEAR', gradientTransform: transforms[gradient.angle], gradientStops: stops, opacity: 1, visible: true, blendMode: 'NORMAL' };
 }

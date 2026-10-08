@@ -180,21 +180,24 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   function readBackground(node: ParsedNode, style: CSSStyleDeclaration): void {
     if (style.backgroundImage === 'none') return;
     const layers = splitCSSList(style.backgroundImage);
-    const urls = layers.map(layer => layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1]);
-    const imageIndex = urls.findIndex(url => url !== undefined);
-    const gradientIndex = layers.findIndex(layer => /^linear-gradient\(/i.test(layer));
-    if (imageIndex >= 0) {
-      const layerValue = (value: string) => { const values = splitCSSList(value); return values[imageIndex % values.length]!; };
-      node.style.backgroundImage = { key: '', src: urls[imageIndex]!, alt: 'background', fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat), layerIndex: imageIndex };
-    }
-    if (gradientIndex >= 0) {
-      const result = parseLinearGradient(layers[gradientIndex]!);
-      if (result.gradient) node.style.backgroundGradient = { ...result.gradient, layerIndex: gradientIndex };
-      else if (result.fallback) node.style.background = result.fallback;
-      if (result.warning) warn('GRADIENT_FALLBACK', node.name, result.warning);
-    }
-    if (layers.some((layer, index) => !urls[index] && index !== gradientIndex && layer !== 'none')) warn('BACKGROUND_IMAGE', node.name, '미지원 배경 레이어는 생략하고 지원되는 배경 Fill을 유지합니다.');
-    if (layers.length > 1) warn('BACKGROUND_LAYERS', node.name, '다중 배경은 첫 번째 URL 이미지와 첫 번째 Linear Gradient 및 배경색을 유지합니다.');
+    node.style.backgroundLayers = [];
+    layers.forEach((layer, index) => {
+      const url = layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1];
+      if (url !== undefined) {
+        const layerValue = (value: string) => { const values = splitCSSList(value); return values[index % values.length]!; };
+        const image = { key: '', src: url, alt: 'background', fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat), layerIndex: index };
+        node.style.backgroundLayers!.push({ type: 'IMAGE', image });
+        node.style.backgroundImage ??= image; // Keep the existing version-1 JSON alias.
+      } else if (/^linear-gradient\(/i.test(layer)) {
+        const result = parseLinearGradient(layer);
+        if (result.gradient) {
+          const gradient = { ...result.gradient, layerIndex: index };
+          node.style.backgroundLayers!.push({ type: 'GRADIENT', gradient });
+          node.style.backgroundGradient ??= gradient;
+        } else if (result.fallback) node.style.backgroundLayers!.push({ type: 'SOLID', color: result.fallback, layerIndex: index });
+        if (result.warning) warn('GRADIENT_FALLBACK', node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} — ${result.warning}`);
+      } else if (layer !== 'none') warn('BACKGROUND_LAYER', node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`);
+    });
   }
   function parse(el: Element, depth: number): ParsedNode[] {
     if (OMIT_TAGS.has(el.localName)) return [];
@@ -258,7 +261,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         // Keep decorated text editable, with a frame carrying its box styling.
         node.type = 'FRAME';
         const child: ParsedNode = { ...node, type: 'TEXT', name: `${name} / text`, rect: bounds(range.getBoundingClientRect()),
-          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
+          style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, backgroundLayers: undefined, shadow: undefined, borderWidths: zero(), radii: [0, 0, 0, 0] },
           layout: { ...node.layout, direction: 'NONE', padding: zero(), margin: zero(), absolute: false }, children: [] };
         child.size = { ...node.size, width: child.rect.width, height: child.rect.height, widthMode: noWrap || node.size.widthMode === 'HUG' ? 'HUG' : 'FIXED', heightMode: 'HUG' };
         node.children = [child]; node.text = undefined; count++;
@@ -287,7 +290,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
         node.children = [child]; count++;
       } else if (content.text) warn('TREE_LIMIT', name, '노드 수 또는 중첩 깊이 제한으로 control 텍스트를 생략했습니다.');
     } else if (node.type === 'SVG') {
-      try { node.svg = serializeSVG(el); }
+      try { node.svg = serializeSVG(el, message => warn('SVG_DASH', name, message)); }
       catch (error) { warn('SVG_SERIALIZE', name, errorMessage(error)); }
     } else if (node.type === 'IMAGE') {
       const img = el as HTMLImageElement;
@@ -337,12 +340,12 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
   if (!body) throw new Error('변환할 수 있는 표시 요소가 없습니다.');
   const bodyStyle = view.getComputedStyle(doc.body);
   const htmlStyle = computed(doc.documentElement);
-  if (!body.style.background?.a && bodyStyle.backgroundImage === 'none' && /linear-gradient\(/i.test(htmlStyle.backgroundImage)) readBackground(body, htmlStyle);
+  if (!body.style.background?.a && bodyStyle.backgroundImage === 'none' && htmlStyle.backgroundImage !== 'none') readBackground(body, htmlStyle);
   // A sole undecorated body wrapper may be collapsed into the imported viewport frame.
   const collapse = body.children.length === 1 && body.children[0]!.type === 'FRAME' && !body.children[0]!.layout.absolute &&
     Object.values(body.children[0]!.layout.margin).every(v => v === 0) && bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
     bodyStyle.display === 'block' && Object.values(body.layout.padding).every(v => v === 0) && Object.values(body.layout.margin).every(v => v === 0) &&
-    Object.values(body.style.borderWidths).every(v => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.backgroundGradient && !body.style.background?.a && !body.style.clipsContent;
+    Object.values(body.style.borderWidths).every(v => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.backgroundGradient && !body.style.backgroundLayers?.length && !body.style.background?.a && !body.style.clipsContent;
   const root = collapse ? body.children[0]! : body;
   if (!collapse) {
     // The imported viewport starts at document (0,0); CSS body's outside margins still occupy space.

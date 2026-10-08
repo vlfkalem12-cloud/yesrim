@@ -1,4 +1,4 @@
-import { LIMITS, type Color, type ConversionReport, type ParsedDocument, type ParsedImage, type ParsedNode, type SizingMode } from './types';
+import { LIMITS, type Color, type ConversionReport, type ParsedBackgroundLayer, type ParsedDocument, type ParsedGradient, type ParsedImage, type ParsedNode, type SizingMode } from './types';
 import { clamp, errorMessage, isViewportDimension } from './utils';
 import { enrichWarnings } from './report';
 import { linearGradientPaint } from './gradients';
@@ -81,6 +81,9 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
   for (const option of [doc.options.images, doc.options.shadows, doc.options.optimizeWrappers, doc.options.debug]) if (option !== undefined && typeof option !== 'boolean') throw new Error('잘못된 변환 옵션입니다.');
   for (const warning of doc.warnings) if (!warning || typeof warning.code !== 'string' || typeof warning.node !== 'string' || typeof warning.message !== 'string') throw new Error('잘못된 경고 데이터입니다.');
   const finite = (value: unknown, max: number = LIMITS.dimension) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= max;
+  const validateGradient = (gradient: ParsedGradient) => {
+    if (!gradient || ![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || (index > 0 && stop.position < gradient.stops[index - 1]!.position) || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every(value => finite(value, 1) && value >= 0))) throw new Error('잘못된 Gradient 데이터입니다.');
+  };
   const stack = [{ node: doc.root, depth: 0 }];
   let count = 0;
   while (stack.length) {
@@ -93,7 +96,16 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
     for (const value of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value !== undefined && value !== null && (!finite(value) || value < 0)) throw new Error('잘못된 최소/최대 크기입니다.');
     if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every(value => finite(value)))) throw new Error('잘못된 그림자 데이터입니다.');
     const gradient = node.style.backgroundGradient;
-    if (gradient && (![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || (index > 0 && stop.position < gradient.stops[index - 1]!.position) || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every(value => finite(value, 1) && value >= 0)))) throw new Error('잘못된 Gradient 데이터입니다.');
+    if (gradient) validateGradient(gradient);
+    if (node.style.backgroundLayers !== undefined) {
+      if (!Array.isArray(node.style.backgroundLayers)) throw new Error('잘못된 Background Layer 데이터입니다.');
+      for (const layer of node.style.backgroundLayers) {
+        if (!layer || !['GRADIENT', 'IMAGE', 'SOLID'].includes(layer.type)) throw new Error('잘못된 Background Layer 데이터입니다.');
+        if (layer.type === 'GRADIENT') validateGradient(layer.gradient);
+        if (layer.type === 'IMAGE' && (!layer.image || ![layer.image.key, layer.image.src, layer.image.fit].every(value => typeof value === 'string'))) throw new Error('잘못된 Background Image 데이터입니다.');
+        if (layer.type === 'SOLID' && (!layer.color || ![layer.color.r, layer.color.g, layer.color.b, layer.color.a].every(value => finite(value, 1) && value >= 0))) throw new Error('잘못된 Background Color 데이터입니다.');
+      }
+    }
     if (!['HORIZONTAL', 'VERTICAL', 'NONE'].includes(node.layout.direction) || !['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'].includes(node.layout.justify) || !['MIN', 'CENTER', 'MAX', 'BASELINE'].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error('잘못된 레이아웃 데이터입니다.');
     if (node.layout.fixedInsets && !(['top', 'right', 'bottom', 'left'] as const).every(side => {
       const value = node.layout.fixedInsets![side];
@@ -163,24 +175,36 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
 
   function applyBoxStyle(node: FrameNode | RectangleNode, parsed: ParsedNode): void {
     const style = parsed.style;
-    node.fills = doc.options.styles && style.background ? [solid(style.background)] : [];
+    const base: Paint[] = doc.options.styles && style.background ? [solid(style.background)] : [];
+    node.fills = base;
     node.strokes = [];
     if (!doc.options.styles) return;
-    if (style.backgroundGradient) {
-      try { node.fills = [linearGradientPaint(style.backgroundGradient), ...node.fills as Paint[]]; }
+    // Keep earlier version-1 documents usable; new documents carry every CSS layer in order.
+    const legacy: ParsedBackgroundLayer[] = [
+      ...(style.backgroundGradient ? [{ type: 'GRADIENT' as const, gradient: style.backgroundGradient }] : []),
+      ...(style.backgroundImage ? [{ type: 'IMAGE' as const, image: style.backgroundImage }] : [])
+    ];
+    const indexOf = (layer: ParsedBackgroundLayer) => layer.type === 'GRADIENT' ? layer.gradient.layerIndex : layer.type === 'IMAGE' ? layer.image.layerIndex ?? 0 : layer.layerIndex;
+    const layers = style.backgroundLayers ?? legacy.sort((a, b) => indexOf(a) - indexOf(b));
+    const applied: Paint[] = [];
+    for (const layer of layers) {
+      if (layer.type === 'IMAGE' && doc.options.images === false) continue;
+      let paint = layer.type === 'GRADIENT' ? linearGradientPaint(layer.gradient) : layer.type === 'IMAGE' ? imagePaint(layer.image, parsed.name) : solid(layer.color);
+      if (!paint) continue;
+      // Both CSS and Figma fills list the top paint first. Keep the solid background at the bottom.
+      // Apply incrementally so rejection of one layer cannot discard previously accepted paints.
+      try { node.fills = [...applied, paint, ...base]; }
       catch (error) {
-        node.fills = [solid(style.backgroundGradient.stops[0]!.color), ...node.fills as Paint[]];
-        warn('GRADIENT_FALLBACK', parsed.name, `Gradient Paint 적용 실패: ${errorMessage(error)}. 첫 번째 color stop을 Solid Fill로 사용합니다.`);
+        if (layer.type !== 'GRADIENT') {
+          warn('BACKGROUND_LAYER', parsed.name, `Background Layer ${indexOf(layer) + 1} 적용 실패: ${errorMessage(error)}`);
+          continue;
+        }
+        paint = solid(layer.gradient.stops[0]!.color);
+        node.fills = [...applied, paint, ...base];
+        warn('GRADIENT_FALLBACK', parsed.name, `Background Layer ${indexOf(layer) + 1}: Gradient Paint 적용 실패: ${errorMessage(error)}. 첫 번째 color stop을 Solid Fill로 사용합니다.`);
       }
-    }
-    if (doc.options.images !== false && style.backgroundImage) {
-      const paint = imagePaint(style.backgroundImage, parsed.name);
-      if (paint) {
-        const fills = node.fills as Paint[];
-        const index = style.backgroundGradient && style.backgroundGradient.layerIndex < (style.backgroundImage.layerIndex ?? 0) ? 1 : 0;
-        node.fills = [...fills.slice(0, index), paint, ...fills.slice(index)];
-        node.setPluginData('html-background-image', 'true');
-      }
+      applied.push(paint);
+      if (layer.type === 'IMAGE') node.setPluginData('html-background-image', 'true');
     }
     node.opacity = clamp(style.opacity, 0, 1);
     if (doc.options.shadows !== false && style.shadow) {

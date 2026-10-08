@@ -24,7 +24,7 @@
   // src/report.ts
   function warningCategory(code) {
     if (/FONT/.test(code)) return "Fonts";
-    if (/GRADIENT/.test(code)) return "Unsupported CSS";
+    if (/GRADIENT|BACKGROUND_LAYER/.test(code)) return "Unsupported CSS";
     if (/IMAGE|ASSET|BACKGROUND/.test(code)) return "Images";
     if (/GRID/.test(code)) return "Grid Fallback";
     if (/UNSUPPORTED|TRANSFORM|FLOAT|PSEUDO|SHADOW|BORDER_COLORS/.test(code)) return "Unsupported CSS";
@@ -56,7 +56,25 @@
       180: [[0, 1, 0], [-1, 0, 1]],
       270: [[-1, 0, 1], [0, -1, 1]]
     };
-    return { type: "GRADIENT_LINEAR", gradientTransform: transforms[gradient.angle], gradientStops: gradient.stops, opacity: 1, visible: true, blendMode: "NORMAL" };
+    const nextColors = [];
+    let next;
+    for (let index = gradient.stops.length - 1; index >= 0; index--) {
+      if (gradient.stops[index].color.a > 0) next = gradient.stops[index].color;
+      nextColors[index] = next;
+    }
+    const stops = [];
+    let previous;
+    gradient.stops.forEach((stop, index) => {
+      if (stop.color.a > 0) {
+        previous = stop.color;
+        stops.push(stop);
+        return;
+      }
+      const before = previous || nextColors[index] || stop.color, after = nextColors[index] || before;
+      stops.push({ position: stop.position, color: { ...before, a: 0 } });
+      if (before.r !== after.r || before.g !== after.g || before.b !== after.b) stops.push({ position: stop.position, color: { ...after, a: 0 } });
+    });
+    return { type: "GRADIENT_LINEAR", gradientTransform: transforms[gradient.angle], gradientStops: stops, opacity: 1, visible: true, blendMode: "NORMAL" };
   }
 
   // src/converter.ts
@@ -141,6 +159,9 @@
     for (const option of [doc.options.images, doc.options.shadows, doc.options.optimizeWrappers, doc.options.debug]) if (option !== void 0 && typeof option !== "boolean") throw new Error("\uC798\uBABB\uB41C \uBCC0\uD658 \uC635\uC158\uC785\uB2C8\uB2E4.");
     for (const warning of doc.warnings) if (!warning || typeof warning.code !== "string" || typeof warning.node !== "string" || typeof warning.message !== "string") throw new Error("\uC798\uBABB\uB41C \uACBD\uACE0 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
     const finite = (value2, max = LIMITS.dimension) => typeof value2 === "number" && Number.isFinite(value2) && Math.abs(value2) <= max;
+    const validateGradient = (gradient) => {
+      if (!gradient || ![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || index > 0 && stop.position < gradient.stops[index - 1].position || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every((value2) => finite(value2, 1) && value2 >= 0))) throw new Error("\uC798\uBABB\uB41C Gradient \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+    };
     const stack = [{ node: doc.root, depth: 0 }];
     let count = 0;
     while (stack.length) {
@@ -153,7 +174,16 @@
       for (const value2 of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value2 !== void 0 && value2 !== null && (!finite(value2) || value2 < 0)) throw new Error("\uC798\uBABB\uB41C \uCD5C\uC18C/\uCD5C\uB300 \uD06C\uAE30\uC785\uB2C8\uB2E4.");
       if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every((value2) => finite(value2)))) throw new Error("\uC798\uBABB\uB41C \uADF8\uB9BC\uC790 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       const gradient = node.style.backgroundGradient;
-      if (gradient && (![0, 90, 180, 270].includes(gradient.angle) || !Number.isInteger(gradient.layerIndex) || gradient.layerIndex < 0 || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.some((stop, index) => !stop || !finite(stop.position, 1) || stop.position < 0 || index > 0 && stop.position < gradient.stops[index - 1].position || !stop.color || ![stop.color.r, stop.color.g, stop.color.b, stop.color.a].every((value2) => finite(value2, 1) && value2 >= 0)))) throw new Error("\uC798\uBABB\uB41C Gradient \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (gradient) validateGradient(gradient);
+      if (node.style.backgroundLayers !== void 0) {
+        if (!Array.isArray(node.style.backgroundLayers)) throw new Error("\uC798\uBABB\uB41C Background Layer \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+        for (const layer of node.style.backgroundLayers) {
+          if (!layer || !["GRADIENT", "IMAGE", "SOLID"].includes(layer.type)) throw new Error("\uC798\uBABB\uB41C Background Layer \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+          if (layer.type === "GRADIENT") validateGradient(layer.gradient);
+          if (layer.type === "IMAGE" && (!layer.image || ![layer.image.key, layer.image.src, layer.image.fit].every((value2) => typeof value2 === "string"))) throw new Error("\uC798\uBABB\uB41C Background Image \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+          if (layer.type === "SOLID" && (!layer.color || ![layer.color.r, layer.color.g, layer.color.b, layer.color.a].every((value2) => finite(value2, 1) && value2 >= 0))) throw new Error("\uC798\uBABB\uB41C Background Color \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+        }
+      }
       if (!["HORIZONTAL", "VERTICAL", "NONE"].includes(node.layout.direction) || !["MIN", "CENTER", "MAX", "SPACE_BETWEEN"].includes(node.layout.justify) || !["MIN", "CENTER", "MAX", "BASELINE"].includes(node.layout.align) || !finite(node.layout.gap) || !finite(node.layout.order)) throw new Error("\uC798\uBABB\uB41C \uB808\uC774\uC544\uC6C3 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.layout.fixedInsets && !["top", "right", "bottom", "left"].every((side) => {
         const value2 = node.layout.fixedInsets[side];
@@ -227,25 +257,34 @@
     }
     function applyBoxStyle(node, parsed) {
       const style = parsed.style;
-      node.fills = doc.options.styles && style.background ? [solid(style.background)] : [];
+      const base = doc.options.styles && style.background ? [solid(style.background)] : [];
+      node.fills = base;
       node.strokes = [];
       if (!doc.options.styles) return;
-      if (style.backgroundGradient) {
+      const legacy = [
+        ...style.backgroundGradient ? [{ type: "GRADIENT", gradient: style.backgroundGradient }] : [],
+        ...style.backgroundImage ? [{ type: "IMAGE", image: style.backgroundImage }] : []
+      ];
+      const indexOf = (layer) => layer.type === "GRADIENT" ? layer.gradient.layerIndex : layer.type === "IMAGE" ? layer.image.layerIndex ?? 0 : layer.layerIndex;
+      const layers = style.backgroundLayers ?? legacy.sort((a, b) => indexOf(a) - indexOf(b));
+      const applied = [];
+      for (const layer of layers) {
+        if (layer.type === "IMAGE" && doc.options.images === false) continue;
+        let paint = layer.type === "GRADIENT" ? linearGradientPaint(layer.gradient) : layer.type === "IMAGE" ? imagePaint(layer.image, parsed.name) : solid(layer.color);
+        if (!paint) continue;
         try {
-          node.fills = [linearGradientPaint(style.backgroundGradient), ...node.fills];
+          node.fills = [...applied, paint, ...base];
         } catch (error) {
-          node.fills = [solid(style.backgroundGradient.stops[0].color), ...node.fills];
-          warn("GRADIENT_FALLBACK", parsed.name, `Gradient Paint \uC801\uC6A9 \uC2E4\uD328: ${errorMessage(error)}. \uCCAB \uBC88\uC9F8 color stop\uC744 Solid Fill\uB85C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.`);
+          if (layer.type !== "GRADIENT") {
+            warn("BACKGROUND_LAYER", parsed.name, `Background Layer ${indexOf(layer) + 1} \uC801\uC6A9 \uC2E4\uD328: ${errorMessage(error)}`);
+            continue;
+          }
+          paint = solid(layer.gradient.stops[0].color);
+          node.fills = [...applied, paint, ...base];
+          warn("GRADIENT_FALLBACK", parsed.name, `Background Layer ${indexOf(layer) + 1}: Gradient Paint \uC801\uC6A9 \uC2E4\uD328: ${errorMessage(error)}. \uCCAB \uBC88\uC9F8 color stop\uC744 Solid Fill\uB85C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.`);
         }
-      }
-      if (doc.options.images !== false && style.backgroundImage) {
-        const paint = imagePaint(style.backgroundImage, parsed.name);
-        if (paint) {
-          const fills = node.fills;
-          const index = style.backgroundGradient && style.backgroundGradient.layerIndex < (style.backgroundImage.layerIndex ?? 0) ? 1 : 0;
-          node.fills = [...fills.slice(0, index), paint, ...fills.slice(index)];
-          node.setPluginData("html-background-image", "true");
-        }
+        applied.push(paint);
+        if (layer.type === "IMAGE") node.setPluginData("html-background-image", "true");
       }
       node.opacity = clamp(style.opacity, 0, 1);
       if (doc.options.shadows !== false && style.shadow) {

@@ -56,6 +56,8 @@ Gradient 확인에는 `test/gradient-regression.html`을 사용하세요. 요청
 
 접근성 숨김과 Mixed Inline 확인에는 `test/inline-accessibility-regression.html`을 사용하세요. 1px clip / inset label, 작은 SVG·Dot·Divider·Progress Bar, 질문 + Badge, Text + Icon, 교차하는 Text / Element, 순수 Text와 줄바꿈을 함께 확인할 수 있습니다. 접근성 숨김 제외 기록은 Debug Mode에서만 표시합니다.
 
+Dashboard 렌더링 확인에는 `test/dashboard-rendering-regression.html`을 사용하세요. 요청한 180px Donut, 세 Gradient로 만든 25% / 50% / 75% Grid Line, 4열 Summary Card, Line Chart·Point·Tooltip·Legend·Axis Label, Widget·Status Badge·Quick Links·Error State·Progress Bar를 포함합니다.
+
 Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기본 ON, Debug Mode는 기본 OFF입니다. Debug Mode를 켜면 `card [div.card]`처럼 레이어 이름에 HTML selector가 추가됩니다. Images를 끄면 이미지 bytes 수집과 Image Fill 생성을 생략하고 `img` 영역의 빈 Rectangle을 유지합니다. HTML 치수 측정 단계에서는 원본 이미지가 로딩될 수 있습니다. Inline SVG Vector 변환은 유지됩니다.
 
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
@@ -114,8 +116,9 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - 사용 가능한 폰트를 조회하고 **로드를 완료한 뒤** 텍스트를 설정합니다. 한국어는 요청한 한국어 지원 폰트 → Pretendard → Noto Sans KR → 알려진 한국어 지원 폰트 순서로 대체하며 영문 전용 fallback을 사용하지 않습니다. 폰트 교체와 로드 실패를 보고하고 로드 결과를 캐시합니다.
 - `img`는 편집 가능한 Rectangle + Image Fill. HTTPS CORS 이미지와 `data:image`를 PNG bytes로 전달합니다. `contain`은 FIT, 나머지는 FILL로 근사합니다. 동일 URL의 이미지 데이터는 재사용합니다.
 - `linear-gradient()`은 `GRADIENT_LINEAR` Fill로 변환합니다. 0 / 90 / 180 / 270deg, 기본 방향과 to top / right / bottom / left, hex / rgb / rgba, 0~100% stop과 2개 이상의 색상을 지원합니다. 생략한 stop은 CSS에 맞게 분배합니다. 색상의 alpha와 Frame opacity를 각각 유지합니다. 파싱 실패 또는 Gradient Paint 적용 실패 시 첫 유효 color stop의 Solid Fill과 `GRADIENT_FALLBACK` Warning을 남깁니다. body / html의 최상위 Gradient와 장식된 Text의 배경도 보존합니다.
-- `background-image:url(...)`은 해당 Frame의 Image Fill로 변환합니다. 다중 배경은 첫 번째 URL 이미지와 첫 번째 Linear Gradient를 CSS 레이어 순서로 배치하고 배경색도 유지합니다. URL 레이어의 size / position / repeat과 이미지 캐시를 유지하며 cover / contain / center / no-repeat을 우선 지원합니다. Images를 꺼도 Linear Gradient는 유지됩니다.
+- `background-image:url(...)`은 해당 Frame의 Image Fill로 변환합니다. 다중 배경은 괄호·따옴표를 고려해 최상위 쉼표에서 분리하고 모든 URL / Linear Gradient를 CSS 순서대로 Fill 배열에 유지합니다. 첫 레이어가 위, 단색 배경이 맨 아래입니다. 각 URL의 size / position / repeat과 이미지 캐시를 유지하며 cover / contain / center / no-repeat을 우선 지원합니다. Images를 꺼도 모든 Linear Gradient는 유지됩니다. 실패한 Gradient는 해당 위치에서 Solid fallback으로 처리하며 다른 Fill과 내부 자식을 유지합니다. 미지원 레이어는 원본 CSS와 `BACKGROUND_LAYER` Warning을 남기고 해당 레이어만 생략합니다. 완전히 투명한 stop의 alpha를 보존하면서 주변 RGB를 사용해 검은 보간 가장자리를 피합니다. 기존 version-1 JSON의 단일 Gradient / Image 필드도 처리합니다.
 - Inline `<svg>`는 computed fill / stroke 등 스타일을 반영한 SVG를 `figma.createNodeFromSvg`로 전달하여 Vector를 유지합니다. 실패하면 placeholder Frame과 경고를 만들고 다른 요소를 계속 처리합니다.
+- Donut의 fill:none인 dashed circle은 cx / cy / r, dasharray / dashoffset / pathLength에 따른 실제 표시 구간을 명시적인 SVG Arc path로 변환해 importer의 dash 해석을 피합니다. 연속 구간과 원의 seam을 유지하고 stroke-width / linecap / opacity / 2D rotate를 보존합니다. 일반 Icon / Path / Rect / Circle / Line / Polyline은 기존 native Vector import 경로를 유지하며 raster Image로 바꾸지 않습니다. 변환 예외가 발생하면 원본 SVG stroke와 `SVG_DASH` Warning을 유지합니다. 길이가 0인 점선이나 매우 촘촘한 패턴은 원본 SVG 형태로 전달합니다.
 - CSS Variable은 최종 computed 값을 스타일에 적용하고 이름·값·scope를 JSON에 보관합니다. 실제 Figma Variable 생성은 후속 확장을 위한 범위입니다.
 - display:none / visibility:hidden 요소는 기본적으로 생략합니다. 복잡한 Grid와 줄바꿈 Flexbox는 경고와 함께 측정된 고정 좌표로 보존합니다.
 - 접근성용 숨김은 절대·고정 위치, 1px 이하 치수, 완전히 닫힌 clip / inset 및 overflow 또는 보조 spacing 조합으로 판단합니다. 크기·class 이름·aria-hidden만으로 제외하지 않습니다. 숨김 자식이 부모의 Text에 합쳐져 노출되지 않도록 하며, 포커스 후 실제로 보이는 요소는 유지합니다. Debug Mode에서만 `ACCESSIBILITY_HIDDEN` 기록을 남깁니다.
@@ -126,7 +129,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - JavaScript 실행 결과, interactive state, animation / transition, Shadow DOM / Web Components, canvas / video / iframe, complex transform / float / pseudo-element는 재현하지 않습니다. 일부는 경고와 빈 Frame으로 대체되거나 생략됩니다.
 - Grid span / 명시적 배치 / dense / 복잡한 track 함수와 `flex-wrap`은 editable fixed layout으로 보존합니다. 기본 Grid의 모든 Cell은 측정된 행 높이를 사용하므로 후속 편집 때 CSS의 자동 행 높이와 차이가 날 수 있습니다.
 - 복잡한 inline 줄바꿈 전체를 Auto Layout 엔진으로 재현하지 않습니다. 여러 줄과 서로 다른 간격은 측정된 Text / Frame 좌표를 사용합니다. 가상 리스트, 스크립트로 생성되는 DOM, form control의 내부 브라우저 렌더링은 완전히 재현하지 않습니다.
-- cardinal 방향 외의 Linear Gradient 각도, px stop / color hint / 두 위치 stop / 색상 보간 공간은 Solid fallback으로 단순화합니다. radial / conic / repeating gradient, 여러 URL·Gradient 전체 레이어, 반복 배경 / center 이외 배경 위치, list marker, writing-mode / RTL, space-around / evenly, baseline, 개별 align-self 정렬, 음수 margin, 서로 다른 border 색상은 생략하거나 단순화합니다. Figma API가 지원하지 않는 Frame shadow spread는 blur·offset을 유지하고 경고합니다.
+- cardinal 방향 외의 Linear Gradient 각도, px stop / color hint / 두 위치 stop / 색상 보간 공간은 Solid fallback으로 단순화합니다. radial / conic / repeating gradient, 반복 배경 / center 이외 배경 위치, list marker, writing-mode / RTL, space-around / evenly, baseline, 개별 align-self 정렬, 음수 margin, 서로 다른 border 색상은 생략하거나 단순화합니다. Figma API가 지원하지 않는 Frame shadow spread는 blur·offset을 유지하고 경고합니다.
 - 서로 다른 flex-grow 비율은 Figma Fill의 동일 분배와 차이가 있어 측정 크기로 고정하고 경고합니다. 복잡한 flow 자식 z-index와 CSS stacking context 전체는 완전히 재현하지 않습니다.
 - HTML 파일만으로 상대 경로 파일이나 로컬 폰트 파일을 읽을 수 없습니다. 이미지는 함께 선택할 수 있고, CSS는 인라인 또는 HTTPS URL을 사용하세요. HTTP와 기타 URL scheme은 외부 리소스로 허용하지 않습니다.
 - 원격 CSS·웹 폰트·이미지는 Figma 네트워크 정책, CORS, 로그인 여부에 따라 실패할 수 있습니다. 이미지 실패 시 placeholder, 스타일 실패 시 현재 렌더링된 스타일을 사용하고 경고합니다. 외부 리소스는 요청한 호스트로만 로딩하며 업로드 HTML/JSON을 서버에 전송하지 않습니다. manifest의 wildcard 네트워크 권한은 임의 호스트의 입력 리소스를 지원하기 위한 것입니다.
@@ -166,4 +169,6 @@ Gradient 검증은 요청한 4-stop 배경, CSS 방향과 Figma transform의 시
 
 Fixed 검증은 긴 문서의 하단 바 (`1440×900`에서 `240,824,1200,76`), 사용자 지정·모바일 viewport, percentage / calc / margin inset, Hug 폰트 치수 변경, 양쪽 inset의 auto 크기, clipped 부모에서 분리, 내부 Absolute·Form·Grid 유지, 중첩 fixed 레이어 순서, 옵션 OFF 및 스크롤 고정 API 실패를 검사합니다. 추가 검증은 transform / filter / contain 부모에서 문서 기준 rect가 생성되는 실패를 재현하고, 1500 / 1800 / 3600px 문서·좁은 부모에서도 viewport 좌표·크기를 유지하는지 검사합니다. 네 preset의 높이, 직접 입력 왕복, font unit / min-max, 기존 version-1 JSON 호환, Debug 좌표와 메시지 검증도 포함합니다. 실제 iframe UI에서 동일 HTML을 viewport 크기와 preset을 바꾸며 연속 변환하는 흐름도 확인합니다. 테스트 HTML은 `test/fixed-position-regression.html`입니다.
 
-전체 64개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+Dashboard 검증은 원본 Donut과 직렬화한 Arc SVG의 Chromium 픽셀 비교, 양·음 dashoffset / pathLength / full circle / seam / CSS 회전 기준, 일반 SVG 도형·Line dashoffset 및 Vector import 전달을 확인합니다. 세 Grid Line은 Paint matrix·stop을 별도 SVG로 표현해 원본 CSS 스크린샷과 픽셀 비교합니다. 다중 URL·Gradient 순서 / alpha / 이미지 캐시·옵션, 한 레이어의 파싱·Paint·이미지 실패 후 나머지 유지, 합성 Text·Grid Fill 중복 방지, wrapper / html / body / 기존 JSON 및 같은 Dashboard 연속 변환도 검사합니다.
+
+전체 73개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

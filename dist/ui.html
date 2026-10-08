@@ -328,7 +328,7 @@
           grow: 0,
           zIndex: null
         },
-        style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, shadow: void 0, clipsContent: false, borderWidths: { top: 0, right: 0, bottom: 0, left: 0 }, radii: [0, 0, 0, 0] },
+        style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, backgroundLayers: void 0, shadow: void 0, clipsContent: false, borderWidths: { top: 0, right: 0, bottom: 0, left: 0 }, radii: [0, 0, 0, 0] },
         children: []
       };
       row.children = columns.map((width, index) => {
@@ -377,7 +377,7 @@
   function eligible(node) {
     const child = node.children[0];
     if (!child || node.children.length !== 1 || node.type !== "FRAME" || node.grid || !node.source?.styleless || node.source.id || node.source.classNames.length || node.source.synthetic) return false;
-    if (node.layout.direction !== "NONE" || node.layout.position !== "static" || child.layout.absolute || node.style.clipsContent || node.style.opacity !== 1 || node.style.background?.a || node.style.backgroundImage || node.style.backgroundGradient || node.style.shadow) return false;
+    if (node.layout.direction !== "NONE" || node.layout.position !== "static" || child.layout.absolute || node.style.clipsContent || node.style.opacity !== 1 || node.style.background?.a || node.style.backgroundImage || node.style.backgroundGradient || node.style.backgroundLayers?.length || node.style.shadow) return false;
     if (node.layout.grow || node.layout.order || node.layout.zIndex !== null || node.layout.basis !== "auto") return false;
     if ((node.size.minWidth || 0) > 0 || (node.size.minHeight || 0) > 0 || node.size.maxWidth != null || node.size.maxHeight != null) return false;
     if ([node.size.authoredWidth, node.size.authoredHeight, child.size.authoredWidth, child.size.authoredHeight].some((value) => value !== "auto")) return false;
@@ -386,13 +386,102 @@
   }
 
   // src/svg.ts
-  function serializeSVG(element) {
+  function circleDashPath(circle, css) {
+    if (css.fill !== "none" || css.stroke === "none" || css.strokeDasharray === "none") return null;
+    const cx = circle.cx.baseVal.value, cy = circle.cy.baseVal.value, r = circle.r.baseVal.value;
+    if (!Number.isFinite(r) || r <= 0) return null;
+    const circumference = Math.PI * 2 * r;
+    const svg = circle.ownerSVGElement;
+    const box = svg.viewBox.baseVal;
+    const diagonal = Math.hypot(box.width || svg.width.baseVal.value, box.height || svg.height.baseVal.value) / Math.SQRT2;
+    const length = (token) => {
+      const match = token.match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(px|%)?$/);
+      return match ? Number(match[1]) * (match[2] === "%" ? diagonal / 100 : 1) : NaN;
+    };
+    let pattern = css.strokeDasharray.split(/[\s,]+/).filter(Boolean).map(length);
+    const offset = length(css.strokeDashoffset || "0");
+    if (!pattern.length || pattern.some((value) => !Number.isFinite(value) || value < 0) || !Number.isFinite(offset)) return null;
+    if (pattern.length % 2) pattern = [...pattern, ...pattern];
+    const authoredLength = circle.hasAttribute("pathLength") ? circle.pathLength.baseVal : circumference;
+    if (authoredLength <= 0) return null;
+    const scale = circumference / authoredLength;
+    pattern = pattern.map((value) => value * scale);
+    const period = pattern.reduce((sum, value) => sum + value, 0);
+    if (period <= 0) return null;
+    const segments = [];
+    if (pattern.every((value, index) => index % 2 === 0 || value === 0)) segments.push([0, circumference]);
+    else {
+      if (pattern.some((value) => value === 0)) return null;
+      let position = -((offset * scale % period + period) % period), index = 0;
+      while (position < circumference) {
+        if (index >= 512) return null;
+        const end = position + pattern[index % pattern.length];
+        if (index % 2 === 0 && end > 0) segments.push([Math.max(0, position), Math.min(circumference, end)]);
+        position = end;
+        index++;
+      }
+    }
+    if (segments.length > 1 && segments[0][0] === 0 && segments[segments.length - 1][1] === circumference) {
+      const first = segments.shift(), last = segments.pop();
+      segments.push([last[0], circumference + first[1]]);
+    }
+    const point = (distance) => `${cx + r * Math.cos(distance / r)} ${cy + r * Math.sin(distance / r)}`;
+    return segments.map(([start, end]) => {
+      const split = end - start >= circumference - 1e-8 ? [start + circumference / 2, end] : [end];
+      let previous = start;
+      return `M ${point(start)} ` + split.map((next) => {
+        const command = `A ${r} ${r} 0 ${next - previous > Math.PI * r ? 1 : 0} 1 ${point(next)}`;
+        previous = next;
+        return command;
+      }).join(" ");
+    }).join(" ");
+  }
+  function normalizeDashedCircle(original, copy, css) {
+    const d = circleDashPath(original, css);
+    if (d === null) return;
+    if (!d) {
+      copy.remove();
+      return;
+    }
+    const path = original.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+    for (const attribute of [...copy.attributes]) path.setAttribute(attribute.name, attribute.value);
+    for (const key of ["cx", "cy", "r", "pathLength"]) path.removeAttribute(key);
+    path.setAttribute("d", d);
+    path.setAttribute("stroke-dasharray", "none");
+    path.setAttribute("stroke-dashoffset", "0");
+    path.style.setProperty("stroke-dasharray", "none", "important");
+    path.style.setProperty("stroke-dashoffset", "0", "important");
+    if (css.transform !== "none") {
+      const matrix = new DOMMatrix(css.transform);
+      if (!matrix.is2D) return;
+      let [ox, oy] = css.transformOrigin.split(/\s+/).map((value) => parseFloat(value));
+      if (css.transformBox === "fill-box" || css.transformBox === "stroke-box") {
+        const box = original.getBBox();
+        ox += box.x;
+        oy += box.y;
+        if (css.transformBox === "stroke-box") {
+          const inset = parseFloat(css.strokeWidth) / 2;
+          ox -= inset;
+          oy -= inset;
+        }
+      }
+      const transformed = new DOMMatrix().translate(ox || 0, oy || 0).multiply(matrix).translate(-(ox || 0), -(oy || 0));
+      const values = [transformed.a, transformed.b, transformed.c, transformed.d, transformed.e, transformed.f];
+      path.setAttribute("transform", `matrix(${values.join(" ")})`);
+      path.style.setProperty("transform", `matrix(${values.join(",")})`, "important");
+      path.style.setProperty("transform-origin", "0 0", "important");
+      path.style.setProperty("transform-box", "view-box", "important");
+    }
+    copy.replaceWith(path);
+  }
+  function serializeSVG(element, warn = () => {
+  }) {
     const view = element.ownerDocument.defaultView;
     const originals = [element, ...element.querySelectorAll("*")];
     if (originals.length > 1e3) throw new Error("SVG\uC758 \uB0B4\uBD80 \uC694\uC18C\uAC00 1,000\uAC1C \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
     const clone = element.cloneNode(true);
     const copies = [clone, ...clone.querySelectorAll("*")];
-    const properties = ["fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "opacity", "color", "font-family", "font-size", "font-weight", "stop-color", "stop-opacity", "clip-rule", "clip-path", "mask"];
+    const properties = ["fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset", "opacity", "color", "font-family", "font-size", "font-weight", "stop-color", "stop-opacity", "clip-rule", "clip-path", "mask"];
     originals.forEach((original, index) => {
       const copy = copies[index];
       if (["script", "foreignObject", "iframe", "animate", "animateTransform", "set"].includes(copy.localName)) {
@@ -414,6 +503,13 @@
       }
       copy.removeAttribute("class");
       copy.removeAttribute("style");
+      if (original.localName === "circle" && css.strokeDasharray !== "none") {
+        try {
+          normalizeDashedCircle(original, copy, css);
+        } catch {
+          warn("Donut stroke\uB97C \uBA85\uC2DC\uC801\uC778 Arc\uB85C \uBCC0\uD658\uD558\uC9C0 \uBABB\uD574 \uC6D0\uBCF8 SVG stroke \uC18D\uC131\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4.");
+        }
+      }
     });
     const rect = element.getBoundingClientRect();
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
@@ -471,7 +567,10 @@
       const node = stack.pop();
       stack.push(...node.children);
       if (node.image) requests.push({ image: node.image, name: node.name });
-      if (node.style.backgroundImage && options.styles) requests.push({ image: node.style.backgroundImage, name: node.name });
+      if (options.styles) {
+        const backgrounds = node.style.backgroundLayers ? node.style.backgroundLayers.flatMap((layer) => layer.type === "IMAGE" ? [layer.image] : []) : node.style.backgroundImage ? [node.style.backgroundImage] : [];
+        for (const image of backgrounds) requests.push({ image, name: node.name });
+      }
     }
     const cache = /* @__PURE__ */ new Map();
     const existing = /* @__PURE__ */ new Map();
@@ -875,24 +974,28 @@
     function readBackground(node, style) {
       if (style.backgroundImage === "none") return;
       const layers = splitCSSList(style.backgroundImage);
-      const urls = layers.map((layer) => layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1]);
-      const imageIndex = urls.findIndex((url) => url !== void 0);
-      const gradientIndex = layers.findIndex((layer) => /^linear-gradient\(/i.test(layer));
-      if (imageIndex >= 0) {
-        const layerValue = (value) => {
-          const values = splitCSSList(value);
-          return values[imageIndex % values.length];
-        };
-        node.style.backgroundImage = { key: "", src: urls[imageIndex], alt: "background", fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat), layerIndex: imageIndex };
-      }
-      if (gradientIndex >= 0) {
-        const result = parseLinearGradient(layers[gradientIndex]);
-        if (result.gradient) node.style.backgroundGradient = { ...result.gradient, layerIndex: gradientIndex };
-        else if (result.fallback) node.style.background = result.fallback;
-        if (result.warning) warn("GRADIENT_FALLBACK", node.name, result.warning);
-      }
-      if (layers.some((layer, index) => !urls[index] && index !== gradientIndex && layer !== "none")) warn("BACKGROUND_IMAGE", node.name, "\uBBF8\uC9C0\uC6D0 \uBC30\uACBD \uB808\uC774\uC5B4\uB294 \uC0DD\uB7B5\uD558\uACE0 \uC9C0\uC6D0\uB418\uB294 \uBC30\uACBD Fill\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4.");
-      if (layers.length > 1) warn("BACKGROUND_LAYERS", node.name, "\uB2E4\uC911 \uBC30\uACBD\uC740 \uCCAB \uBC88\uC9F8 URL \uC774\uBBF8\uC9C0\uC640 \uCCAB \uBC88\uC9F8 Linear Gradient \uBC0F \uBC30\uACBD\uC0C9\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4.");
+      node.style.backgroundLayers = [];
+      layers.forEach((layer, index) => {
+        var _a, _b;
+        const url = layer.match(/^url\(["']?(.*?)["']?\)$/)?.[1];
+        if (url !== void 0) {
+          const layerValue = (value) => {
+            const values = splitCSSList(value);
+            return values[index % values.length];
+          };
+          const image = { key: "", src: url, alt: "background", fit: layerValue(style.backgroundSize), position: layerValue(style.backgroundPosition), repeat: layerValue(style.backgroundRepeat), layerIndex: index };
+          node.style.backgroundLayers.push({ type: "IMAGE", image });
+          (_a = node.style).backgroundImage ?? (_a.backgroundImage = image);
+        } else if (/^linear-gradient\(/i.test(layer)) {
+          const result = parseLinearGradient(layer);
+          if (result.gradient) {
+            const gradient = { ...result.gradient, layerIndex: index };
+            node.style.backgroundLayers.push({ type: "GRADIENT", gradient });
+            (_b = node.style).backgroundGradient ?? (_b.backgroundGradient = gradient);
+          } else if (result.fallback) node.style.backgroundLayers.push({ type: "SOLID", color: result.fallback, layerIndex: index });
+          if (result.warning) warn("GRADIENT_FALLBACK", node.name, `Background Layer ${index + 1}: ${layer.slice(0, 200)} \u2014 ${result.warning}`);
+        } else if (layer !== "none") warn("BACKGROUND_LAYER", node.name, `Unsupported Background Layer ${index + 1}: ${layer.slice(0, 240)}`);
+      });
     }
     function parse(el, depth) {
       if (OMIT_TAGS.has(el.localName)) return [];
@@ -972,7 +1075,7 @@
             type: "TEXT",
             name: `${name} / text`,
             rect: bounds(range.getBoundingClientRect()),
-            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, shadow: void 0, borderWidths: zero(), radii: [0, 0, 0, 0] },
+            style: { ...node.style, opacity: 1, background: null, backgroundImage: void 0, backgroundGradient: void 0, backgroundLayers: void 0, shadow: void 0, borderWidths: zero(), radii: [0, 0, 0, 0] },
             layout: { ...node.layout, direction: "NONE", padding: zero(), margin: zero(), absolute: false },
             children: []
           };
@@ -1014,7 +1117,7 @@
         } else if (content.text) warn("TREE_LIMIT", name, "\uB178\uB4DC \uC218 \uB610\uB294 \uC911\uCCA9 \uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C control \uD14D\uC2A4\uD2B8\uB97C \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
       } else if (node.type === "SVG") {
         try {
-          node.svg = serializeSVG(el);
+          node.svg = serializeSVG(el, (message) => warn("SVG_DASH", name, message));
         } catch (error) {
           warn("SVG_SERIALIZE", name, errorMessage(error));
         }
@@ -1080,8 +1183,8 @@
     if (!body) throw new Error("\uBCC0\uD658\uD560 \uC218 \uC788\uB294 \uD45C\uC2DC \uC694\uC18C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
     const bodyStyle = view.getComputedStyle(doc.body);
     const htmlStyle = computed(doc.documentElement);
-    if (!body.style.background?.a && bodyStyle.backgroundImage === "none" && /linear-gradient\(/i.test(htmlStyle.backgroundImage)) readBackground(body, htmlStyle);
-    const collapse = body.children.length === 1 && body.children[0].type === "FRAME" && !body.children[0].layout.absolute && Object.values(body.children[0].layout.margin).every((v) => v === 0) && bodyStyle.backgroundColor === "rgba(0, 0, 0, 0)" && bodyStyle.display === "block" && Object.values(body.layout.padding).every((v) => v === 0) && Object.values(body.layout.margin).every((v) => v === 0) && Object.values(body.style.borderWidths).every((v) => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.backgroundGradient && !body.style.background?.a && !body.style.clipsContent;
+    if (!body.style.background?.a && bodyStyle.backgroundImage === "none" && htmlStyle.backgroundImage !== "none") readBackground(body, htmlStyle);
+    const collapse = body.children.length === 1 && body.children[0].type === "FRAME" && !body.children[0].layout.absolute && Object.values(body.children[0].layout.margin).every((v) => v === 0) && bodyStyle.backgroundColor === "rgba(0, 0, 0, 0)" && bodyStyle.display === "block" && Object.values(body.layout.padding).every((v) => v === 0) && Object.values(body.layout.margin).every((v) => v === 0) && Object.values(body.style.borderWidths).every((v) => v === 0) && body.style.opacity === 1 && !body.style.shadow && !body.style.backgroundImage && !body.style.backgroundGradient && !body.style.backgroundLayers?.length && !body.style.background?.a && !body.style.clipsContent;
     const root = collapse ? body.children[0] : body;
     if (!collapse) {
       root.rect.x = 0;

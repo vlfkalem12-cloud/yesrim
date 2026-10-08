@@ -44,7 +44,7 @@ export function buildGridRows(node: ParsedNode): void {
       size: { width: rowWidth, height: rowHeight, authoredWidth: '100%', authoredHeight: 'auto', widthMode: 'FILL', heightMode: 'FIXED' },
       layout: { ...node.layout, display: 'flex', direction: 'HORIZONTAL', gap: columnGap, reverse: false, justify: 'MIN', align: 'MIN',
         padding: { top: 0, right: 0, bottom: 0, left: 0 }, margin: { top: 0, right: 0, bottom: 0, left: 0 }, absolute: false, grow: 0, zIndex: null },
-      style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, shadow: undefined, clipsContent: false, borderWidths: { top: 0, right: 0, bottom: 0, left: 0 }, radii: [0, 0, 0, 0] }, children: [] };
+      style: { ...node.style, opacity: 1, background: null, backgroundImage: undefined, backgroundGradient: undefined, backgroundLayers: undefined, shadow: undefined, clipsContent: false, borderWidths: { top: 0, right: 0, bottom: 0, left: 0 }, radii: [0, 0, 0, 0] }, children: [] };
     row.children = columns.map((width, index) => {
       const child = items[index];
       const cell: ParsedNode = { ...row, name: child ? `${child.name} / cell` : `${node.name} / empty cell ${index + 1}`,

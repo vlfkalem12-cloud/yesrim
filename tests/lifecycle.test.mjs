@@ -140,6 +140,29 @@ test('Repeated fixed-position conversions use each viewport selected in the actu
   } finally { await session.page.close(); }
 });
 
+test('Dashboard HTML converts repeatedly with one Donut arc, all gradient layers and unchanged editable layout', async () => {
+  const session = await openSession(), content = await readFile('test/dashboard-rendering-regression.html', 'utf8');
+  const snapshot = node => ({ type: node.type, name: node.name, text: node.characters, width: node.width, height: node.height, x: node.x, y: node.y,
+    fills: node.fills, layout: node.layoutMode, gap: node.itemSpacing, children: node.children.map(snapshot) });
+  try {
+    let original;
+    for (let index = 0; index < 2; index++) {
+      await choose(session, 'dashboard.html', content); await convertOnce(session); await assertUnlocked(session, 'success');
+      const root = session.mock.figma.currentPage.children[index];
+      const nodes = node => [node, ...node.children.flatMap(nodes)];
+      const chart = nodes(root).find(node => node.name === 'chart-wrap');
+      assert.deepEqual(Array.from(chart.fills, paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
+      const donut = session.mock.svgImports[index * 3];
+      assert.equal((donut.match(/\bM /g) || []).length, 1); assert.match(donut, /stroke-dasharray="none"/);
+      const current = snapshot(root);
+      if (index === 0) original = current;
+      else assert.deepEqual(current, original);
+    }
+    assert.equal(session.mock.svgImports.length, 6);
+    assert.deepEqual(session.mock.svgImports.slice(0, 3), session.mock.svgImports.slice(3));
+  } finally { await session.page.close(); }
+});
+
 test('Viewport presets include height, round-trip custom dimensions and anchor fixed layers independently of the document', async () => {
   const session = await openSession();
   const content = (await readFile('test/fixed-position-regression.html', 'utf8')).replace('#clipped-parent { position: relative;', '#clipped-parent { transform: translateZ(0); position: relative;');
