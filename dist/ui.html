@@ -51,6 +51,15 @@
     .result-info dd { margin: 0; overflow-wrap: anywhere; }
     #report-error { color: var(--figma-color-text-danger, #b13247); overflow-wrap: anywhere; }
     #debug-warnings { max-height: 160px; overflow-y: auto; padding-left: 18px; overflow-wrap: anywhere; font-size: 11px; }
+    #file-list-section { margin-top: 14px; }
+    #file-list { list-style: none; padding: 0; margin: 8px 0; max-height: 240px; overflow-y: auto; }
+    #file-list li { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 9px 0; border-bottom: 1px solid var(--figma-color-border, #e8e8ef); }
+    #file-list strong { grid-column: 1 / -1; overflow-wrap: anywhere; font-weight: 600; }
+    #batch-summary { line-height: 1.7; margin-top: 14px; }
+    .file-viewport { grid-column: 1 / -1; margin: 2px 0; }
+    .file-viewport summary { font-weight: 400; font-size: 11px; }
+    .file-viewport .dimensions { margin-top: 8px; }
+    #file-viewport-error { color: var(--figma-color-text-danger, #b13247); }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -61,9 +70,11 @@
   <label class="dropzone" id="dropzone" tabindex="0" role="button" for="file" aria-label="HTML 파일 업로드">
     <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M14 18V3m0 0L9 8m5-5 5 5M5 17v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <strong id="filename">HTML 파일 업로드</strong>
-    <span class="muted" id="fileinfo">드래그하거나 클릭하여 선택 · .html · 최대 5MB</span>
+    <span class="muted" id="fileinfo">드래그하거나 클릭하여 선택 · .html / .htm · 최대 10개 · 파일당 5MB</span>
   </label>
-  <input class="sr-only" type="file" id="file" accept=".html,.htm,text/html" aria-label="HTML 파일 선택">
+  <input class="sr-only" type="file" id="file" multiple accept=".html,.htm,text/html" aria-label="HTML 파일 선택">
+  <section id="file-list-section" hidden aria-label="선택한 파일"><strong id="file-list-title"></strong><ol id="file-list"></ol></section>
+  <p id="file-viewport-error" role="alert" hidden>파일별 Viewport도 1~10,000px의 정수로 입력하세요. 빈 값은 공통 설정을 사용합니다.</p>
   <div class="asset-picker"><label class="secondary" for="asset-files">이미지 파일 추가 (선택)</label><span class="muted" id="asset-count">상대 경로 이미지용</span></div>
   <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">
   <div class="field">
@@ -87,6 +98,7 @@
   <button id="convert" type="button" disabled>Figma로 변환</button>
   <div class="actions"><span class="muted">HTML 스크립트는 실행하지 않습니다.</span><button class="secondary" id="cancel" hidden type="button">취소</button><button class="secondary" id="json" hidden type="button">JSON 저장</button></div>
   <p id="status" role="status" aria-live="polite"></p>
+  <p id="batch-summary" hidden aria-live="polite"></p>
   <section id="report" hidden aria-label="변환 결과">
     <dl class="result-info"><dt>파일명</dt><dd id="report-file"></dd><dt>결과</dt><dd id="report-result"></dd></dl>
     <p id="report-error" hidden></p>
@@ -312,11 +324,11 @@
     const absolute = node.children.filter((child) => child.layout.absolute);
     const rows = [];
     for (let start = 0; start < flow.length; start += columns.length) {
-      const items = flow.slice(start, start + columns.length);
-      const top = Math.min(...items.map((child) => child.rect.y - Math.max(0, child.layout.margin.top)));
-      const rowHeight = Math.max(...items.map((child) => child.rect.height + Math.max(0, child.layout.margin.top) + Math.max(0, child.layout.margin.bottom)));
+      const items2 = flow.slice(start, start + columns.length);
+      const top = Math.min(...items2.map((child) => child.rect.y - Math.max(0, child.layout.margin.top)));
+      const rowHeight = Math.max(...items2.map((child) => child.rect.height + Math.max(0, child.layout.margin.top) + Math.max(0, child.layout.margin.bottom)));
       const rowWidth = columns.reduce((a, b) => a + b, 0) + columnGap * (columns.length - 1);
-      const first = items[0];
+      const first = items2[0];
       const row = {
         ...node,
         name: `${node.name} / row ${rows.length + 1}`,
@@ -343,7 +355,7 @@
         children: []
       };
       row.children = columns.map((width, index) => {
-        const child = items[index];
+        const child = items2[index];
         const cell = {
           ...row,
           name: child ? `${child.name} / cell` : `${node.name} / empty cell ${index + 1}`,
@@ -1011,7 +1023,7 @@
     const rootStyle = context.computed(element);
     if (rootStyle.display.includes("flex") || rootStyle.display.includes("grid") || ["svg", "img", "input", "textarea", "select"].includes(element.localName)) return null;
     const base = textStyle(context.readStyle(rootStyle)), baseKey = JSON.stringify(base);
-    const items = [];
+    const items2 = [];
     let sources = [];
     const preserve = ["pre", "pre-wrap", "break-spaces"].includes(rootStyle.whiteSpace);
     const flush = () => {
@@ -1069,7 +1081,7 @@
         offset = end;
       }
       const merge = sources.some((source) => source.inline) && points.length > 1;
-      items.push({ type: "TEXT", run: { text, ranges, rect: { x: box.x, y: box.y, width: box.width, height: box.height }, firstX: firstRect?.x ?? box.x, singleLine: isSingleTextLine(range), merge } });
+      items2.push({ type: "TEXT", run: { text, ranges, rect: { x: box.x, y: box.y, width: box.width, height: box.height }, firstX: firstRect?.x ?? box.x, singleLine: isSingleTextLine(range), merge } });
       sources = [];
     };
     const collect = (parent2, inline, decoration = "") => {
@@ -1083,14 +1095,14 @@
           else if (eligible2(childElement, context) && context.computed(childElement).whiteSpace === rootStyle.whiteSpace) collect(childElement, true, parsedStyle.textDecoration);
           else {
             flush();
-            items.push({ type: "ELEMENT", element: childElement });
+            items2.push({ type: "ELEMENT", element: childElement });
           }
         }
       }
     };
     collect(element, false);
     flush();
-    return items.some((item) => item.type === "TEXT" && item.run.merge) ? items : null;
+    return items2.some((item) => item.type === "TEXT" && item.run.merge) ? items2 : null;
   }
   function richTextNode(run, parent2, style, wholeSentence) {
     const available = Math.max(0.01, parent2.size.width - parent2.layout.padding.left - parent2.layout.padding.right - parent2.style.borderWidths.left - parent2.style.borderWidths.right);
@@ -1490,8 +1502,8 @@
   var zero2 = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
   var layerName = (el) => el.id || el.getAttribute("class")?.trim().split(/\s+/)[0] || el.tagName.toLowerCase();
   var selector = (el) => `${el.localName}${el.id ? `#${el.id}` : ""}${[...el.classList].map((name) => `.${name}`).join("")}`;
-  function sanitizeHTML(html2, warnings, localAssets2) {
-    const doc = new DOMParser().parseFromString(html2, "text/html");
+  function sanitizeHTML(html, warnings, localAssets2) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
     const warn = warningCollector(warnings, 500);
     const scripts = doc.querySelectorAll("script");
     if (scripts.length) warn("SCRIPT_IGNORED", "document", `${scripts.length}\uAC1C\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB294 \uC2E4\uD589\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.`);
@@ -1542,7 +1554,7 @@
     doc.head.append(stable);
     return "<!doctype html>" + doc.documentElement.outerHTML;
   }
-  async function renderHTML(html2, viewport2, viewportHeight2, host, localAssets2 = {}) {
+  async function renderHTML(html, viewport2, viewportHeight2, host, localAssets2 = {}) {
     if (!isViewportDimension(viewport2) || !isViewportDimension(viewportHeight2)) throw new Error("Viewport \uB108\uBE44\uC640 \uB192\uC774\uB294 1~10,000px\uC758 \uC815\uC218\uB85C \uC785\uB825\uD558\uC138\uC694.");
     const warnings = [];
     const iframe = document.createElement("iframe");
@@ -1550,7 +1562,7 @@
     iframe.setAttribute("sandbox", "allow-same-origin");
     iframe.setAttribute("aria-hidden", "true");
     Object.assign(iframe.style, { position: "absolute", left: "-120000px", top: "0", width: `${viewport2}px`, height: `${viewportHeight2}px`, border: "0", pointerEvents: "none" });
-    iframe.srcdoc = sanitizeHTML(html2, warnings, localAssets2);
+    iframe.srcdoc = sanitizeHTML(html, warnings, localAssets2);
     const loaded = new Promise((resolve) => iframe.addEventListener("load", () => resolve(), { once: true }));
     host.append(iframe);
     const failedStylesheets = /* @__PURE__ */ new Set();
@@ -2009,13 +2021,26 @@
     if (transform === "capitalize") return text.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
     return text;
   }
-  async function parseHTML(html2, options, host, localAssets2 = {}) {
-    const rendered = await renderHTML(html2, options.viewport, options.viewportHeight, host, localAssets2);
+  async function parseHTML(html, options, host, localAssets2 = {}) {
+    const rendered = await renderHTML(html, options.viewport, options.viewportHeight, host, localAssets2);
     try {
       return await parseRenderedHTML(rendered, options);
     } finally {
       rendered.dispose();
     }
+  }
+
+  // src/batch.ts
+  var MAX_HTML_FILES = 10;
+  function batchSummary(total, outcomes, cancelled2 = false) {
+    return {
+      total,
+      success: outcomes.filter((item) => item.status === "SUCCESS").length,
+      warnings: outcomes.filter((item) => item.status === "SUCCESS_WITH_WARNINGS").length,
+      errors: outcomes.filter((item) => item.status === "ERROR").length,
+      waiting: total - outcomes.length,
+      cancelled: cancelled2
+    };
   }
 
   // src/ui.ts
@@ -2040,13 +2065,19 @@
   var debug = get("debug");
   var assetFiles = get("asset-files");
   var localAssets = {};
-  var html = null;
+  var items = [];
+  var batchId = null;
+  var currentItem = null;
+  var parsedItemId = null;
+  var pendingFile = null;
+  var pendingBatch = null;
+  var idSequence = 0;
+  var newId = () => `${Date.now()}-${++idSequence}-${Math.random().toString(36).slice(2)}`;
   var parsed = null;
   var conversionStatus = "idle";
   var readingFiles = false;
   var cancelled = false;
   var requestId = null;
-  var selectedFileName = "";
   var send = (message) => parent.postMessage({ pluginMessage: message }, "*");
   var isBusy = () => conversionStatus === "converting" || readingFiles;
   function status(message, state = conversionStatus) {
@@ -2061,8 +2092,11 @@
     viewportWidth.setAttribute("aria-invalid", String(!widthValid));
     viewportHeight.setAttribute("aria-invalid", String(!heightValid));
     get("viewport-error").hidden = widthValid && heightValid;
-    convert.disabled = isBusy() || html === null || !widthValid || !heightValid;
-    return widthValid && heightValid;
+    const filesValid = items.every((item) => [item.viewport?.width, item.viewport?.height].every((value) => value === void 0 || isViewportDimension(value)));
+    get("file-viewport-error").hidden = filesValid;
+    for (const field of document.querySelectorAll(".file-viewport input")) field.placeholder = field.dataset.dimension === "width" ? viewportWidth.value : viewportHeight.value;
+    convert.disabled = isBusy() || items.length === 0 || !widthValid || !heightValid || !filesValid;
+    return widthValid && heightValid && filesValid;
   }
   viewport.addEventListener("change", () => {
     const preset = VIEWPORT_PRESETS[viewport.value];
@@ -2082,25 +2116,124 @@
     input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
     images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
     dropzone.setAttribute("aria-disabled", String(value));
+    for (const field of document.querySelectorAll(".file-viewport input")) field.disabled = value;
     cancel.hidden = !value;
     if (!value) cancel.disabled = false;
     convert.textContent = conversionStatus === "converting" ? "\uBCC0\uD658 \uC911\u2026" : "Figma\uB85C \uBCC0\uD658";
   }
-  function finishConversion(state, message, report, outcome) {
+  function renderItems() {
+    get("file-list-section").hidden = items.length === 0;
+    get("file-list-title").textContent = `\uC120\uD0DD\uD55C \uD30C\uC77C (${items.length}/${MAX_HTML_FILES})`;
+    const list = get("file-list");
+    list.replaceChildren();
+    const labels = { WAITING: "\uB300\uAE30", CONVERTING: "\uBCC0\uD658 \uC911", SUCCESS: "\uBCC0\uD658 \uC644\uB8CC", SUCCESS_WITH_WARNINGS: "\uACBD\uACE0\uC640 \uD568\uAED8 \uBCC0\uD658 \uC644\uB8CC", ERROR: "\uBCC0\uD658 \uC2E4\uD328" };
+    for (const item of items) {
+      const row = document.createElement("li");
+      row.dataset.itemId = item.id;
+      row.dataset.state = item.state;
+      const name = document.createElement("strong");
+      name.textContent = item.file.name;
+      row.append(name);
+      const state = document.createElement("span");
+      state.className = "muted";
+      state.textContent = `${labels[item.state]}${item.outcome && item.state !== "ERROR" ? ` \xB7 \uACBD\uACE0 ${item.outcome.warningCount}\uAC74` : ""}`;
+      row.append(state);
+      if (items.length > 1) {
+        const dimensions = document.createElement("details");
+        dimensions.className = "file-viewport";
+        const summary = document.createElement("summary");
+        summary.textContent = item.viewport && Object.values(item.viewport).some((value) => value !== void 0) ? `Viewport: ${item.viewport.width ?? viewportWidth.value} \xD7 ${item.viewport.height ?? viewportHeight.value}` : "Viewport \uC9C0\uC815 (\uAE30\uBCF8: \uACF5\uD1B5 \uC124\uC815)";
+        dimensions.append(summary);
+        const fields = document.createElement("div");
+        fields.className = "dimensions";
+        for (const [dimension, label] of [["width", "\uB108\uBE44"], ["height", "\uB192\uC774"]]) {
+          const wrapper = document.createElement("label");
+          wrapper.className = "dimension";
+          wrapper.textContent = `${label} (px)`;
+          const field = document.createElement("input");
+          field.type = "number";
+          field.min = "1";
+          field.max = "10000";
+          field.step = "1";
+          field.dataset.dimension = dimension;
+          field.setAttribute("aria-label", `${item.file.name} ${label}`);
+          field.setAttribute("aria-describedby", "file-viewport-error");
+          field.value = item.viewport?.[dimension] === void 0 ? "" : String(item.viewport[dimension]);
+          field.placeholder = dimension === "width" ? viewportWidth.value : viewportHeight.value;
+          field.disabled = isBusy();
+          field.oninput = () => {
+            item.viewport || (item.viewport = {});
+            item.viewport[dimension] = field.value === "" && !field.validity.badInput ? void 0 : field.valueAsNumber;
+            field.setAttribute("aria-invalid", String(item.viewport[dimension] !== void 0 && !isViewportDimension(item.viewport[dimension])));
+            summary.textContent = `Viewport: ${item.viewport.width ?? viewportWidth.value} \xD7 ${item.viewport.height ?? viewportHeight.value}`;
+            validateViewport();
+          };
+          wrapper.append(field);
+          fields.append(wrapper);
+        }
+        dimensions.append(fields);
+        row.append(dimensions);
+      }
+      if (!isBusy() && items.every((entry) => entry.state === "WAITING")) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary remove-file";
+        remove.textContent = "\uC81C\uAC70";
+        remove.setAttribute("aria-label", `${item.file.name} \uC81C\uAC70`);
+        remove.onclick = () => {
+          if (isBusy()) return;
+          items = items.filter((entry) => entry.id !== item.id);
+          updateSelectionLabel();
+          renderItems();
+          renderControls();
+        };
+        row.append(remove);
+      }
+      if (item.outcome) {
+        const detail = document.createElement("button");
+        detail.type = "button";
+        detail.className = "secondary file-detail";
+        detail.textContent = item.state === "ERROR" ? "\uC624\uB958 \uC0C1\uC138 \uBCF4\uAE30" : "\uC0C1\uC138 \uB0B4\uC6A9 \uBCF4\uAE30";
+        detail.disabled = isBusy();
+        detail.onclick = () => {
+          displayReport(item);
+          json.hidden = !parsed || parsedItemId !== item.id;
+        };
+        row.append(detail);
+      }
+      list.append(row);
+    }
+  }
+  function updateSelectionLabel() {
+    get("filename").textContent = items.length === 1 ? items[0].file.name : items.length ? `HTML \uD30C\uC77C ${items.length}\uAC1C \uC120\uD0DD` : "HTML \uD30C\uC77C \uC5C5\uB85C\uB4DC";
+    get("fileinfo").textContent = items.length === 1 ? `${(items[0].file.size / 1024).toFixed(1)} KB \xB7 \uB2E4\uB978 \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uB824\uBA74 \uD074\uB9AD` : "\uB4DC\uB798\uADF8\uD558\uAC70\uB098 \uD074\uB9AD\uD558\uC5EC \uC120\uD0DD \xB7 .html / .htm \xB7 \uCD5C\uB300 10\uAC1C \xB7 \uD30C\uC77C\uB2F9 5MB";
+  }
+  function displayReport(item) {
+    if (!item.outcome) return;
+    try {
+      showReport(item.report, item.outcome);
+    } catch (error) {
+      get("report").hidden = true;
+      console.warn("Conversion report display failed", error);
+      status(`${get("status").textContent} \uBCF4\uACE0\uC11C\uB97C \uD45C\uC2DC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. Figma\uC5D0\uC11C \uACB0\uACFC\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694.`);
+    }
+  }
+  function clearReport() {
+    get("report").hidden = true;
+    get("warnings").replaceChildren();
+    get("debug-warnings").replaceChildren();
+    get("warning-more").onclick = null;
+  }
+  function finishConversion(state, message) {
     requestId = null;
+    batchId = null;
     cancelled = false;
     input.value = "";
     dropzone.classList.remove("drag");
     status(message, state);
-    try {
-      showReport(report, outcome || failedOutcome(selectedFileName, message));
-    } catch (error) {
-      get("report").hidden = true;
-      console.warn("Conversion report display failed", error);
-      status(`${message} \uBCF4\uACE0\uC11C\uB97C \uD45C\uC2DC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. Figma\uC5D0\uC11C \uACB0\uACFC\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694.`, state);
-    } finally {
-      renderControls();
-    }
+    if (currentItem) displayReport(currentItem);
+    renderItems();
+    renderControls();
   }
   function readFile(file) {
     return new Promise((resolve, reject) => {
@@ -2111,48 +2244,55 @@
       reader.readAsText(file);
     });
   }
-  async function selectFile(file) {
-    if (isBusy() || !file) return;
-    cancelled = false;
-    requestId = null;
+  async function selectFiles(files) {
+    if (isBusy() || !files.length) return;
     input.value = "";
-    html = null;
-    parsed = null;
-    json.hidden = true;
-    get("report").hidden = true;
-    selectedFileName = file.name;
-    renderControls();
-    if (!/\.html?$/i.test(file.name)) {
-      status(".html \uB610\uB294 .htm \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uC138\uC694.", "error");
+    if (files.length > MAX_HTML_FILES) {
+      status("HTML \uD30C\uC77C\uC740 \uCD5C\uB300 10\uAC1C\uAE4C\uC9C0 \uC120\uD0DD\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
       return;
     }
-    if (file.size > LIMITS.fileBytes) {
+    if (files.some((file) => !/\.html?$/i.test(file.name))) {
+      status("HTML \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
+      return;
+    }
+    if (files.some((file) => file.size > LIMITS.fileBytes)) {
       status("\uD30C\uC77C\uC774 5MB \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.", "error");
       return;
     }
+    cancelled = false;
     readingFiles = true;
     status("HTML \uD30C\uC77C\uC744 \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.", "idle");
     renderControls();
+    renderItems();
     try {
-      const content = await readFile(file);
-      if (cancelled) return;
-      if (!content.trim()) throw new Error("HTML \uD30C\uC77C\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
-      html = content;
-      get("filename").textContent = file.name;
-      get("fileinfo").textContent = `${(file.size / 1024).toFixed(1)} KB \xB7 \uB2E4\uB978 \uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uB824\uBA74 \uD074\uB9AD`;
-      status("\uC900\uBE44\uB418\uC5C8\uC2B5\uB2C8\uB2E4. Viewport\uB97C \uC124\uC815\uD558\uACE0 \uBCC0\uD658\uD558\uC138\uC694.");
+      for (const file of files) {
+        const content = await readFile(file);
+        if (cancelled) return;
+        if (!content.trim()) throw new Error(`${file.name}: HTML \uD30C\uC77C\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.`);
+      }
+      items = files.map((file) => ({ id: newId(), file, state: "WAITING" }));
+      requestId = batchId = null;
+      currentItem = null;
+      parsed = null;
+      parsedItemId = null;
+      json.hidden = true;
+      clearReport();
+      get("batch-summary").hidden = true;
+      updateSelectionLabel();
+      status("\uC900\uBE44\uB418\uC5C8\uC2B5\uB2C8\uB2E4. Viewport\uB97C \uC124\uC815\uD558\uACE0 \uBCC0\uD658\uD558\uC138\uC694.", "idle");
     } catch (error) {
       status(errorMessage(error), "error");
     } finally {
       if (cancelled) status("\uD30C\uC77C \uC120\uD0DD\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.", "idle");
       cancelled = false;
       readingFiles = false;
+      renderItems();
       renderControls();
       input.value = "";
     }
   }
   input.addEventListener("change", () => {
-    void selectFile(input.files?.[0]);
+    void selectFiles(Array.from(input.files || []));
   });
   assetFiles.addEventListener("change", async () => {
     if (isBusy() || !assetFiles.files?.length) return;
@@ -2204,6 +2344,7 @@
   });
   dropzone.addEventListener("click", (event) => {
     if (isBusy()) event.preventDefault();
+    else input.value = "";
   });
   for (const type of ["dragenter", "dragover"]) dropzone.addEventListener(type, (event) => {
     event.preventDefault();
@@ -2213,47 +2354,143 @@
   dropzone.addEventListener("drop", (event) => {
     event.preventDefault();
     dropzone.classList.remove("drag");
-    void selectFile(event.dataTransfer?.files[0]);
+    void selectFiles(Array.from(event.dataTransfer?.files || []));
   });
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => event.preventDefault());
+  function waitForBatch(type, message) {
+    return new Promise((resolve) => {
+      pendingBatch = { type, resolve };
+      send(message);
+    });
+  }
+  function waitForFile(message) {
+    return new Promise((resolve) => {
+      pendingFile = resolve;
+      send(message);
+    });
+  }
+  function progress(message) {
+    const completed = items.filter((item) => item.outcome).length;
+    const index = currentItem ? items.indexOf(currentItem) + 1 : completed;
+    status(items.length > 1 ? `${index} / ${items.length}\uAC1C \uD30C\uC77C \uCC98\uB9AC \uC911 \xB7 \uC644\uB8CC ${completed}\uAC1C \u2014 ${message}` : message);
+  }
   convert.addEventListener("click", async () => {
-    if (isBusy() || html === null) return;
-    if (!validateViewport()) return;
-    requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    if (isBusy() || !items.length || !validateViewport()) return;
+    const options = {
+      viewport: viewportWidth.valueAsNumber,
+      viewportHeight: viewportHeight.valueAsNumber,
+      autoLayout: autoLayout.checked,
+      styles: styles.checked,
+      images: images.checked,
+      shadows: shadows.checked,
+      optimizeWrappers: optimize.checked,
+      debug: debug.checked
+    };
+    const assets = localAssets;
+    batchId = items.length > 1 ? newId() : null;
     cancelled = false;
     parsed = null;
-    get("report").hidden = true;
+    parsedItemId = null;
+    currentItem = null;
+    for (const item of items) {
+      item.state = "WAITING";
+      delete item.outcome;
+      delete item.report;
+      delete item.frameId;
+    }
+    clearReport();
+    get("batch-summary").hidden = true;
     json.hidden = true;
     status("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026", "converting");
     renderControls();
+    renderItems();
+    let started = false;
+    let batchError = null;
     try {
-      parsed = await parseHTML(html, {
-        viewport: viewportWidth.valueAsNumber,
-        viewportHeight: viewportHeight.valueAsNumber,
-        autoLayout: autoLayout.checked,
-        styles: styles.checked,
-        images: images.checked,
-        shadows: shadows.checked,
-        optimizeWrappers: optimize.checked,
-        debug: debug.checked
-      }, get("render-host"), localAssets);
-      if (cancelled) {
-        finishConversion("error", "\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
-        return;
+      if (batchId) {
+        const reply = await waitForBatch("BATCH_STARTED", { type: "BATCH_START", batchId, items: items.map((item) => ({ itemId: item.id, fileName: item.file.name })) });
+        if (reply.type === "BATCH_ERROR") throw new Error(reply.message);
+        started = true;
       }
-      console.info("HTML \u2192 Figma intermediate document", parsed);
-      json.hidden = false;
-      status("Figma \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4\u2026");
-      send({ type: "CREATE_FIGMA", requestId, fileName: selectedFileName, payload: parsed });
+      for (const item of items) {
+        if (cancelled) break;
+        currentItem = item;
+        item.state = "CONVERTING";
+        requestId = newId();
+        parsed = null;
+        parsedItemId = null;
+        json.hidden = true;
+        progress("HTML\uC744 \uB80C\uB354\uB9C1\uD558\uACE0 \uB808\uC774\uC544\uC6C3\uC744 \uBD84\uC11D\uD569\uB2C8\uB2E4\u2026");
+        renderItems();
+        let parseError = null;
+        try {
+          const source = await readFile(item.file);
+          if (!source.trim()) throw new Error("HTML \uD30C\uC77C\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
+          const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
+          if (!cancelled) parsed = await parseHTML(source, fileOptions, get("render-host"), assets);
+          if (cancelled) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
+          parsedItemId = item.id;
+          if (options.debug) console.info("HTML \u2192 Figma intermediate document", { batchId, itemId: item.id, fileName: item.file.name, document: parsed });
+        } catch (error) {
+          console.warn("HTML analysis failed", error);
+          parseError = errorMessage(error);
+        }
+        let reply;
+        if (parseError) {
+          if (batchId) reply = await waitForFile({ type: "FILE_ANALYSIS_ERROR", requestId, batchId, itemId: item.id, message: parseError });
+          else item.outcome = failedOutcome(item.file.name, parseError);
+        } else if (parsed) {
+          progress("Figma \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4\u2026");
+          reply = await waitForFile({ type: "CREATE_FIGMA", requestId, fileName: item.file.name, payload: parsed, ...batchId ? { batchId, itemId: item.id } : {} });
+        }
+        if (reply?.type === "CONVERSION_COMPLETE") {
+          const { report, outcome, frameId } = reply.payload || {};
+          if (!outcome?.result?.frameCreated || outcome.status === "ERROR" || !report) item.outcome = failedOutcome(item.file.name, "\uACB0\uACFC \uC815\uBCF4\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+          else {
+            item.report = report;
+            item.outcome = outcome;
+            item.frameId = frameId;
+          }
+        } else if (reply?.type === "CONVERSION_ERROR") item.outcome = reply.payload?.outcome || failedOutcome(item.file.name, reply.payload?.message || "\uBCC0\uD658 \uC911 \uC54C \uC218 \uC5C6\uB294 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4.");
+        item.outcome || (item.outcome = failedOutcome(item.file.name, "\uACB0\uACFC \uC815\uBCF4\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."));
+        item.state = item.outcome.status;
+        requestId = null;
+        renderItems();
+      }
     } catch (error) {
-      console.warn("HTML analysis failed", error);
-      finishConversion("error", `HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. ${reportText(errorMessage(error))}`);
+      batchError = reportText(errorMessage(error));
+      if (currentItem?.state === "CONVERTING") {
+        currentItem.outcome = failedOutcome(currentItem.file.name, batchError);
+        currentItem.state = "ERROR";
+      }
+    } finally {
+      try {
+        if (batchId && started) {
+          const reply = await waitForBatch("BATCH_COMPLETE", { type: "BATCH_FINISH", batchId, cancelled: cancelled || !!batchError });
+          if (reply.type === "BATCH_ERROR") batchError = reply.message;
+        }
+      } catch (error) {
+        batchError = reportText(errorMessage(error));
+      }
+      pendingFile = null;
+      pendingBatch = null;
+      const summary = batchSummary(items.length, items.flatMap((item) => item.outcome ? [item.outcome] : []), cancelled);
+      if (items.length > 1) {
+        const summaryElement = get("batch-summary");
+        summaryElement.hidden = false;
+        summaryElement.textContent = `\uCD1D ${summary.total}\uAC1C \uD30C\uC77C \xB7 \uC815\uC0C1 \uC644\uB8CC ${summary.success}\uAC1C \xB7 \uACBD\uACE0 \uD3EC\uD568 \uC644\uB8CC ${summary.warnings}\uAC1C \xB7 \uC2E4\uD328 ${summary.errors}\uAC1C${summary.waiting ? ` \xB7 \uBBF8\uCC98\uB9AC ${summary.waiting}\uAC1C` : ""}`;
+        finishConversion(batchError || cancelled || !(summary.success + summary.warnings) ? "error" : "success", batchError ? `\uC804\uCCB4 \uBCC0\uD658\uC744 \uB9C8\uCE58\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. ${batchError}` : cancelled ? "\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4." : "\uD30C\uC77C \uCC98\uB9AC\uAC00 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
+      } else {
+        const outcome = items[0]?.outcome;
+        finishConversion(outcome?.status === "ERROR" || !outcome ? "error" : "success", cancelled ? "\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4." : outcome?.status === "SUCCESS" ? "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4." : outcome?.status === "SUCCESS_WITH_WARNINGS" ? "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC77C\uBD80 \uD56D\uBAA9\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : "HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+      }
+      json.hidden = !parsed;
     }
   });
   cancel.addEventListener("click", () => {
     cancelled = true;
-    if (conversionStatus === "converting") send({ type: "CANCEL" });
+    if (conversionStatus === "converting") send({ type: "CANCEL", ...batchId ? { batchId } : requestId ? { requestId } : {} });
     status("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
     cancel.disabled = true;
   });
@@ -2323,19 +2560,25 @@
   }
   window.addEventListener("message", (event) => {
     const message = event.data?.pluginMessage;
-    if (!message || typeof message !== "object" || message.requestId !== requestId || conversionStatus !== "converting") return;
-    if (message.type === "PROGRESS") {
-      status(`${message.count}\uAC1C\uC758 \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4\u2026`);
+    if (!message || typeof message !== "object" || conversionStatus !== "converting") return;
+    if (message.type === "BATCH_STARTED" || message.type === "BATCH_COMPLETE" || message.type === "BATCH_ERROR") {
+      if (message.batchId !== batchId || !pendingBatch || message.type !== pendingBatch.type && message.type !== "BATCH_ERROR") return;
+      const resolve = pendingBatch.resolve;
+      pendingBatch = null;
+      resolve(message);
       return;
     }
-    if (message.type === "CONVERSION_COMPLETE") {
-      const { report, outcome } = message.payload || {};
-      if (!outcome?.result.frameCreated || outcome.status === "ERROR" || !report) {
-        finishConversion("error", "HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uACB0\uACFC \uC815\uBCF4\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
-        return;
-      }
-      finishConversion("success", outcome.status === "SUCCESS_WITH_WARNINGS" ? "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC77C\uBD80 \uD56D\uBAA9\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : "\uBCC0\uD658\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.", report, outcome);
-    } else if (message.type === "CONVERSION_ERROR") finishConversion("error", "HTML\uC744 \uBCC0\uD658\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.", void 0, message.payload?.outcome || failedOutcome(selectedFileName, message.payload?.message || "\uBCC0\uD658 \uC911 \uC54C \uC218 \uC5C6\uB294 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4."));
+    if (message.requestId !== requestId || (batchId ? message.batchId !== batchId || message.itemId !== currentItem?.id : message.batchId !== void 0 || message.itemId !== void 0)) return;
+    if (message.type === "PROGRESS") {
+      progress(`${message.count}\uAC1C\uC758 \uB808\uC774\uC5B4\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4\u2026`);
+      return;
+    }
+    if (message.type !== "CONVERSION_COMPLETE" && message.type !== "CONVERSION_ERROR") return;
+    if (pendingFile) {
+      const resolve = pendingFile;
+      pendingFile = null;
+      resolve(message);
+    }
   });
   get("status").dataset.state = conversionStatus;
   renderControls();

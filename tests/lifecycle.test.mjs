@@ -438,12 +438,16 @@ test('SVG and child failures finish with warnings and surviving content, while s
   } finally { await session.page.close(); }
 });
 
-test('An invalid next file clears the old report and cannot reconvert stale HTML', async () => {
+test('A rejected replacement preserves the valid selection and its accurately named report', async () => {
   const session = await openSession();
   try {
     await choose(session, 'valid.html'); await convertOnce(session);
     await session.ui.locator('#file').setInputFiles({ name: 'invalid.txt', mimeType: 'text/plain', buffer: Buffer.from('invalid') });
-    assert.ok(await session.ui.locator('#report').isHidden()); assert.ok(await session.ui.locator('#convert').isDisabled());
+    assert.equal(await session.ui.locator('#status').textContent(), 'HTML 파일만 업로드할 수 있습니다.');
+    assert.equal(await session.ui.locator('#report-file').textContent(), 'valid.html');
+    assert.equal(await session.ui.locator('#filename').textContent(), 'valid.html');
+    assert.ok(await session.ui.locator('#convert').isEnabled());
+    await convertOnce(session); assert.equal(outcomeFor(session).fileName, 'valid.html');
     await choose(session, 'valid.html'); await convertOnce(session); assert.equal(outcomeFor(session).status, 'SUCCESS');
   } finally { await session.page.close(); }
 });

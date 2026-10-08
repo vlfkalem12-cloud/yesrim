@@ -685,18 +685,18 @@ reason: ${entry.reason}`);
       if (serialized.length <= 24e3) save(created, "html-height-hierarchy", serialized);
       else {
         const keys = [];
-        let batch = [];
+        let batch2 = [];
         const flush = () => {
           const key = `html-height-hierarchy-${keys.length}`;
           keys.push(key);
-          save(created, key, JSON.stringify(batch));
-          batch = [];
+          save(created, key, JSON.stringify(batch2));
+          batch2 = [];
         };
         for (const entry of hierarchy) {
-          if (batch.length && JSON.stringify([...batch, entry]).length > 24e3) flush();
-          batch.push(entry);
+          if (batch2.length && JSON.stringify([...batch2, entry]).length > 24e3) flush();
+          batch2.push(entry);
         }
-        if (batch.length) flush();
+        if (batch2.length) flush();
         save(created, "html-height-hierarchy", JSON.stringify({ frames: hierarchy.length, keys }));
       }
       console.info("HTML \u2192 Figma final height hierarchy", hierarchy);
@@ -960,39 +960,130 @@ reason: ${entry.reason}`);
     }
   }
 
+  // src/batch.ts
+  var MAX_HTML_FILES = 10;
+  var BATCH_FRAME_GAP = 120;
+  function batchSummary(total, outcomes, cancelled2 = false) {
+    return {
+      total,
+      success: outcomes.filter((item) => item.status === "SUCCESS").length,
+      warnings: outcomes.filter((item) => item.status === "SUCCESS_WITH_WARNINGS").length,
+      errors: outcomes.filter((item) => item.status === "ERROR").length,
+      waiting: total - outcomes.length,
+      cancelled: cancelled2
+    };
+  }
+
   // src/code.ts
   figma.showUI(__html__, { width: 440, height: 760, themeColors: true });
   var busy = false;
   var cancelled = false;
+  var activeRequestId = null;
+  var batch = null;
   var send = (message) => figma.ui.postMessage(message);
   figma.ui.onmessage = async (message) => {
     if (!message || typeof message !== "object") return;
     if (message.type === "CANCEL") {
-      cancelled = true;
+      if (message.batchId ? message.batchId === batch?.id : !batch && (!message.requestId || message.requestId === activeRequestId)) cancelled = true;
       return;
     }
-    if (message.type !== "CREATE_FIGMA" || typeof message.requestId !== "string") return;
+    if (message.type === "BATCH_START") {
+      if (typeof message.batchId !== "string") return;
+      const valid = Array.isArray(message.items) && message.items.length >= 2 && message.items.length <= MAX_HTML_FILES && message.items.every((item2) => item2 && typeof item2.itemId === "string" && item2.itemId && typeof item2.fileName === "string") && new Set(message.items.map((item2) => item2.itemId)).size === message.items.length;
+      if (busy || batch || !valid) {
+        send({ type: "BATCH_ERROR", batchId: message.batchId, message: busy || batch ? "\uC774\uBBF8 \uBCC0\uD658\uC774 \uC9C4\uD589 \uC911\uC785\uB2C8\uB2E4." : "HTML \uD30C\uC77C\uC740 2~10\uAC1C\uB97C \uC120\uD0DD\uD558\uC138\uC694." });
+        return;
+      }
+      try {
+        batch = { id: message.batchId, items: message.items.map((item2) => ({ ...item2 })), next: 0, outcomes: [], frames: [], center: { ...figma.viewport.center } };
+        cancelled = false;
+        send({ type: "BATCH_STARTED", batchId: batch.id });
+      } catch (error) {
+        batch = null;
+        send({ type: "BATCH_ERROR", batchId: message.batchId, message: errorMessage(error) });
+      }
+      return;
+    }
+    if (message.type === "BATCH_FINISH") {
+      if (message.batchId !== batch?.id) return;
+      const session2 = batch;
+      if (busy || !message.cancelled && session2.next !== session2.items.length) {
+        send({ type: "BATCH_ERROR", batchId: session2.id, message: "\uD30C\uC77C \uCC98\uB9AC\uAC00 \uC544\uC9C1 \uC644\uB8CC\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4." });
+        return;
+      }
+      batch = null;
+      cancelled = false;
+      const frames = session2.frames.filter((frame) => !frame.removed);
+      try {
+        if (frames.length) {
+          figma.currentPage.selection = frames;
+          figma.viewport.scrollAndZoomIntoView(frames);
+        }
+      } catch (error) {
+        console.warn("Batch viewport update failed", error);
+      }
+      send({ type: "BATCH_COMPLETE", batchId: session2.id, summary: batchSummary(session2.items.length, session2.outcomes, message.cancelled) });
+      return;
+    }
+    if (!["CREATE_FIGMA", "FILE_ANALYSIS_ERROR"].includes(message.type) || !("requestId" in message) || typeof message.requestId !== "string") return;
+    if (message.type !== "CREATE_FIGMA" && message.type !== "FILE_ANALYSIS_ERROR") return;
+    const context = message.batchId !== void 0 || message.itemId !== void 0 ? { batchId: message.batchId, itemId: message.itemId } : {};
+    const session = batch;
+    const item = session?.items[session.next];
+    const matchesBatch = !!session && !!item && message.batchId === session.id && message.itemId === item.itemId;
+    const fileName = matchesBatch ? item.fileName : message.type === "CREATE_FIGMA" && typeof message.fileName === "string" ? message.fileName : "";
+    const reject = (text) => send({ type: "CONVERSION_ERROR", requestId: message.requestId, ...context, payload: { success: false, message: text, outcome: failedOutcome(fileName, text) } });
     if (busy) {
-      const text = "\uC774\uBBF8 \uBCC0\uD658\uC774 \uC9C4\uD589 \uC911\uC785\uB2C8\uB2E4.";
-      send({ type: "CONVERSION_ERROR", requestId: message.requestId, payload: { success: false, message: text, outcome: failedOutcome(message.fileName || "", text) } });
+      reject("\uC774\uBBF8 \uBCC0\uD658\uC774 \uC9C4\uD589 \uC911\uC785\uB2C8\uB2E4.");
+      return;
+    }
+    if (session ? !matchesBatch : message.batchId !== void 0 || message.itemId !== void 0 || message.type === "FILE_ANALYSIS_ERROR") {
+      reject("\uD604\uC7AC \uD30C\uC77C \uC694\uCCAD\uACFC \uC77C\uCE58\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.");
       return;
     }
     busy = true;
-    cancelled = false;
+    if (!session) cancelled = false;
+    activeRequestId = message.requestId;
     const requestId = message.requestId;
-    const fileName = typeof message.fileName === "string" ? message.fileName : "";
     let result;
+    let created;
     try {
+      if (cancelled) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
+      if (message.type === "FILE_ANALYSIS_ERROR") throw new Error(message.message);
       validateDocument(message.payload);
-      const { frame, report } = await convertDocument(message.payload, (count) => send({ type: "PROGRESS", requestId, count }), () => cancelled);
+      const { frame, report } = await convertDocument(message.payload, (count) => send({ type: "PROGRESS", requestId, ...context, count }), () => cancelled);
+      created = frame;
       if (frame.removed) throw new Error("\uACB0\uACFC Frame\uC774 \uC0DD\uC131\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
-      result = { type: "CONVERSION_COMPLETE", requestId, payload: { success: true, report, outcome: conversionOutcome(report, fileName, message.payload.options) } };
+      if (session) {
+        const x = session.x ?? session.center.x - frame.width / 2;
+        const y = session.y ?? session.center.y - frame.height / 2;
+        frame.x = x;
+        frame.y = y;
+      }
+      result = { type: "CONVERSION_COMPLETE", requestId, ...context, payload: { success: true, report, outcome: conversionOutcome(report, fileName, message.payload.options), frameId: frame.id } };
+      if (session) {
+        session.frames.push(frame);
+        session.x = frame.x + frame.width + BATCH_FRAME_GAP;
+        session.y = frame.y;
+      }
     } catch (error) {
+      if (created && !created.removed) {
+        try {
+          created.remove();
+        } catch (cleanupError) {
+          console.warn("Failed result cleanup failed", cleanupError);
+        }
+      }
       const text = errorMessage(error);
       console.warn("HTML \u2192 Figma conversion failed", error);
-      result = { type: "CONVERSION_ERROR", requestId, payload: { success: false, message: text, outcome: failedOutcome(fileName, text) } };
+      result = { type: "CONVERSION_ERROR", requestId, ...context, payload: { success: false, message: text, outcome: failedOutcome(fileName, text) } };
     } finally {
       busy = false;
+      activeRequestId = null;
+    }
+    if (session) {
+      session.outcomes.push(result.payload.outcome);
+      session.next++;
     }
     send(result);
     if (result.type === "CONVERSION_COMPLETE") {

@@ -1,7 +1,8 @@
 import { parseHTML } from './parser';
-import { LIMITS, VIEWPORT_PRESETS, type ConversionOutcome, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type ParsedDocument, type UIMessage } from './types';
+import { LIMITS, VIEWPORT_PRESETS, type ConversionOutcome, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type FileMessage, type FileConversionStatus, type ImportOptions, type ParsedDocument, type UIMessage } from './types';
 import { errorMessage, isViewportDimension } from './utils';
 import { failedOutcome, REPORT_LABELS, reportText } from './report';
+import { MAX_HTML_FILES, batchSummary } from './batch';
 
 function get<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -24,14 +25,24 @@ const optimize = get<HTMLInputElement>('optimize');
 const debug = get<HTMLInputElement>('debug');
 const assetFiles = get<HTMLInputElement>('asset-files');
 let localAssets: LocalAssets = {};
-let html: string | null = null;
+interface UploadItem {
+  id: string; file: File; state: FileConversionStatus;
+  report?: ConversionReport; outcome?: ConversionOutcome; frameId?: string;
+  viewport?: { width?: number; height?: number };
+}
+let items: UploadItem[] = [];
+let batchId: string | null = null;
+let currentItem: UploadItem | null = null;
+let parsedItemId: string | null = null;
+let pendingFile: ((message: Exclude<FileMessage, { type: 'PROGRESS' }>) => void) | null = null;
+let pendingBatch: { type: 'BATCH_STARTED' | 'BATCH_COMPLETE'; resolve: (message: MainMessage) => void } | null = null;
+let idSequence = 0;
+const newId = () => `${Date.now()}-${++idSequence}-${Math.random().toString(36).slice(2)}`;
 let parsed: ParsedDocument | null = null;
 let conversionStatus: ConversionStatus = 'idle';
 let readingFiles = false;
 let cancelled = false;
 let requestId: string | null = null;
-let selectedFileName = '';
-
 const send = (message: UIMessage) => parent.postMessage({ pluginMessage: message }, '*');
 const isBusy = () => conversionStatus === 'converting' || readingFiles;
 function status(message: string, state: ConversionStatus = conversionStatus): void {
@@ -44,8 +55,11 @@ function validateViewport(): boolean {
   viewportWidth.setAttribute('aria-invalid', String(!widthValid));
   viewportHeight.setAttribute('aria-invalid', String(!heightValid));
   get('viewport-error').hidden = widthValid && heightValid;
-  convert.disabled = isBusy() || html === null || !widthValid || !heightValid;
-  return widthValid && heightValid;
+  const filesValid = items.every(item => [item.viewport?.width, item.viewport?.height].every(value => value === undefined || isViewportDimension(value)));
+  get('file-viewport-error').hidden = filesValid;
+  for (const field of document.querySelectorAll<HTMLInputElement>('.file-viewport input')) field.placeholder = field.dataset.dimension === 'width' ? viewportWidth.value : viewportHeight.value;
+  convert.disabled = isBusy() || items.length === 0 || !widthValid || !heightValid || !filesValid;
+  return widthValid && heightValid && filesValid;
 }
 viewport.addEventListener('change', () => {
   const preset = VIEWPORT_PRESETS[viewport.value];
@@ -65,20 +79,76 @@ function renderControls(): void {
   input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
   images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
   dropzone.setAttribute('aria-disabled', String(value));
+  for (const field of document.querySelectorAll<HTMLInputElement>('.file-viewport input')) field.disabled = value;
   cancel.hidden = !value;
   if (!value) cancel.disabled = false;
   convert.textContent = conversionStatus === 'converting' ? '변환 중…' : 'Figma로 변환';
 }
-function finishConversion(state: 'success' | 'error', message: string, report?: ConversionReport, outcome?: ConversionOutcome): void {
-  requestId = null; cancelled = false;
-  input.value = ''; dropzone.classList.remove('drag');
-  status(message, state);
-  try { showReport(report, outcome || failedOutcome(selectedFileName, message)); }
+function renderItems(): void {
+  get('file-list-section').hidden = items.length === 0;
+  get('file-list-title').textContent = `선택한 파일 (${items.length}/${MAX_HTML_FILES})`;
+  const list = get('file-list'); list.replaceChildren();
+  const labels: Record<FileConversionStatus, string> = { WAITING: '대기', CONVERTING: '변환 중', SUCCESS: '변환 완료', SUCCESS_WITH_WARNINGS: '경고와 함께 변환 완료', ERROR: '변환 실패' };
+  for (const item of items) {
+    const row = document.createElement('li'); row.dataset.itemId = item.id; row.dataset.state = item.state;
+    const name = document.createElement('strong'); name.textContent = item.file.name; row.append(name);
+    const state = document.createElement('span'); state.className = 'muted';
+    state.textContent = `${labels[item.state]}${item.outcome && item.state !== 'ERROR' ? ` · 경고 ${item.outcome.warningCount}건` : ''}`; row.append(state);
+    if (items.length > 1) {
+      const dimensions = document.createElement('details'); dimensions.className = 'file-viewport';
+      const summary = document.createElement('summary'); summary.textContent = item.viewport && Object.values(item.viewport).some(value => value !== undefined) ? `Viewport: ${item.viewport.width ?? viewportWidth.value} × ${item.viewport.height ?? viewportHeight.value}` : 'Viewport 지정 (기본: 공통 설정)'; dimensions.append(summary);
+      const fields = document.createElement('div'); fields.className = 'dimensions';
+      for (const [dimension, label] of [['width', '너비'], ['height', '높이']] as const) {
+        const wrapper = document.createElement('label'); wrapper.className = 'dimension'; wrapper.textContent = `${label} (px)`;
+        const field = document.createElement('input'); field.type = 'number'; field.min = '1'; field.max = '10000'; field.step = '1'; field.dataset.dimension = dimension;
+        field.setAttribute('aria-label', `${item.file.name} ${label}`); field.setAttribute('aria-describedby', 'file-viewport-error');
+        field.value = item.viewport?.[dimension] === undefined ? '' : String(item.viewport[dimension]); field.placeholder = dimension === 'width' ? viewportWidth.value : viewportHeight.value; field.disabled = isBusy();
+        field.oninput = () => {
+          item.viewport ||= {}; item.viewport[dimension] = field.value === '' && !field.validity.badInput ? undefined : field.valueAsNumber;
+          field.setAttribute('aria-invalid', String(item.viewport[dimension] !== undefined && !isViewportDimension(item.viewport[dimension]!)));
+          summary.textContent = `Viewport: ${item.viewport.width ?? viewportWidth.value} × ${item.viewport.height ?? viewportHeight.value}`; validateViewport();
+        };
+        wrapper.append(field); fields.append(wrapper);
+      }
+      dimensions.append(fields); row.append(dimensions);
+    }
+    if (!isBusy() && items.every(entry => entry.state === 'WAITING')) {
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary remove-file'; remove.textContent = '제거'; remove.setAttribute('aria-label', `${item.file.name} 제거`);
+      remove.onclick = () => { if (isBusy()) return; items = items.filter(entry => entry.id !== item.id); updateSelectionLabel(); renderItems(); renderControls(); };
+      row.append(remove);
+    }
+    if (item.outcome) {
+      const detail = document.createElement('button'); detail.type = 'button'; detail.className = 'secondary file-detail'; detail.textContent = item.state === 'ERROR' ? '오류 상세 보기' : '상세 내용 보기'; detail.disabled = isBusy();
+      detail.onclick = () => { displayReport(item); json.hidden = !parsed || parsedItemId !== item.id; };
+      row.append(detail);
+    }
+    list.append(row);
+  }
+}
+function updateSelectionLabel(): void {
+  get('filename').textContent = items.length === 1 ? items[0]!.file.name : items.length ? `HTML 파일 ${items.length}개 선택` : 'HTML 파일 업로드';
+  get('fileinfo').textContent = items.length === 1 ? `${(items[0]!.file.size / 1024).toFixed(1)} KB · 다른 파일을 선택하려면 클릭` : '드래그하거나 클릭하여 선택 · .html / .htm · 최대 10개 · 파일당 5MB';
+}
+function displayReport(item: UploadItem): void {
+  if (!item.outcome) return;
+  try { showReport(item.report, item.outcome); }
   catch (error) {
     get('report').hidden = true;
     console.warn('Conversion report display failed', error);
-    status(`${message} 보고서를 표시하지 못했습니다. Figma에서 결과를 확인해 주세요.`, state);
-  } finally { renderControls(); }
+    status(`${get('status').textContent} 보고서를 표시하지 못했습니다. Figma에서 결과를 확인해 주세요.`);
+  }
+}
+function clearReport(): void {
+  get('report').hidden = true;
+  get('warnings').replaceChildren(); get('debug-warnings').replaceChildren();
+  get<HTMLButtonElement>('warning-more').onclick = null;
+}
+function finishConversion(state: 'success' | 'error', message: string): void {
+  requestId = null; batchId = null; cancelled = false;
+  input.value = ''; dropzone.classList.remove('drag');
+  status(message, state);
+  if (currentItem) displayReport(currentItem);
+  renderItems(); renderControls();
 }
 function readFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -89,29 +159,32 @@ function readFile(file: File): Promise<string> {
     reader.readAsText(file);
   });
 }
-async function selectFile(file: File | undefined): Promise<void> {
-  if (isBusy() || !file) return;
-  cancelled = false; requestId = null; input.value = '';
-  html = null; parsed = null; json.hidden = true; get('report').hidden = true;
-  selectedFileName = file.name; renderControls();
-  if (!/\.html?$/i.test(file.name)) { status('.html 또는 .htm 파일을 선택하세요.', 'error'); return; }
-  if (file.size > LIMITS.fileBytes) { status('파일이 5MB 제한을 초과했습니다.', 'error'); return; }
-  readingFiles = true; status('HTML 파일을 읽고 있습니다.', 'idle'); renderControls();
+async function selectFiles(files: File[]): Promise<void> {
+  if (isBusy() || !files.length) return;
+  input.value = '';
+  // Validate a replacement atomically; a rejected upload preserves the current valid list.
+  if (files.length > MAX_HTML_FILES) { status('HTML 파일은 최대 10개까지 선택할 수 있습니다.', 'error'); return; }
+  if (files.some(file => !/\.html?$/i.test(file.name))) { status('HTML 파일만 업로드할 수 있습니다.', 'error'); return; }
+  if (files.some(file => file.size > LIMITS.fileBytes)) { status('파일이 5MB 제한을 초과했습니다.', 'error'); return; }
+  cancelled = false; readingFiles = true; status('HTML 파일을 읽고 있습니다.', 'idle'); renderControls(); renderItems();
   try {
-    const content = await readFile(file);
-    if (cancelled) return;
-    if (!content.trim()) throw new Error('HTML 파일이 비어 있습니다.');
-    html = content;
-    get('filename').textContent = file.name;
-    get('fileinfo').textContent = `${(file.size / 1024).toFixed(1)} KB · 다른 파일을 선택하려면 클릭`;
-    status('준비되었습니다. Viewport를 설정하고 변환하세요.');
+    // Keep File objects, not ten HTML strings or ten rendered documents, in the selection.
+    for (const file of files) {
+      const content = await readFile(file);
+      if (cancelled) return;
+      if (!content.trim()) throw new Error(`${file.name}: HTML 파일이 비어 있습니다.`);
+    }
+    items = files.map(file => ({ id: newId(), file, state: 'WAITING' }));
+    requestId = batchId = null; currentItem = null; parsed = null; parsedItemId = null;
+    json.hidden = true; clearReport(); get('batch-summary').hidden = true;
+    updateSelectionLabel(); status('준비되었습니다. Viewport를 설정하고 변환하세요.', 'idle');
   } catch (error) { status(errorMessage(error), 'error'); }
   finally {
     if (cancelled) status('파일 선택을 취소했습니다.', 'idle');
-    cancelled = false; readingFiles = false; renderControls(); input.value = '';
+    cancelled = false; readingFiles = false; renderItems(); renderControls(); input.value = '';
   }
 }
-input.addEventListener('change', () => { void selectFile(input.files?.[0]); });
+input.addEventListener('change', () => { void selectFiles(Array.from(input.files || [])); });
 assetFiles.addEventListener('change', async () => {
   if (isBusy() || !assetFiles.files?.length) return;
   const files = [...assetFiles.files];
@@ -138,34 +211,108 @@ assetFiles.addEventListener('change', async () => {
   }
 });
 dropzone.addEventListener('keydown', event => { if (!isBusy() && ['Enter', ' '].includes(event.key)) { event.preventDefault(); input.value = ''; input.click(); } });
-dropzone.addEventListener('click', event => { if (isBusy()) event.preventDefault(); });
+dropzone.addEventListener('click', event => { if (isBusy()) event.preventDefault(); else input.value = ''; });
 for (const type of ['dragenter', 'dragover']) dropzone.addEventListener(type, event => { event.preventDefault(); if (!isBusy()) dropzone.classList.add('drag'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
-dropzone.addEventListener('drop', event => { event.preventDefault(); dropzone.classList.remove('drag'); void selectFile(event.dataTransfer?.files[0]); });
+dropzone.addEventListener('drop', event => { event.preventDefault(); dropzone.classList.remove('drag'); void selectFiles(Array.from(event.dataTransfer?.files || [])); });
 // Avoid browser navigation if a file misses the upload target.
 window.addEventListener('dragover', event => event.preventDefault());
 window.addEventListener('drop', event => event.preventDefault());
 
+function waitForBatch(type: 'BATCH_STARTED' | 'BATCH_COMPLETE', message: UIMessage): Promise<MainMessage> {
+  return new Promise(resolve => { pendingBatch = { type, resolve }; send(message); });
+}
+function waitForFile(message: UIMessage): Promise<Exclude<FileMessage, { type: 'PROGRESS' }>> {
+  return new Promise(resolve => { pendingFile = resolve; send(message); });
+}
+function progress(message: string): void {
+  const completed = items.filter(item => item.outcome).length;
+  const index = currentItem ? items.indexOf(currentItem) + 1 : completed;
+  status(items.length > 1 ? `${index} / ${items.length}개 파일 처리 중 · 완료 ${completed}개 — ${message}` : message);
+}
 convert.addEventListener('click', async () => {
-  if (isBusy() || html === null) return;
-  if (!validateViewport()) return;
-  requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  cancelled = false; parsed = null; get('report').hidden = true; json.hidden = true;
-  status('HTML을 렌더링하고 레이아웃을 분석합니다…', 'converting'); renderControls();
+  if (isBusy() || !items.length || !validateViewport()) return;
+  const options: ImportOptions = { viewport: viewportWidth.valueAsNumber, viewportHeight: viewportHeight.valueAsNumber, autoLayout: autoLayout.checked, styles: styles.checked,
+    images: images.checked, shadows: shadows.checked, optimizeWrappers: optimize.checked, debug: debug.checked };
+  const assets = localAssets; // An explicit user-selected asset map; parser caches remain per file.
+  batchId = items.length > 1 ? newId() : null;
+  cancelled = false; parsed = null; parsedItemId = null; currentItem = null;
+  for (const item of items) { item.state = 'WAITING'; delete item.outcome; delete item.report; delete item.frameId; }
+  clearReport(); get('batch-summary').hidden = true; json.hidden = true;
+  status('HTML을 렌더링하고 레이아웃을 분석합니다…', 'converting'); renderControls(); renderItems();
+  let started = false;
+  let batchError: string | null = null;
   try {
-    parsed = await parseHTML(html, { viewport: viewportWidth.valueAsNumber, viewportHeight: viewportHeight.valueAsNumber, autoLayout: autoLayout.checked, styles: styles.checked,
-      images: images.checked, shadows: shadows.checked, optimizeWrappers: optimize.checked, debug: debug.checked }, get('render-host'), localAssets);
-    if (cancelled) { finishConversion('error', '변환을 취소했습니다.'); return; }
-    console.info('HTML → Figma intermediate document', parsed);
-    json.hidden = false;
-    status('Figma 레이어를 생성합니다…');
-    send({ type: 'CREATE_FIGMA', requestId, fileName: selectedFileName, payload: parsed });
+    if (batchId) {
+      const reply = await waitForBatch('BATCH_STARTED', { type: 'BATCH_START', batchId, items: items.map(item => ({ itemId: item.id, fileName: item.file.name })) });
+      if (reply.type === 'BATCH_ERROR') throw new Error(reply.message);
+      started = true;
+    }
+    for (const item of items) {
+      if (cancelled) break;
+      currentItem = item; item.state = 'CONVERTING'; requestId = newId();
+      parsed = null; parsedItemId = null; json.hidden = true;
+      progress('HTML을 렌더링하고 레이아웃을 분석합니다…'); renderItems();
+      let parseError: string | null = null;
+      try {
+        const source = await readFile(item.file);
+        if (!source.trim()) throw new Error('HTML 파일이 비어 있습니다.');
+        const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
+        if (!cancelled) parsed = await parseHTML(source, fileOptions, get('render-host'), assets);
+        if (cancelled) throw new Error('변환을 취소했습니다.');
+        parsedItemId = item.id;
+        if (options.debug) console.info('HTML → Figma intermediate document', { batchId, itemId: item.id, fileName: item.file.name, document: parsed });
+      } catch (error) { console.warn('HTML analysis failed', error); parseError = errorMessage(error); }
+      let reply: Exclude<FileMessage, { type: 'PROGRESS' }> | undefined;
+      if (parseError) {
+        if (batchId) reply = await waitForFile({ type: 'FILE_ANALYSIS_ERROR', requestId, batchId, itemId: item.id, message: parseError });
+        else item.outcome = failedOutcome(item.file.name, parseError);
+      } else if (parsed) {
+        progress('Figma 레이어를 생성합니다…');
+        reply = await waitForFile({ type: 'CREATE_FIGMA', requestId, fileName: item.file.name, payload: parsed, ...(batchId ? { batchId, itemId: item.id } : {}) });
+      }
+      if (reply?.type === 'CONVERSION_COMPLETE') {
+        const { report, outcome, frameId } = reply.payload || {};
+        if (!outcome?.result?.frameCreated || outcome.status === 'ERROR' || !report) item.outcome = failedOutcome(item.file.name, '결과 정보를 확인할 수 없습니다.');
+        else { item.report = report; item.outcome = outcome; item.frameId = frameId; }
+      } else if (reply?.type === 'CONVERSION_ERROR') item.outcome = reply.payload?.outcome || failedOutcome(item.file.name, reply.payload?.message || '변환 중 알 수 없는 오류가 발생했습니다.');
+      item.outcome ||= failedOutcome(item.file.name, '결과 정보를 확인할 수 없습니다.');
+      item.state = item.outcome.status;
+      requestId = null; renderItems();
+      // Keep only the last intermediate document for the existing JSON export.
+      // Each parseHTML call disposes its iframe; no DOM or asset cache is retained by items.
+    }
   } catch (error) {
-    console.warn('HTML analysis failed', error);
-    finishConversion('error', `HTML을 변환하지 못했습니다. ${reportText(errorMessage(error))}`);
+    batchError = reportText(errorMessage(error));
+    if (currentItem?.state === 'CONVERTING') {
+      currentItem.outcome = failedOutcome(currentItem.file.name, batchError); currentItem.state = 'ERROR';
+    }
+  }
+  finally {
+    try {
+      if (batchId && started) {
+        const reply = await waitForBatch('BATCH_COMPLETE', { type: 'BATCH_FINISH', batchId, cancelled: cancelled || !!batchError });
+        if (reply.type === 'BATCH_ERROR') batchError = reply.message;
+      }
+    } catch (error) { batchError = reportText(errorMessage(error)); }
+    pendingFile = null; pendingBatch = null;
+    const summary = batchSummary(items.length, items.flatMap(item => item.outcome ? [item.outcome] : []), cancelled);
+    if (items.length > 1) {
+      const summaryElement = get('batch-summary'); summaryElement.hidden = false;
+      summaryElement.textContent = `총 ${summary.total}개 파일 · 정상 완료 ${summary.success}개 · 경고 포함 완료 ${summary.warnings}개 · 실패 ${summary.errors}개${summary.waiting ? ` · 미처리 ${summary.waiting}개` : ''}`;
+      finishConversion(batchError || cancelled || !(summary.success + summary.warnings) ? 'error' : 'success', batchError ? `전체 변환을 마치지 못했습니다. ${batchError}` : cancelled ? '변환을 취소했습니다.' : '파일 처리가 완료되었습니다.');
+    } else {
+      const outcome = items[0]?.outcome;
+      finishConversion(outcome?.status === 'ERROR' || !outcome ? 'error' : 'success', cancelled ? '변환을 취소했습니다.' : outcome?.status === 'SUCCESS' ? '변환이 완료되었습니다.' : outcome?.status === 'SUCCESS_WITH_WARNINGS' ? '변환이 완료되었습니다. 일부 항목을 확인해 주세요.' : 'HTML을 변환하지 못했습니다.');
+    }
+    json.hidden = !parsed;
   }
 });
-cancel.addEventListener('click', () => { cancelled = true; if (conversionStatus === 'converting') send({ type: 'CANCEL' }); status('변환을 취소하고 있습니다…'); cancel.disabled = true; });
+cancel.addEventListener('click', () => {
+  cancelled = true;
+  if (conversionStatus === 'converting') send({ type: 'CANCEL', ...(batchId ? { batchId } : requestId ? { requestId } : {}) });
+  status('변환을 취소하고 있습니다…'); cancel.disabled = true;
+});
 json.addEventListener('click', () => {
   if (!parsed) return;
   const url = URL.createObjectURL(new Blob([JSON.stringify(parsed, null, 2)], { type: 'application/json' }));
@@ -217,14 +364,16 @@ function showReport(report: ConversionReport | undefined, outcome: ConversionOut
 }
 window.addEventListener('message', (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
   const message = event.data?.pluginMessage;
-  // Figma may relay messages without parent as event.source; correlate the active request instead.
-  if (!message || typeof message !== 'object' || message.requestId !== requestId || conversionStatus !== 'converting') return;
-  if (message.type === 'PROGRESS') { status(`${message.count}개의 레이어를 생성했습니다…`); return; }
-  if (message.type === 'CONVERSION_COMPLETE') {
-    const { report, outcome } = message.payload || {};
-    if (!outcome?.result.frameCreated || outcome.status === 'ERROR' || !report) { finishConversion('error', 'HTML을 변환하지 못했습니다. 결과 정보를 확인할 수 없습니다.'); return; }
-    finishConversion('success', outcome.status === 'SUCCESS_WITH_WARNINGS' ? '변환이 완료되었습니다. 일부 항목을 확인해 주세요.' : '변환이 완료되었습니다.', report, outcome);
-  } else if (message.type === 'CONVERSION_ERROR') finishConversion('error', 'HTML을 변환하지 못했습니다.', undefined, message.payload?.outcome || failedOutcome(selectedFileName, message.payload?.message || '변환 중 알 수 없는 오류가 발생했습니다.'));
+  if (!message || typeof message !== 'object' || conversionStatus !== 'converting') return;
+  if (message.type === 'BATCH_STARTED' || message.type === 'BATCH_COMPLETE' || message.type === 'BATCH_ERROR') {
+    if (message.batchId !== batchId || !pendingBatch || (message.type !== pendingBatch.type && message.type !== 'BATCH_ERROR')) return;
+    const resolve = pendingBatch.resolve; pendingBatch = null; resolve(message); return;
+  }
+  // Check all three identities: duplicate names and late messages cannot advance the queue.
+  if (message.requestId !== requestId || (batchId ? message.batchId !== batchId || message.itemId !== currentItem?.id : message.batchId !== undefined || message.itemId !== undefined)) return;
+  if (message.type === 'PROGRESS') { progress(`${message.count}개의 레이어를 생성했습니다…`); return; }
+  if (message.type !== 'CONVERSION_COMPLETE' && message.type !== 'CONVERSION_ERROR') return;
+  if (pendingFile) { const resolve = pendingFile; pendingFile = null; resolve(message); }
 });
 get('status').dataset.state = conversionStatus;
 renderControls();

@@ -165,12 +165,26 @@ export interface HeightHierarchyEntry {
   parsedReason: string;
   reason: string;
 }
-export type UIMessage = { type: 'CREATE_FIGMA'; requestId: string; fileName?: string; payload: ParsedDocument } | { type: 'CANCEL' };
+export interface BatchContext { batchId: string; itemId: string }
+export interface BatchItem { itemId: string; fileName: string }
+export type FileConversionStatus = 'WAITING' | 'CONVERTING' | ConversionOutcome['status'];
+export interface BatchSummary { total: number; success: number; warnings: number; errors: number; waiting: number; cancelled: boolean }
+export type UIMessage =
+  | ({ type: 'CREATE_FIGMA'; requestId: string; fileName?: string; payload: ParsedDocument } & Partial<BatchContext>)
+  | { type: 'BATCH_START'; batchId: string; items: BatchItem[] }
+  | ({ type: 'FILE_ANALYSIS_ERROR'; requestId: string; message: string } & BatchContext)
+  | { type: 'BATCH_FINISH'; batchId: string; cancelled: boolean }
+  | { type: 'CANCEL'; requestId?: string; batchId?: string };
 export type ConversionStatus = 'idle' | 'converting' | 'success' | 'error';
-export type MainMessage =
+export type FileMessage = (
   | { type: 'PROGRESS'; requestId: string; count: number }
-  | { type: 'CONVERSION_COMPLETE'; requestId: string; payload: { success: true; report: ConversionReport; outcome: ConversionOutcome } }
-  | { type: 'CONVERSION_ERROR'; requestId: string; payload: { success: false; message: string; outcome: ConversionOutcome } };
+  | { type: 'CONVERSION_COMPLETE'; requestId: string; payload: { success: true; report: ConversionReport; outcome: ConversionOutcome; frameId?: string } }
+  | { type: 'CONVERSION_ERROR'; requestId: string; payload: { success: false; message: string; outcome: ConversionOutcome } }
+) & Partial<BatchContext>;
+export type MainMessage = FileMessage
+  | { type: 'BATCH_STARTED'; batchId: string }
+  | { type: 'BATCH_COMPLETE'; batchId: string; summary: BatchSummary }
+  | { type: 'BATCH_ERROR'; batchId: string; message: string };
 export const LIMITS = { fileBytes: 5 * 1024 * 1024, imageBytes: 4 * 1024 * 1024, assetBytes: 16 * 1024 * 1024, nodes: 3000, depth: 80, loadMs: 8000, dimension: 100000 } as const;
 export const VIEWPORT_PRESETS: Readonly<Record<string, Readonly<ViewportPreset>>> = {
   '1440': { width: 1440, height: 900 },
