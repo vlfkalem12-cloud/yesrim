@@ -13,6 +13,7 @@ import { generateLayerName } from './layer-naming';
 import { configureRichGridHeights, configureRichIconRow, configureRichWrapper, readRichInline, richTextNode } from './rich-text';
 import { isAccessibilityHidden } from './dom-visibility';
 import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
+import { configureContentHeight, preserveWrappedViewportGeometry, readHeightSource, rootHeightMode } from './height-sizing';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
@@ -242,11 +243,12 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       style: readStyle(style), children: [], source: { selector: selector(el), id: el.id, classNames: [...el.classList], styleless: !el.hasAttribute('style') },
       cssVariables: readCSSVariables(style, variableNames, selector(el))
     };
+    readHeightSource(node, el, style, skipped);
     if (node.layout.position === 'fixed') node.layout.fixedInsets = readFixedInsets(el, node.layout, style, { width: options.viewport, height: options.viewportHeight });
     count++;
     if (node.layout.position === 'fixed') warn('FIXED_ELEMENT', name, '선택한 Viewport 기준 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
     else if (node.layout.absolute) warn('ABSOLUTE_ELEMENT', name, '절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
-    if (node.layout.wrap) { node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED'; warn('FLEX_WRAP', name, '여러 줄 Flexbox는 측정된 고정 위치로 유지했습니다.'); }
+    if (node.layout.wrap) { node.layout.direction = 'NONE'; if (node.size.heightMode !== 'FILL') node.size.heightMode = 'FIXED'; }
     if (style.display.includes('grid')) parseGrid(node, style, el, warn);
     if (style.transform !== 'none') warn('TRANSFORM', name, 'CSS transform은 측정된 경계 상자로 단순화했습니다.');
     if (style.cssFloat !== 'none') warn('FLOAT', name, 'float는 측정된 위치만 유지합니다.');
@@ -330,6 +332,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       buildGridRows(node); configureRichGridHeights(node); count += gridExtras;
     }
     else if (node.grid?.supported && options.autoLayout) { node.grid.supported = false; warn('GRID_FALLBACK', name, '노드/깊이 제한으로 Grid 행 생성을 생략했습니다.'); }
+    configureContentHeight(node, el, style, options.autoLayout);
+    if (node.layout.wrap && node.layout.wrapSpacing === undefined) warn('FLEX_WRAP', name, '여러 줄 Flexbox는 측정된 고정 위치로 유지했습니다.');
     if (!options.autoLayout) node.layout.direction = 'NONE';
     node.layerName = generateLayerName(el, { type: node.type, text: node.text, width: rect.width, height: rect.height, isHidden: skipped,
       debug: options.debug ? candidates => console.info('HTML → Figma naming', selector(el), candidates) : undefined });
@@ -391,6 +395,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     warn('VIEWPORT_CONSTRAINT', root.name, '최상위 Frame은 입력한 viewport 폭을 우선하므로 충돌하는 min/max-width를 해제했습니다.');
     root.size.minWidth = null; root.size.maxWidth = null;
   }
+  preserveWrappedViewportGeometry(root, node => warn('FLEX_WRAP', node.name, 'Viewport 폭 적용 시 Wrap의 행 배치가 바뀌므로 기존 좌표·높이를 유지했습니다.'));
   const descendants = [root];
   let contentBottom = root.rect.y + root.rect.height;
   while (descendants.length) {
@@ -398,9 +403,9 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     contentBottom = Math.max(contentBottom, current.rect.y + current.rect.height);
     descendants.push(...current.children);
   }
-  root.size.height = clamp(Math.max(root.size.height, contentBottom - root.rect.y, doc.body.scrollHeight, doc.documentElement.scrollHeight > options.viewportHeight ? doc.documentElement.scrollHeight : 0), 1);
+  if (!['fixed', 'viewport', 'percent'].includes(root.size.heightIntent || '')) root.size.height = clamp(Math.max(root.size.height, contentBottom - root.rect.y, doc.body.scrollHeight, doc.documentElement.scrollHeight > options.viewportHeight ? doc.documentElement.scrollHeight : 0), 1);
   // Auto Layout roots hug content, fixed-position roots retain measured document height.
-  root.size.heightMode = options.autoLayout && root.layout.direction !== 'NONE' ? 'HUG' : 'FIXED';
+  root.size.heightMode = rootHeightMode(root, options.autoLayout);
   if (root.children.length && root.children.every(child => child.layout.absolute)) root.size.heightMode = 'FIXED';
   if (root.rect.width > options.viewport + 1) warn('VIEWPORT_OVERFLOW', 'Imported HTML', '콘텐츠가 선택한 viewport보다 넓습니다. 루트 폭은 viewport로 고정하고 자식 치수는 유지합니다.');
   if (bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)') {

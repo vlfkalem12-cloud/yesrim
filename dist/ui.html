@@ -226,13 +226,13 @@
     const parentFlex = !!parentStyle && ["flex", "inline-flex"].includes(parentStyle.display) && parentStyle.flexWrap === "nowrap";
     const column = parentStyle?.flexDirection.startsWith("column");
     const align = style.alignSelf === "auto" ? parentStyle?.alignItems : style.alignSelf;
-    const intrinsic = (value) => /^(auto|fit-content|max-content|min-content)/.test(value);
+    const intrinsic2 = (value) => /^(auto|fit-content|max-content|min-content)/.test(value);
     function mode(axis, authored, measured) {
       const primary = axis === "width" ? !column : column;
       if (parentFlex && (authored === "100%" || primary && number(style.flexGrow) > 0)) return "FILL";
       if (parentFlex && !primary && authored === "auto" && ["stretch", "normal"].includes(align || "")) return "FILL";
       if (parentFlex && primary && style.flexBasis !== "auto" && style.flexBasis !== "content") return "FIXED";
-      if (!intrinsic(authored)) return "FIXED";
+      if (!intrinsic2(authored)) return "FIXED";
       if (axis === "width" && !parentFlex && !["inline", "inline-block", "inline-flex"].includes(style.display)) return "FIXED";
       if (axis === "width" && style.whiteSpace !== "nowrap" && style.whiteSpace !== "pre" && measured > 0 && el.localName === "p") return "FIXED";
       return "HUG";
@@ -632,9 +632,9 @@
   function measureFormText(element, rect, style, content) {
     const doc = element.ownerDocument;
     const controlStyle = doc.defaultView.getComputedStyle(element);
-    const border = readInsets(controlStyle, "border"), padding = readInsets(controlStyle, "padding");
-    const width = Math.max(1, rect.width - border.left - border.right - padding.left - padding.right);
-    const height = Math.max(0, rect.height - border.top - border.bottom - padding.top - padding.bottom);
+    const border2 = readInsets(controlStyle, "border"), padding = readInsets(controlStyle, "padding");
+    const width = Math.max(1, rect.width - border2.left - border2.right - padding.left - padding.right);
+    const height = Math.max(0, rect.height - border2.top - border2.bottom - padding.top - padding.bottom);
     const mirror = doc.createElement("span");
     mirror.style.setProperty("all", "initial", "important");
     for (const key of ["font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "direction", "word-break", "overflow-wrap", "tab-size"]) mirror.style.setProperty(key, style.getPropertyValue(key), "important");
@@ -647,8 +647,8 @@
       const box = range.getBoundingClientRect(), lineBox = mirror.getBoundingClientRect();
       const verticalOffset = content.multiline ? 0 : Math.max(0, (height - lineBox.height) / 2);
       return {
-        x: rect.x + border.left + padding.left + (content.multiline ? 0 : box.x - lineBox.x),
-        y: rect.y + border.top + padding.top + verticalOffset + box.y - lineBox.y,
+        x: rect.x + border2.left + padding.left + (content.multiline ? 0 : box.x - lineBox.x),
+        y: rect.y + border2.top + padding.top + verticalOffset + box.y - lineBox.y,
         width: content.multiline ? width : box.width,
         height: Math.max(box.height, number(style.lineHeight, number(style.fontSize, 16)))
       };
@@ -1148,6 +1148,177 @@
     return top + bottom >= 100 || left + right >= 100;
   }
 
+  // src/height-sizing.ts
+  function heightIntent(value) {
+    if (value === "auto" || !value) return "auto";
+    if (value === "min-content" || value === "max-content") return value;
+    if (/fit-content|stretch|content/.test(value)) return "intrinsic";
+    if (/\b(?:\d*\.?\d+)(?:s|l|d)?v(?:h|w|min|max)\b/.test(value)) return "viewport";
+    if (value.includes("%")) return "percent";
+    return "fixed";
+  }
+  function readHeightSource(node, element, style, skipped) {
+    const inlineHeight = element.style?.height || "";
+    if (heightIntent(node.size.authoredHeight) === "fixed" && ["viewport", "percent"].includes(heightIntent(inlineHeight))) node.size.authoredHeight = inlineHeight;
+    node.size.heightIntent = heightIntent(node.size.authoredHeight);
+    node.size.heightSource = {
+      renderedHeight: node.rect.height,
+      computedHeight: style.height,
+      inlineHeight,
+      minHeight: style.minHeight,
+      maxHeight: style.maxHeight,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      normalFlowChildren: [...element.childNodes].some((child) => child.nodeType === 3 ? !!child.textContent?.trim() : child.nodeType === 1 && !skipped(child) && !["absolute", "fixed"].includes(element.ownerDocument.defaultView.getComputedStyle(child).position))
+    };
+  }
+  var intrinsic = (node) => ["auto", "intrinsic", "min-content", "max-content"].includes(node.size.heightIntent || "");
+  var border = (node, axis) => axis === "x" ? node.style.borderWidths.left + node.style.borderWidths.right : node.style.borderWidths.top + node.style.borderWidths.bottom;
+  var flowChildren = (node) => node.children.filter((child) => !child.layout.absolute);
+  var noMargins = (node) => Object.values(node.layout.margin).every((value) => value === 0);
+  var close = (a, b) => Math.abs(a - b) <= 1;
+  function configureContentHeight(node, element, style, enabled) {
+    if (node.type !== "FRAME" || !node.size.heightSource) return;
+    const source = node.size.heightSource;
+    const reason = (message) => {
+      source.reason = message;
+    };
+    if (!enabled) {
+      reason("Auto Layout disabled; measured geometry retained");
+      return;
+    }
+    if (node.layout.absolute) {
+      reason("Absolute/Fixed positioning retained");
+      return;
+    }
+    if (["fixed", "viewport"].includes(node.size.heightIntent || "")) {
+      node.size.heightMode = "FIXED";
+      reason("Explicit height");
+      return;
+    }
+    if (node.size.heightMode === "FILL") {
+      reason("Parent flex-grow/stretch/percentage Fill retained");
+      return;
+    }
+    if (!intrinsic(node)) {
+      node.size.heightMode = "FIXED";
+      reason("Percentage/relative height retained");
+      return;
+    }
+    const children = flowChildren(node);
+    if (!children.length) {
+      reason("No normal-flow content; measured height retained");
+      return;
+    }
+    if (node.layout.wrap) {
+      if (style.flexDirection !== "row" || style.flexWrap !== "wrap" || style.direction !== "ltr" || style.transform !== "none" || node.size.widthMode === "HUG" || !children.every((child) => noMargins(child) && child.size.widthMode === "FIXED") || !matchesWrappedBoxes(node, children, Math.max(0, number(style.rowGap)))) {
+        node.layout.direction = "NONE";
+        node.size.heightMode = "FIXED";
+        reason("Complex Wrap; measured geometry retained");
+        return;
+      }
+      node.layout.direction = "HORIZONTAL";
+      node.layout.wrapSpacing = Math.max(0, number(style.rowGap));
+      node.size.heightMode = "HUG";
+      reason("Content-driven horizontal Wrap");
+      return;
+    }
+    if (node.layout.direction !== "NONE") {
+      node.size.heightMode = "HUG";
+      reason("Intrinsic Auto Layout content");
+      return;
+    }
+    const identifiableBox = !!element.id || !!element.classList.length || element.hasAttribute("style") || element.localName === "body" && noMargins(node);
+    if (style.display !== "block" || node.size.widthMode === "HUG" || !identifiableBox || style.transform !== "none" || !children.every((child) => noMargins(child) && ["block", "flex", "grid"].includes(child.layout.display)) || !matchesVerticalBoxes(node, children)) {
+      reason("Flow cannot safely use vertical Auto Layout");
+      return;
+    }
+    node.layout.direction = "VERTICAL";
+    node.layout.align = "MIN";
+    node.layout.justify = "MIN";
+    node.layout.gap = 0;
+    node.size.heightMode = "HUG";
+    reason("Measured vertical normal flow");
+  }
+  function matchesVerticalBoxes(parent2, children) {
+    const left = parent2.rect.x + parent2.layout.padding.left + parent2.style.borderWidths.left;
+    let top = parent2.rect.y + parent2.layout.padding.top + parent2.style.borderWidths.top;
+    for (const child of children) {
+      if (!close(child.rect.x, left) || !close(child.rect.y, top)) return false;
+      top += child.size.height;
+    }
+    return close(top + parent2.layout.padding.bottom + parent2.style.borderWidths.bottom, parent2.rect.y + parent2.rect.height);
+  }
+  function matchesWrappedBoxes(parent2, children, rowGap) {
+    const width = parent2.size.width - parent2.layout.padding.left - parent2.layout.padding.right - border(parent2, "x");
+    const rows = [];
+    let used = 0;
+    for (const child of [...children].sort((a, b) => a.layout.order - b.layout.order)) {
+      if (child.size.width > width + 1) return false;
+      if (!rows.length || used + parent2.layout.gap + child.size.width > width + 0.01) {
+        rows.push([child]);
+        used = child.size.width;
+      } else {
+        rows[rows.length - 1].push(child);
+        used += parent2.layout.gap + child.size.width;
+      }
+    }
+    let y = parent2.rect.y + parent2.layout.padding.top + parent2.style.borderWidths.top;
+    for (const row of rows) {
+      const rowWidth = row.reduce((sum, child) => sum + child.size.width, 0) + parent2.layout.gap * (row.length - 1);
+      const height = Math.max(...row.map((child) => child.size.height));
+      let x = parent2.rect.x + parent2.layout.padding.left + parent2.style.borderWidths.left;
+      if (parent2.layout.justify === "CENTER") x += (width - rowWidth) / 2;
+      if (parent2.layout.justify === "MAX") x += width - rowWidth;
+      const gap = parent2.layout.justify === "SPACE_BETWEEN" && row.length > 1 ? (width - row.reduce((sum, child) => sum + child.size.width, 0)) / (row.length - 1) : parent2.layout.gap;
+      for (const child of row) {
+        const offset = parent2.layout.align === "CENTER" ? (height - child.size.height) / 2 : parent2.layout.align === "MAX" ? height - child.size.height : 0;
+        if (!close(child.rect.x, x) || !close(child.rect.y, y + offset)) return false;
+        x += child.size.width + gap;
+      }
+      y += height + rowGap;
+    }
+    return close(y - rowGap + parent2.layout.padding.bottom + parent2.style.borderWidths.bottom, parent2.rect.y + parent2.rect.height);
+  }
+  function preserveWrappedViewportGeometry(root, fallback) {
+    const groups = (node, width) => {
+      const available = width - node.layout.padding.left - node.layout.padding.right - border(node, "x");
+      const rows = [];
+      let used = 0;
+      for (const child of [...flowChildren(node)].sort((a, b) => a.layout.order - b.layout.order)) {
+        if (!rows.length || used + node.layout.gap + child.size.width > available + 0.01) {
+          rows.push([child.name]);
+          used = child.size.width;
+        } else {
+          rows[rows.length - 1].push(child.name);
+          used += node.layout.gap + child.size.width;
+        }
+      }
+      return JSON.stringify(rows);
+    };
+    const visit = (node, width) => {
+      if (node.layout.wrapSpacing !== void 0 && !close(width, node.rect.width) && (node.layout.justify !== "MIN" || groups(node, width) !== groups(node, node.rect.width))) {
+        delete node.layout.wrapSpacing;
+        node.layout.direction = "NONE";
+        node.size.heightMode = "FIXED";
+        if (node.size.heightSource) node.size.heightSource.reason = "Viewport width changes Wrap rows; measured geometry retained";
+        fallback(node);
+      }
+      const inner = width - node.layout.padding.left - node.layout.padding.right - border(node, "x");
+      const flow = flowChildren(node), fills = flow.filter((child) => child.size.widthMode === "FILL");
+      const remaining = inner - flow.filter((child) => child.size.widthMode !== "FILL").reduce((sum, child) => sum + child.size.width, 0) - Math.max(0, flow.length - 1) * node.layout.gap;
+      for (const child of node.children) {
+        const projected = !child.layout.absolute && child.size.widthMode === "FILL" ? node.layout.direction === "VERTICAL" ? inner : node.layout.direction === "HORIZONTAL" && !node.layout.wrap ? remaining / Math.max(1, fills.length) : child.size.width : child.size.width;
+        visit(child, projected);
+      }
+    };
+    visit(root, root.size.width);
+  }
+  function rootHeightMode(node, enabled) {
+    if (!enabled || node.layout.direction === "NONE" || !flowChildren(node).length || !intrinsic(node)) return "FIXED";
+    return "HUG";
+  }
+
   // src/parser.ts
   var TEXT_TAGS = /* @__PURE__ */ new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "strong", "small", "a", "em", "b", "i", "li", "pre", "code"]);
   var OMIT_TAGS = /* @__PURE__ */ new Set(["head", "style", "script", "link", "meta", "title", "noscript", "template", "br"]);
@@ -1420,14 +1591,14 @@
         source: { selector: selector(el), id: el.id, classNames: [...el.classList], styleless: !el.hasAttribute("style") },
         cssVariables: readCSSVariables(style, variableNames, selector(el))
       };
+      readHeightSource(node, el, style, skipped);
       if (node.layout.position === "fixed") node.layout.fixedInsets = readFixedInsets(el, node.layout, style, { width: options.viewport, height: options.viewportHeight });
       count++;
       if (node.layout.position === "fixed") warn("FIXED_ELEMENT", name, "\uC120\uD0DD\uD55C Viewport \uAE30\uC900 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
       else if (node.layout.absolute) warn("ABSOLUTE_ELEMENT", name, "\uC808\uB300 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
       if (node.layout.wrap) {
         node.layout.direction = "NONE";
-        node.size.heightMode = "FIXED";
-        warn("FLEX_WRAP", name, "\uC5EC\uB7EC \uC904 Flexbox\uB294 \uCE21\uC815\uB41C \uACE0\uC815 \uC704\uCE58\uB85C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4.");
+        if (node.size.heightMode !== "FILL") node.size.heightMode = "FIXED";
       }
       if (style.display.includes("grid")) parseGrid(node, style, el, warn);
       if (style.transform !== "none") warn("TRANSFORM", name, "CSS transform\uC740 \uCE21\uC815\uB41C \uACBD\uACC4 \uC0C1\uC790\uB85C \uB2E8\uC21C\uD654\uD588\uC2B5\uB2C8\uB2E4.");
@@ -1536,6 +1707,8 @@
         node.grid.supported = false;
         warn("GRID_FALLBACK", name, "\uB178\uB4DC/\uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C Grid \uD589 \uC0DD\uC131\uC744 \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
       }
+      configureContentHeight(node, el, style, options.autoLayout);
+      if (node.layout.wrap && node.layout.wrapSpacing === void 0) warn("FLEX_WRAP", name, "\uC5EC\uB7EC \uC904 Flexbox\uB294 \uCE21\uC815\uB41C \uACE0\uC815 \uC704\uCE58\uB85C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4.");
       if (!options.autoLayout) node.layout.direction = "NONE";
       node.layerName = generateLayerName(el, {
         type: node.type,
@@ -1613,6 +1786,7 @@
       root.size.minWidth = null;
       root.size.maxWidth = null;
     }
+    preserveWrappedViewportGeometry(root, (node) => warn("FLEX_WRAP", node.name, "Viewport \uD3ED \uC801\uC6A9 \uC2DC Wrap\uC758 \uD589 \uBC30\uCE58\uAC00 \uBC14\uB00C\uBBC0\uB85C \uAE30\uC874 \uC88C\uD45C\xB7\uB192\uC774\uB97C \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4."));
     const descendants = [root];
     let contentBottom = root.rect.y + root.rect.height;
     while (descendants.length) {
@@ -1620,8 +1794,8 @@
       contentBottom = Math.max(contentBottom, current.rect.y + current.rect.height);
       descendants.push(...current.children);
     }
-    root.size.height = clamp(Math.max(root.size.height, contentBottom - root.rect.y, doc.body.scrollHeight, doc.documentElement.scrollHeight > options.viewportHeight ? doc.documentElement.scrollHeight : 0), 1);
-    root.size.heightMode = options.autoLayout && root.layout.direction !== "NONE" ? "HUG" : "FIXED";
+    if (!["fixed", "viewport", "percent"].includes(root.size.heightIntent || "")) root.size.height = clamp(Math.max(root.size.height, contentBottom - root.rect.y, doc.body.scrollHeight, doc.documentElement.scrollHeight > options.viewportHeight ? doc.documentElement.scrollHeight : 0), 1);
+    root.size.heightMode = rootHeightMode(root, options.autoLayout);
     if (root.children.length && root.children.every((child) => child.layout.absolute)) root.size.heightMode = "FIXED";
     if (root.rect.width > options.viewport + 1) warn("VIEWPORT_OVERFLOW", "Imported HTML", "\uCF58\uD150\uCE20\uAC00 \uC120\uD0DD\uD55C viewport\uBCF4\uB2E4 \uB113\uC2B5\uB2C8\uB2E4. \uB8E8\uD2B8 \uD3ED\uC740 viewport\uB85C \uACE0\uC815\uD558\uACE0 \uC790\uC2DD \uCE58\uC218\uB294 \uC720\uC9C0\uD569\uB2C8\uB2E4.");
     if (bodyStyle.backgroundColor === "rgba(0, 0, 0, 0)") {

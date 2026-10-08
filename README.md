@@ -40,7 +40,7 @@ npm run dev
 
 Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 있습니다. `ViewportPreset` 타입과 `VIEWPORT_PRESETS`는 문서 크기와 분리된 너비·높이 쌍입니다. 기본값은 Desktop 1440의 1440 × 900px입니다. Desktop 1280은 1280 × 800, Tablet 768은 768 × 1024, Mobile 375는 375 × 812로 설정됩니다. 프리셋 선택 시 두 값이 함께 적용되며, 직접 입력한 너비·높이가 프리셋과 모두 일치할 때만 해당 프리셋으로 표시합니다.
 
-입력한 너비·높이에서 실제 HTML을 렌더링하므로 CSS media query와 `vw` / `vh`가 반영됩니다. 생성되는 최상위 Frame의 너비는 입력값으로 고정하고, **Frame 높이는 콘텐츠에 따라 자동 결정**합니다. 입력한 높이는 HTML을 측정할 때의 viewport 높이입니다. 빈 값, 0, 음수, 소수, 범위 초과는 변환 전에 차단합니다.
+입력한 너비·높이에서 실제 HTML을 렌더링하므로 CSS media query와 `vw` / `vh`가 반영됩니다. 생성되는 최상위 Frame의 너비는 입력값으로 고정하고, **Frame 높이는 콘텐츠에 따라 자동 결정**하며, 원본 Root에 명시적인 height가 있으면 그 렌더링 높이를 Fixed로 유지합니다. 입력한 높이는 HTML을 측정할 때의 viewport 높이입니다. 빈 값, 0, 음수, 소수, 범위 초과는 변환 전에 차단합니다.
 
 원본 예제의 `.page { width:1440px; padding:40px }`는 기본 `content-box`이므로 브라우저에서 실제 폭이 1520px입니다. 플러그인은 요청한 최상위 폭 1440px을 사용하고 overflow Warning을 보여줍니다. 입력 HTML에 `* { box-sizing:border-box }`를 적용하면 이 차이를 줄일 수 있습니다.
 
@@ -78,6 +78,16 @@ Multiple Background를 확인할 때는 **Debug Mode**를 켜고 완료 보고�
 
 선두 SVG + Rich Text 문장은 기존 Frame 안에서 Horizontal Auto Layout, Icon Fixed, Text Fill + Hug Height와 `textAutoResize: HEIGHT`로 배치합니다. 텍스트 폭은 padding / border / Icon / 실제 공백을 포함한 간격을 뺀 나머지 폭입니다. 이 문장을 감싸는 단일 Block 카드와 해당 카드로만 구성된 Grid Row는 높이가 내용에 맞춰 늘어나도록 처리해 clipping을 피합니다. 기존 wrapper와 Layer Naming 함수는 유지하며, 단독 Bold 요소, Flex의 별도 항목, Background / Border / Padding / 명시적 크기 / 독립 opacity 등 박스가 있는 inline은 기존 노드 경로를 유지합니다. Text + Badge도 별도 Frame + Text로 유지합니다.
 
+### CSS Height → Fixed / Hug / Fill
+
+`test/height-sizing-regression.html`은 `flex:1 1 360px`, `min-height:340px` 카드 6개와 `gap:20px`로 3×2 / 700px 높이를 재현합니다. 기존 Frame·자식·폭을 유지하면서 지원 가능한 Wrap은 `layoutWrap: WRAP`, Height Hug로 처리하므로 카드 추가·삭제에 따라 부모 높이가 변합니다. Padding / gap / border는 Auto Layout이 계산하며, 최종 viewport resize 후에도 Root의 Height Mode를 유지합니다.
+
+JSON의 `size.heightIntent`는 auto / intrinsic / fixed / percent / viewport / min-content / max-content를 구분합니다. 실제 렌더링 높이는 `size.height`와 `heightSource.renderedHeight`, CSS 작성 의도는 `authoredHeight`, inline 선언은 `heightSource.inlineHeight`로 보존합니다. Typed OM에서 auto를 확인하며 viewport 단위의 inline 선언도 보존합니다. min/max-height·overflow·normal-flow 자식 정보와 기존 layout의 display / position / flex / grid 정보를 함께 사용합니다.
+
+명시적 px / viewport / Root height, Chart와 clipping / scrolling 영역은 Fixed를 유지합니다. 부모의 공간을 채우는 flex-grow / percentage Fill과 cross-axis Stretch는 기존 Fill을 유지합니다. Auto Layout의 콘텐츠 높이와 안전하게 표현할 수 있는 세로 Block 흐름은 Hug로 처리합니다. 높이만 개선하며 Layer Naming / Rich Text / Width Sizing / Grid / SVG / Gradient / Wrapper 제거 코드는 변경하지 않습니다.
+
+Wrap은 가로 row / 기본 wrap / 고정된 자식 폭 / margin 없음이며 브라우저의 실제 행·간격과 일치할 때 지원합니다. 역방향·복잡한 흐름, 기존 Hug Width 의미가 바뀌는 경우, 최상위 viewport 폭 적용으로 행 배치가 바뀌는 경우에는 측정된 좌표와 높이를 유지합니다. 별도 Row wrapper를 추가하지 않습니다. Debug의 `HEIGHT_SIZING` 보고서와 `html-height-sizing` plugin data에서 renderedHeight / authoredHeight / 최종 HUG·FIXED·FILL과 판단 이유를 확인할 수 있습니다.
+
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
 
 ## 구현 구조
@@ -97,6 +107,7 @@ src/inline-layout.ts   Mixed Inline 스타일 구분과 한 줄 Auto Layout
 src/rich-text.ts       순수 Inline Text 병합·UTF-16 Range·Icon 옆 wrapping
 src/layer-naming.ts    의미 기반 이름 생성과 최종 node.name 적용
 src/sizing.ts          부모·Flex·CSS 크기와 min/max → Fixed / Fill / Hug
+src/height-sizing.ts   CSS 높이 의도·안전한 Hug·Wrap 높이·명시적 Root 높이 보호
 src/grid.ts            기본 Grid → 세로·가로 Auto Layout 중첩
 src/assets.ts          이미지·배경 이미지 로딩, 상대 경로 연결, 캐시
 src/svg.ts             Inline SVG 스타일 정규화와 Vector 입력 준비
@@ -114,6 +125,7 @@ test/gradient-regression.html  Linear Gradient 배경과 fallback 회귀 HTML
 test/inline-accessibility-regression.html  접근성 숨김과 Mixed Inline 회귀 HTML
 test/layer-naming-regression.html  의미 있는 Layer 이름과 Form / SVG / Utility class 예제
 test/rich-text-regression.html  모바일 질문 카드 6개·Rich Text·Badge 회귀 HTML
+test/height-sizing-regression.html  3×2 카드 Wrap·Hug·Fixed·min-height·clipping 회귀 HTML
 tests/                 Chromium 파싱·UI 및 Figma API 모의 테스트
 ```
 
@@ -151,7 +163,7 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 ## 미지원 범위와 Known Issues
 
 - JavaScript 실행 결과, interactive state, animation / transition, Shadow DOM / Web Components, canvas / video / iframe, complex transform / float / pseudo-element는 재현하지 않습니다. 일부는 경고와 빈 Frame으로 대체되거나 생략됩니다.
-- Grid span / 명시적 배치 / dense / 복잡한 track 함수와 `flex-wrap`은 editable fixed layout으로 보존합니다. 기본 Grid의 모든 Cell은 측정된 행 높이를 사용하므로 후속 편집 때 CSS의 자동 행 높이와 차이가 날 수 있습니다.
+- Grid span / 명시적 배치 / dense / 복잡한 track 함수 및 안전하게 표현할 수 없는 Flex Wrap은 editable fixed layout으로 보존합니다. 지원 가능한 가로 Wrap은 원래 자식 폭·구조와 행 배치를 유지하며 높이를 Hug로 처리합니다. 기본 Grid의 Cell은 기존 측정 행 높이를 유지하므로 후속 편집 때 CSS의 자동 행 높이와 차이가 날 수 있습니다.
 - 순수 스타일 차이의 문장과 선두 SVG + 문장은 Rich Text로 줄바꿈합니다. 여러 독립 박스가 섞이는 복잡한 Inline 줄바꿈은 측정된 Text / Frame 좌표를 사용합니다. Rich Text 카드만 있는 Grid Row는 내용 높이를 사용하므로 문장 길이가 다르면 같은 행의 카드 높이가 달라질 수 있습니다. 가상 리스트, 스크립트로 생성되는 DOM, form control의 내부 브라우저 렌더링은 완전히 재현하지 않습니다.
 - cardinal 방향 외의 Linear Gradient 각도, px stop / color hint / 두 위치 stop / 색상 보간 공간은 Solid fallback으로 단순화합니다. radial / conic / repeating gradient, 반복 배경 / center 이외 배경 위치, list marker, writing-mode / RTL, space-around / evenly, baseline, 개별 align-self 정렬, 음수 margin, 서로 다른 border 색상은 생략하거나 단순화합니다. Figma API가 지원하지 않는 Frame shadow spread는 blur·offset을 유지하고 경고합니다.
 - 서로 다른 flex-grow 비율은 Figma Fill의 동일 분배와 차이가 있어 측정 크기로 고정하고 경고합니다. 복잡한 flow 자식 z-index와 CSS stacking context 전체는 완전히 재현하지 않습니다.
@@ -199,4 +211,6 @@ Naming 검증은 우선순위·Semantic / Label / SVG / Image·Utility 제외·�
 
 Rich Text 검증은 모바일 카드 6개·하나의 문장·UTF-16 Range·중첩 스타일·공백·Icon 폭·Fill/Hug·박스 제외·폰트 대체·Range API 실패·옵션 OFF·UI 반복 변환을 검사합니다. Figma API 결과의 폭과 Range를 브라우저 DOM에 투영해 여러 줄과 가용 폭을 독립 확인하며, 이는 실제 Figma 렌더링 스크린샷이 아닙니다. 수정 전 엔진 `007c1ae`와 비교한 Dashboard / Form / Landing / Fixed / Phase 2의 5종 전체 문서·Figma 노드·이름·보고서·SVG·이미지가 동일함을 확인했습니다. `RICHTEXT_BASELINE_SRC`를 이전 src 경로로 지정하면 이 비교를 다시 실행할 수 있습니다. 산출물은 `test-results/rich-text-intermediate.json`, `test-results/rich-text-regression.json`, `test-results/rich-text-browser-projection.png`입니다.
 
-전체 94개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+Height 검증은 동일한 computed px의 auto / 명시적 선언 구분, 3×2 / 700px Wrap과 독립 Chromium 좌표·높이 비교, 박스 높이 모의 환경에서 자식 추가·삭제, padding / gap / border / min-height, 모바일 360×844 Fixed + Middle Fill + 추천 질문 Hug, Chart·clipping·Stretch·Absolute·Fixed, 옵션 OFF·Wrap API 실패·최종 resize 후 Hug 유지·viewport 폭 변경 fallback·Debug·이전 JSON을 검사합니다. `HEIGHT_BASELINE_SRC`를 이전 src 경로로 지정하면 Landing / Dashboard / Form / Fixed / Grid / Rendering / Gradient / Inline / Naming / Mobile의 10종 샘플에서 폭·이름·구조·Rich Text·스타일·이미지·SVG 보존을 비교합니다. 산출물은 `test-results/height-intermediate.json`과 `test-results/height-regression.json`입니다. 높이 모의 환경은 단순 박스의 크기 계산만 구현하며 실제 Figma 엔진과 font metrics를 구현하지 않습니다.
+
+최신 검증은 104개 중 103개 테스트 통과, 실패 0개이며 TypeScript 검사·빌드가 통과했습니다. 이전 Rich Text 단계의 조건부 엔진 비교 1개는 실행 조건이 없어 skip했습니다. 이번 Height 단계는 수정 전 `4200294`와 비교하는 별도 검증을 실행했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

@@ -23,7 +23,7 @@
 
   // src/report.ts
   function warningCategory(code) {
-    if (code === "BACKGROUND_DEBUG") return "Debug";
+    if (code === "BACKGROUND_DEBUG" || code === "HEIGHT_SIZING") return "Debug";
     if (/FONT/.test(code)) return "Fonts";
     if (/GRADIENT|BACKGROUND_LAYER/.test(code)) return "Unsupported CSS";
     if (/IMAGE|ASSET|BACKGROUND/.test(code)) return "Images";
@@ -228,6 +228,10 @@
       if (node.type === "TEXT" && (typeof node.text !== "string" || node.text.length > 1e6)) throw new Error("\uC798\uBABB\uB41C \uD14D\uC2A4\uD2B8 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.ranges !== void 0 && (node.type !== "TEXT" || !Array.isArray(node.ranges) || node.ranges.some((range, index) => !range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.start >= range.end || range.end > node.text.length || index > 0 && range.start < node.ranges[index - 1].end || !range.style || typeof range.style.fontFamily !== "string" || typeof range.style.fontStyle !== "string" || typeof range.style.textDecoration !== "string" || ![range.style.fontSize, range.style.fontWeight, range.style.letterSpacing].every((value2) => finite(value2)) || range.style.fontSize <= 0 || range.style.lineHeight !== null && (!finite(range.style.lineHeight) || range.style.lineHeight < 0) || range.style.color && ![range.style.color.r, range.style.color.g, range.style.color.b, range.style.color.a].every((value2) => finite(value2, 1) && value2 >= 0)))) throw new Error("\uC798\uBABB\uB41C Rich Text Range \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !["FIXED", "FILL", "HUG"].includes(node.size.widthMode) || !["FIXED", "FILL", "HUG"].includes(node.size.heightMode)) throw new Error("\uC798\uBABB\uB41C \uD06C\uAE30 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.size.heightIntent !== void 0 && !["fixed", "auto", "intrinsic", "percent", "viewport", "min-content", "max-content"].includes(node.size.heightIntent)) throw new Error("\uC798\uBABB\uB41C Height Intent \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      const heightSource = node.size.heightSource;
+      if (heightSource && (!finite(heightSource.renderedHeight) || heightSource.renderedHeight < 0 || typeof heightSource.normalFlowChildren !== "boolean" || ![heightSource.computedHeight, heightSource.inlineHeight, heightSource.minHeight, heightSource.maxHeight, heightSource.overflowX, heightSource.overflowY].every((value2) => typeof value2 === "string"))) throw new Error("\uC798\uBABB\uB41C Height Source \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.layout.wrapSpacing !== void 0 && (!finite(node.layout.wrapSpacing) || node.layout.wrapSpacing < 0 || !node.layout.wrap || node.layout.direction !== "HORIZONTAL")) throw new Error("\uC798\uBABB\uB41C Wrap Sizing \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       for (const value2 of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value2 !== void 0 && value2 !== null && (!finite(value2) || value2 < 0)) throw new Error("\uC798\uBABB\uB41C \uCD5C\uC18C/\uCD5C\uB300 \uD06C\uAE30\uC785\uB2C8\uB2E4.");
       if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every((value2) => finite(value2)))) throw new Error("\uC798\uBABB\uB41C \uADF8\uB9BC\uC790 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       const gradient = node.style.backgroundGradient;
@@ -438,6 +442,16 @@
       frame.paddingBottom = clamp(parsed.layout.padding.bottom);
       frame.paddingLeft = clamp(parsed.layout.padding.left);
       frame.strokesIncludedInLayout = true;
+      if (parsed.layout.wrapSpacing !== void 0) {
+        try {
+          frame.layoutWrap = "WRAP";
+          frame.counterAxisSpacing = parsed.layout.wrapSpacing;
+          frame.counterAxisAlignContent = "AUTO";
+        } catch (error) {
+          frame.layoutMode = "NONE";
+          warn("HEIGHT_LAYOUT", parsed.name, `Wrap API\uB97C \uC801\uC6A9\uD558\uC9C0 \uBABB\uD574 \uCE21\uC815\uB41C \uC88C\uD45C\xB7\uB192\uC774\uB97C \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+        }
+      }
     }
     function applySizing(node, parsed, parent, absolute) {
       const autoParent = !!parent && parent.layoutMode !== "NONE" && !absolute;
@@ -486,6 +500,24 @@
       if (autoParent && parsed.layout.alignSelf !== "auto" && !["stretch", "normal"].includes(parsed.layout.alignSelf)) {
         const alignment = parsed.layout.alignSelf.includes("center") ? "CENTER" : parsed.layout.alignSelf.includes("end") ? "MAX" : "MIN";
         if (alignment !== parent.counterAxisAlignItems) warn("ALIGN_SELF", parsed.name, "\uAC1C\uBCC4 align-self \uC815\uB82C\uC740 \uBD80\uBAA8\uC758 \uC815\uB82C\uB85C \uB2E8\uC21C\uD654\uD588\uC2B5\uB2C8\uB2E4.");
+      }
+      if (doc.options.debug && node.type === "FRAME" && parsed.size.heightSource) {
+        const details = {
+          ...parsed.size.heightSource,
+          authoredHeight: parsed.size.authoredHeight,
+          intent: parsed.size.heightIntent,
+          display: parsed.layout.display,
+          flexWrap: parsed.layout.wrap,
+          flexGrow: parsed.layout.grow,
+          mode: autoFrame || autoParent ? node.layoutSizingVertical : "FIXED"
+        };
+        node.setPluginData("html-height-sizing", JSON.stringify(details));
+        warn("HEIGHT_SIZING", parsed.name, `renderedHeight: ${details.renderedHeight}px
+authoredHeight: ${details.authoredHeight}
+display: ${details.display}
+flexWrap: ${details.flexWrap}
+flexGrow: ${details.flexGrow}
+Figma Height Mode: ${details.mode}`);
       }
     }
     function place(node, parsed, parent, parentParsed) {
@@ -697,7 +729,9 @@
       if (cancelled2()) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
       created.name = `Imported HTML${doc.options.debug && doc.root.source ? ` [${doc.root.source.selector}]` : ""}`;
       if (created.layoutMode !== "NONE") created.layoutSizingHorizontal = "FIXED";
+      const finalRootHeightMode = created.layoutMode !== "NONE" ? created.layoutSizingVertical : "FIXED";
       created.resizeWithoutConstraints(doc.options.viewport, clamp(created.height, 0.01));
+      if (created.layoutMode !== "NONE" && created.layoutSizingVertical !== finalRootHeightMode) created.layoutSizingVertical = finalRootHeightMode;
       const fixed = fixedPlacements.filter((item) => !item.node.removed).sort((a, b) => (a.parsed.layout.zIndex || 0) - (b.parsed.layout.zIndex || 0));
       for (const { node, parsed } of fixed) placeFixed(node, parsed, created);
       if (fixed.length && "numberOfFixedChildren" in created) {

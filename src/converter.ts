@@ -103,6 +103,11 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
       (range.style.lineHeight !== null && (!finite(range.style.lineHeight) || range.style.lineHeight < 0)) ||
       (range.style.color && ![range.style.color.r, range.style.color.g, range.style.color.b, range.style.color.a].every(value => finite(value, 1) && value >= 0))))) throw new Error('잘못된 Rich Text Range 데이터입니다.');
     if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !['FIXED', 'FILL', 'HUG'].includes(node.size.widthMode) || !['FIXED', 'FILL', 'HUG'].includes(node.size.heightMode)) throw new Error('잘못된 크기 데이터입니다.');
+    if (node.size.heightIntent !== undefined && !['fixed', 'auto', 'intrinsic', 'percent', 'viewport', 'min-content', 'max-content'].includes(node.size.heightIntent)) throw new Error('잘못된 Height Intent 데이터입니다.');
+    const heightSource = node.size.heightSource;
+    if (heightSource && (!finite(heightSource.renderedHeight) || heightSource.renderedHeight < 0 || typeof heightSource.normalFlowChildren !== 'boolean' ||
+      ![heightSource.computedHeight, heightSource.inlineHeight, heightSource.minHeight, heightSource.maxHeight, heightSource.overflowX, heightSource.overflowY].every(value => typeof value === 'string'))) throw new Error('잘못된 Height Source 데이터입니다.');
+    if (node.layout.wrapSpacing !== undefined && (!finite(node.layout.wrapSpacing) || node.layout.wrapSpacing < 0 || !node.layout.wrap || node.layout.direction !== 'HORIZONTAL')) throw new Error('잘못된 Wrap Sizing 데이터입니다.');
     for (const value of [node.size.minWidth, node.size.maxWidth, node.size.minHeight, node.size.maxHeight]) if (value !== undefined && value !== null && (!finite(value) || value < 0)) throw new Error('잘못된 최소/최대 크기입니다.');
     if (node.style.shadow && (!node.style.shadow.color || ![node.style.shadow.x, node.style.shadow.y, node.style.shadow.blur, node.style.shadow.spread].every(value => finite(value)))) throw new Error('잘못된 그림자 데이터입니다.');
     const gradient = node.style.backgroundGradient;
@@ -297,6 +302,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     frame.paddingTop = clamp(parsed.layout.padding.top); frame.paddingRight = clamp(parsed.layout.padding.right);
     frame.paddingBottom = clamp(parsed.layout.padding.bottom); frame.paddingLeft = clamp(parsed.layout.padding.left);
     frame.strokesIncludedInLayout = true;
+    if (parsed.layout.wrapSpacing !== undefined) {
+      try { frame.layoutWrap = 'WRAP'; frame.counterAxisSpacing = parsed.layout.wrapSpacing; frame.counterAxisAlignContent = 'AUTO'; }
+      catch (error) { frame.layoutMode = 'NONE'; warn('HEIGHT_LAYOUT', parsed.name, `Wrap API를 적용하지 못해 측정된 좌표·높이를 유지합니다: ${errorMessage(error)}`); }
+    }
   }
   function applySizing(node: EditableNode, parsed: ParsedNode, parent: FrameNode | undefined, absolute: boolean): void {
     const autoParent = !!parent && parent.layoutMode !== 'NONE' && !absolute;
@@ -345,6 +354,13 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (autoParent && parsed.layout.alignSelf !== 'auto' && !['stretch', 'normal'].includes(parsed.layout.alignSelf)) {
       const alignment = parsed.layout.alignSelf.includes('center') ? 'CENTER' : parsed.layout.alignSelf.includes('end') ? 'MAX' : 'MIN';
       if (alignment !== parent.counterAxisAlignItems) warn('ALIGN_SELF', parsed.name, '개별 align-self 정렬은 부모의 정렬로 단순화했습니다.');
+    }
+    if (doc.options.debug && node.type === 'FRAME' && parsed.size.heightSource) {
+      const details = { ...parsed.size.heightSource, authoredHeight: parsed.size.authoredHeight, intent: parsed.size.heightIntent,
+        display: parsed.layout.display, flexWrap: parsed.layout.wrap, flexGrow: parsed.layout.grow,
+        mode: autoFrame || autoParent ? node.layoutSizingVertical : 'FIXED' };
+      node.setPluginData('html-height-sizing', JSON.stringify(details));
+      warn('HEIGHT_SIZING', parsed.name, `renderedHeight: ${details.renderedHeight}px\nauthoredHeight: ${details.authoredHeight}\ndisplay: ${details.display}\nflexWrap: ${details.flexWrap}\nflexGrow: ${details.flexGrow}\nFigma Height Mode: ${details.mode}`);
     }
   }
   function place(node: EditableNode, parsed: ParsedNode, parent: FrameNode | undefined, parentParsed: ParsedNode | undefined): void {
@@ -541,7 +557,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (cancelled()) throw new Error('변환을 취소했습니다.');
     created.name = `Imported HTML${doc.options.debug && doc.root.source ? ` [${doc.root.source.selector}]` : ''}`;
     if (created.layoutMode !== 'NONE') created.layoutSizingHorizontal = 'FIXED';
+    const finalRootHeightMode = created.layoutMode !== 'NONE' ? created.layoutSizingVertical : 'FIXED';
     created.resizeWithoutConstraints(doc.options.viewport, clamp(created.height, 0.01));
+    // Preserve the final height intent even on runtimes where resize turns Hug into Fixed.
+    if (created.layoutMode !== 'NONE' && created.layoutSizingVertical !== finalRootHeightMode) created.layoutSizingVertical = finalRootHeightMode;
     // Fixed layers belong to the viewport, outside DOM parents' clipping and document anchors.
     // Hoist the whole subtree before placing its descendants; keep fixed layers in z-index order.
     const fixed = fixedPlacements.filter(item => !item.node.removed).sort((a, b) => (a.parsed.layout.zIndex || 0) - (b.parsed.layout.zIndex || 0));

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>CSS Height Intent / Hug Regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/24px Inter, sans-serif; }
+  main { display: flex; flex-direction: column; gap: 24px; padding: 20px; width: 1160px; }
+  #card-list { display: flex; flex-wrap: wrap; gap: 20px; }
+  .card { flex: 1 1 360px; min-height: 340px; background: #EEF2FA; border: 1px solid #CCD4E0; border-radius: 12px; }
+  #column { display: flex; flex-direction: column; gap: 12px; padding: 10px; border: 2px solid #CCD4E0; }
+  #column > div { height: 40px; background: #E6F4F1; }
+  #normal-flow > div { height: 30px; background: #E6F4F1; }
+  #chart-wrap { height: 280px; background: linear-gradient(180deg,#FFFFFF,#EEF2FA); }
+  #clipped { height: 76px; overflow: hidden; }
+  #clipped > div { height: 180px; }
+  #scrolling { height: 100px; overflow: auto; }
+  #scrolling > div { height: 200px; }
+  #grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+  #grid > div { height: 44px; background: #F1F8F6; }
+  #min-height { display: flex; flex-direction: column; min-height: 100px; padding: 8px; }
+  #min-height > div { height: 30px; }
+</style>
+<main id="height-page">
+  <div id="card-list"><div class="card"></div><div class="card"></div><div class="card"></div><div class="card"></div><div class="card"></div><div class="card"></div></div>
+  <section id="column"><div></div><div></div><div></div></section>
+  <section id="normal-flow"><div></div><div></div></section>
+  <section id="chart-wrap"><svg width="120" height="80" viewBox="0 0 120 80"><path d="M0 70L30 40L60 50L90 20L120 10" fill="none" stroke="#2563EB"/></svg></section>
+  <div id="clipped"><div></div></div>
+  <div id="scrolling"><div></div></div>
+  <div id="grid"><div></div><div></div><div></div><div></div></div>
+  <div id="min-height"><div></div></div>
+</main>
+</html>

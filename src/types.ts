@@ -1,4 +1,5 @@
 export type SizingMode = 'FIXED' | 'FILL' | 'HUG';
+export type HeightIntent = 'fixed' | 'auto' | 'intrinsic' | 'percent' | 'viewport' | 'min-content' | 'max-content';
 export interface Insets { top: number; right: number; bottom: number; left: number }
 export interface Bounds { x: number; y: number; width: number; height: number }
 export interface Color { r: number; g: number; b: number; a: number }
@@ -25,6 +26,7 @@ export interface ParsedLayout {
   alignSelf: string;
   order: number;
   wrap: boolean;
+  wrapSpacing?: number; // Native horizontal Wrap only, preserving the measured widths and CSS row gap.
 }
 export interface ParsedSize {
   width: number;
@@ -33,6 +35,9 @@ export interface ParsedSize {
   heightMode: SizingMode;
   authoredWidth: string;
   authoredHeight: string;
+  heightIntent?: HeightIntent;
+  heightSource?: { renderedHeight: number; computedHeight: string; inlineHeight: string; minHeight: string; maxHeight: string;
+    overflowX: string; overflowY: string; normalFlowChildren: boolean; reason?: string };
   minWidth?: number | null;
   maxWidth?: number | null;
   minHeight?: number | null;
