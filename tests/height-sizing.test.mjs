@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { createFigmaMock, flatten } from './figma-mock.mjs';
+import { restoreAtomicComponentPolicy, restoreAtomicTextResize } from './component-compat.mjs';
 
 let browser, server, url, parser, converter, baselineParser, baselineConverter;
 const baselineSource = process.env.HEIGHT_BASELINE_SRC;
@@ -225,10 +226,11 @@ test('Height changes preserve width/names/wrappers/Rich Text/SVG/Gradient across
   for (const file of ['examples/mvp.html', 'test/dashboard-rendering-regression.html', 'test/form-controls-regression.html', 'test/fixed-position-regression.html',
     'test/phase2-test.html', 'test/rendering-regression.html', 'test/gradient-regression.html', 'test/inline-accessibility-regression.html', 'test/layer-naming-regression.html', 'test/rich-text-regression.html']) {
     const html = await readFile(file, 'utf8'), oldDoc = await parse(html, {}, baselineParser), doc = await parse(html);
-    assert.deepEqual(withoutHeight(doc), withoutHeight(oldDoc), `${file}: width/structure/names/position/style metadata changed`);
+    assert.deepEqual(withoutHeight(restoreAtomicComponentPolicy(doc, oldDoc)), withoutHeight(oldDoc), `${file}: width/structure/names/position/style metadata outside later atomic-component policy changed`);
     const before = await convert(oldDoc, {}, baselineConverter), after = await convert(doc);
-    assert.deepEqual(unaffectedPaints(after.frame, new Map(nodes(doc.root).filter(node => node.type === 'FRAME').map(node => [node.source?.selector, node]))),
-      unaffectedPaints(before.frame, new Map(nodes(oldDoc.root).filter(node => node.type === 'FRAME').map(node => [node.source?.selector, node]))), `${file}: width/text/paints/wrappers/names changed`);
+    const currentPaints = unaffectedPaints(after.frame, new Map(nodes(doc.root).filter(node => node.type === 'FRAME').map(node => [node.source?.selector, node])));
+    const previousPaints = unaffectedPaints(before.frame, new Map(nodes(oldDoc.root).filter(node => node.type === 'FRAME').map(node => [node.source?.selector, node])));
+    assert.deepEqual(restoreAtomicTextResize(currentPaints, previousPaints, doc), previousPaints, `${file}: width/text/paints/wrappers/names outside atomic Text auto width changed`);
     assert.deepEqual(after.svgImports, before.svgImports); assert.deepEqual(after.images, before.images);
     results.push({ file, nodes: flatten(after.frame).length, widthsEqual: true, namesEqual: true, structureEqual: true, richTextEqual: true, assetsEqual: true });
   }

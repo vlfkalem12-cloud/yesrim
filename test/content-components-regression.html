@@ -1,0 +1,30 @@
+<!doctype html><html lang="ko"><head><meta charset="UTF-8"><style>
+body { margin:0; font-family:Arial,sans-serif; font-size:14px; line-height:20px; }
+main { display:flex; flex-direction:column; align-items:flex-start; gap:20px; padding:20px; }
+.chips { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.chip { background:#F2F4F6; padding:6px 12px; border-radius:999px; }
+.badge { border:1px solid #D1D6DB; padding:2px 8px; border-radius:6px; }
+button { font:inherit; color:#fff; background:#0B7A6E; padding:8px 14px; border:1px solid #0B7A6E; border-radius:8px; }
+.button-box { display:block; width:fit-content; }
+.button-box svg { vertical-align:-2px; margin:0; }
+.button-box span { margin:0; }
+.fill-row { display:flex; flex-direction:column; width:300px; }
+.fixed { width:220px; height:44px; }
+.fill { width:100%; }
+.constrained { max-width:90px; }
+.long { width:160px; }
+.positioned { position:absolute; left:20px; top:500px; }
+</style></head><body><main>
+<div class="chips"><span id="chip" class="chip" style="white-space:nowrap">집 팔 거</span><span id="chip-long" class="chip">두 채 중 하나를 팔아요</span><span id="badge" class="badge">간편</span></div>
+<button id="button" class="button-box">계산하기</button>
+<button id="icon-button" class="button-box"><span>자세히 보기</span> <svg width="14" height="14" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor"/></svg></button>
+<div class="fill-row"><button id="fixed" class="fixed">고정 너비</button><button id="fill" class="fill">전체 너비</button></div>
+<button id="constrained" class="constrained">여러 줄 버튼의 문구를 유지합니다</button>
+<button id="inner-constraint" class="button-box"><span style="display:inline-block;max-width:90px">제한</span></button>
+<div id="long" class="chip long">This long paragraph forms an ordinary content card and should retain its original wrapping constraints.</div>
+<div style="width:max-content"><div id="block-fill" class="chip">ABC</div></div>
+<span id="positioned" class="chip positioned">Absolute</span>
+<span id="plain">Plain inline</span>
+<div id="rich" class="chip"><span>앞부분 </span><strong>굵은 텍스트</strong><span> 뒷부분</span></div>
+<div id="hidden" class="chip" style="display:none">숨김</div>
+</main></body></html>

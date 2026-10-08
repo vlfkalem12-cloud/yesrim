@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { createFigmaMock, flatten } from './figma-mock.mjs';
+import { restoreAtomicComponentPolicy, restoreAtomicTextResize } from './component-compat.mjs';
 
 let browser, server, url, parser, converter, oldParser, oldConverter;
 const baseline = process.env.NESTED_BASELINE_SRC;
@@ -312,7 +313,7 @@ test('Normal-flow metadata is validated before allocation; Debug explains each a
 });
 
 function allowedHeightChange(current, previous) {
-  const copy = structuredClone(current);
+  const copy = restoreAtomicComponentPolicy(current, previous);
   function visit(node, old) {
     assert.equal(node.children.length, old.children.length, `${node.name}: parsed wrappers/children changed`);
     if (node.layout.normalFlow || node.size.heightSource?.reason === 'Viewport width changes block alignment; measured geometry retained') {
@@ -345,7 +346,7 @@ test('Compared with d56ef4a, width/names/wrappers/Rich Text/SVG/Gradient/Form/Gr
     const html = await readFile(file, 'utf8'), oldDoc = await parse(html, {}, oldParser), doc = await parse(html);
     assert.deepEqual(allowedHeightChange(doc, oldDoc), oldDoc, `${file}: only verified block height flow may change`);
     const previous = await convert(oldDoc, {}, oldConverter), current = await convert(doc);
-    assert.deepEqual(unchangedVisuals(current.frame), unchangedVisuals(previous.frame), `${file}: final width/names/wrappers/text/paints changed`);
+    assert.deepEqual(restoreAtomicTextResize(unchangedVisuals(current.frame), unchangedVisuals(previous.frame), doc), unchangedVisuals(previous.frame), `${file}: final width/names/wrappers/text/paints outside atomic Text auto width changed`);
     assert.deepEqual(current.svgImports, previous.svgImports); assert.deepEqual(current.images, previous.images);
     results.push({ file, nodes: flatten(current.frame).length, widthEqual: true, namesEqual: true, wrappersEqual: true, textEqual: true, paintsEqual: true, assetsEqual: true });
   }

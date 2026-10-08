@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, simulateHugWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -99,6 +99,11 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       let measuredWidth = 100;
       Object.defineProperty(node, 'width', { enumerable: true, get: () => {
         const parent = node.parent;
+        if (simulateHugWidth && type === 'FRAME' && node.layoutMode === 'HORIZONTAL' && node.layoutSizingHorizontal === 'HUG') {
+          const flow = node.children.filter(child => child.layoutPositioning !== 'ABSOLUTE');
+          const stroke = node.strokesIncludedInLayout ? (node.strokeLeftWeight || 0) + (node.strokeRightWeight || 0) : 0;
+          return Math.max(node.minWidth || .01, Math.min(node.maxWidth ?? Infinity, flow.reduce((sum, child) => sum + child.width, 0) + Math.max(0, flow.length - 1) * (node.itemSpacing || 0) + (node.paddingLeft || 0) + (node.paddingRight || 0) + stroke));
+        }
         if (!parent?.layoutMode || parent.layoutMode === 'NONE' || node.layoutPositioning === 'ABSOLUTE' || node.layoutSizingHorizontal !== 'FILL') return measuredWidth;
         const available = parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0) -
           (parent.strokesIncludedInLayout ? (parent.strokeLeftWeight || 0) + (parent.strokeRightWeight || 0) : 0);
@@ -135,6 +140,20 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       let measuredX = 0;
       Object.defineProperty(node, 'x', { enumerable: true, get: () => {
         const parent = node.parent;
+        if (simulateHugWidth && parent?.layoutMode === 'HORIZONTAL' && node.layoutPositioning !== 'ABSOLUTE') {
+          const flow = parent.children.filter(child => child.layoutPositioning !== 'ABSOLUTE');
+          const left = (parent.paddingLeft || 0) + (parent.strokesIncludedInLayout ? parent.strokeLeftWeight || 0 : 0);
+          const available = parent.width - left - (parent.paddingRight || 0) - (parent.strokesIncludedInLayout ? parent.strokeRightWeight || 0 : 0);
+          const rows = []; let used = 0;
+          for (const child of flow) {
+            if (!rows.length || (parent.layoutWrap === 'WRAP' && used + (parent.itemSpacing || 0) + child.width > available + .01)) { rows.push([child]); used = child.width; }
+            else { rows.at(-1).push(child); used += (parent.itemSpacing || 0) + child.width; }
+          }
+          const row = rows.find(row => row.includes(node)) || [], index = row.indexOf(node);
+          const width = row.reduce((sum, child) => sum + child.width, 0) + Math.max(0, row.length - 1) * (parent.itemSpacing || 0);
+          const offset = parent.primaryAxisAlignItems === 'CENTER' ? (available - width) / 2 : parent.primaryAxisAlignItems === 'MAX' ? available - width : 0;
+          return left + offset + row.slice(0, index).reduce((sum, child) => sum + child.width, 0) + index * (parent.itemSpacing || 0);
+        }
         if (!parent?.layoutMode || parent.layoutMode !== 'VERTICAL' || node.layoutPositioning === 'ABSOLUTE') return measuredX;
         const left = (parent.paddingLeft || 0) + (parent.strokesIncludedInLayout ? parent.strokeLeftWeight || 0 : 0);
         const remaining = parent.width - left - (parent.paddingRight || 0) - (parent.strokesIncludedInLayout ? parent.strokeRightWeight || 0 : 0) - node.width;
@@ -147,7 +166,10 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
         const flow = parent.children.filter(child => child.layoutPositioning !== 'ABSOLUTE'), index = flow.indexOf(node);
         const top = (parent.paddingTop || 0) + (parent.strokesIncludedInLayout ? parent.strokeTopWeight || 0 : 0);
         if (parent.layoutMode === 'VERTICAL') return top + flow.slice(0, index).reduce((sum, child) => sum + child.height, 0) + index * (parent.itemSpacing || 0);
-        if (parent.layoutWrap !== 'WRAP') return top;
+        if (parent.layoutWrap !== 'WRAP') {
+          if (simulateHugWidth && parent.counterAxisAlignItems === 'CENTER') return top + (parent.height - top - (parent.paddingBottom || 0) - (parent.strokesIncludedInLayout ? parent.strokeBottomWeight || 0 : 0) - node.height) / 2;
+          return top;
+        }
         const available = parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0);
         let used = 0, rowHeight = 0, rowTop = top;
         for (const child of flow) {

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { createFigmaMock, flatten } from './figma-mock.mjs';
+import { restoreAtomicWidthModes } from './component-compat.mjs';
 
 const fixture = 'test/actual/09-01_A-pc-list.html';
 const baseline = process.env.ACTUAL_HUG_BASELINE_SRC;
@@ -255,7 +256,7 @@ test('Actual 1920px HTML with reserved scrollbar space retains centered Vertical
     assert.equal(oldTargets['Tax Section'].height, oldSectionHeight); assert.equal(oldTargets['Next Section'].y, oldNextY);
     evidence.viewportGutter.beforeAdded = hierarchy(old.frame);
     copy.remove();
-    assert.deepEqual(frozenPresentation(old.frame), frozenPresentation(result.frame), 'Width modes, names, wrappers, text and styles stay unchanged');
+    assert.deepEqual(restoreAtomicWidthModes(frozenPresentation(result.frame), frozenPresentation(old.frame)), frozenPresentation(old.frame), 'Width values, names, wrappers, text and styles outside later atomic Hug policy stay unchanged');
   }
 });
 
@@ -290,7 +291,7 @@ test('A real authored Root width mismatch still uses the measured fallback even 
 
 function frozenPresentation(node) {
   // Compare all presentation/width data; layout direction/height and centered X are the intentional change.
-  return { name: node.name, type: node.type, width: node.width, horizontal: node.layoutSizingHorizontal,
+  return { name: node.name, type: node.type, layout: node.layoutMode, width: node.width, horizontal: node.layoutSizingHorizontal,
     fills: node.fills, strokes: node.strokes, effects: node.effects, opacity: node.opacity, clips: node.clipsContent,
     characters: node.characters, font: node.fontName, fontSize: node.fontSize, resize: node.textAutoResize, ranges: node.rangeStyles,
     children: node.children.map(frozenPresentation) };

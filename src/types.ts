@@ -28,6 +28,7 @@ export interface ParsedLayout {
   wrap: boolean;
   wrapSpacing?: number; // Native horizontal Wrap only, preserving the measured widths and CSS row gap.
   normalFlow?: { gap: number; padding: Insets; align: 'MIN' | 'CENTER' | 'MAX' }; // Verified block flow; margins are already included, without adding wrappers.
+  contentComponent?: boolean; // Verified atomic text box; measured intrinsic widths remain safe Wrap inputs.
 }
 export interface ParsedSize {
   width: number;

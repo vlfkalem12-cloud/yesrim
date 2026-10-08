@@ -42,7 +42,7 @@ export function configureContentHeight(node: ParsedNode, element: Element, style
   if (!children.length) { reason('No normal-flow content; measured height retained'); return; }
   if (node.layout.wrap) {
     if (style.flexDirection !== 'row' || style.flexWrap !== 'wrap' || style.direction !== 'ltr' || style.transform !== 'none' || node.size.widthMode === 'HUG' ||
-      !children.every(child => noMargins(child) && child.size.widthMode === 'FIXED') || !matchesWrappedBoxes(node, children, Math.max(0, number(style.rowGap)))) {
+      !children.every(child => noMargins(child) && (child.size.widthMode === 'FIXED' || (child.layout.contentComponent && child.size.widthMode === 'HUG'))) || !matchesWrappedBoxes(node, children, Math.max(0, number(style.rowGap)))) {
       node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED'; reason('Complex Wrap; measured geometry retained'); return;
     }
     node.layout.direction = 'HORIZONTAL'; node.layout.wrapSpacing = Math.max(0, number(style.rowGap));

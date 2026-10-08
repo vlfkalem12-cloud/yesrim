@@ -15,6 +15,7 @@ import { isAccessibilityHidden } from './dom-visibility';
 import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
 import { configureContentHeight, preserveWrappedViewportGeometry, readHeightSource, rootHeightMode } from './height-sizing';
 import { warningCollector, warningElement, warningNode } from './report';
+import { configureContentComponent } from './content-components';
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'label', 'strong', 'small', 'a', 'em', 'b', 'i', 'li', 'pre', 'code']);
 const OMIT_TAGS = new Set(['head', 'style', 'script', 'link', 'meta', 'title', 'noscript', 'template', 'br']);
@@ -355,6 +356,7 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     }
     else if (node.grid?.supported && options.autoLayout) { node.grid.supported = false; warn('GRID_FALLBACK', name, '노드/깊이 제한으로 Grid 행 생성을 생략했습니다.'); }
     configureContentHeight(node, el, style, options.autoLayout);
+    configureContentComponent(el, node, style, options.autoLayout);
     if (node.layout.wrap && node.layout.wrapSpacing === undefined) warn('FLEX_WRAP', name, '여러 줄 Flexbox는 측정된 고정 위치로 유지했습니다.');
     if (!options.autoLayout) node.layout.direction = 'NONE';
     node.layerName = generateLayerName(el, { type: node.type, text: node.text, width: rect.width, height: rect.height, isHidden: skipped,

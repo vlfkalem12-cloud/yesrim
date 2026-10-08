@@ -9,14 +9,16 @@ import { createFigmaMock } from './figma-mock.mjs';
 
 let reports, browser, server, url, parser, oldParser, converter, oldConverter;
 const baseline = process.env.REPORT_BASELINE_SRC;
+// Keep the report-stage proof reproducible after intentional layout changes in later stages.
+const implementation = process.env.REPORT_IMPLEMENTATION_SRC || 'src';
 const bundle = async entry => (await build({ entryPoints: [entry], bundle: true, write: false, format: 'iife', globalName: 'Parser' })).outputFiles[0].text;
 before(async () => {
   await mkdir('test-results', { recursive: true });
   await build({ entryPoints: ['src/report.ts'], bundle: true, outfile: 'test-results/report-utils.mjs', format: 'esm', platform: 'node' });
   reports = await import('../test-results/report-utils.mjs');
   if (!baseline) return;
-  parser = await bundle('src/parser.ts'); oldParser = await bundle(resolve(baseline, 'parser.ts'));
-  for (const [entry, output] of [['src/converter.ts', 'report-converter'], [resolve(baseline, 'converter.ts'), 'report-old-converter']])
+  parser = await bundle(resolve(implementation, 'parser.ts')); oldParser = await bundle(resolve(baseline, 'parser.ts'));
+  for (const [entry, output] of [[resolve(implementation, 'converter.ts'), 'report-converter'], [resolve(baseline, 'converter.ts'), 'report-old-converter']])
     await build({ entryPoints: [entry], bundle: true, outfile: `test-results/${output}.mjs`, format: 'esm', platform: 'node' });
   converter = await import('../test-results/report-converter.mjs'); oldConverter = await import('../test-results/report-old-converter.mjs');
   server = createServer((_req, res) => res.end('<!doctype html><div id="host"></div>'));
@@ -74,7 +76,8 @@ function snapshot(node) {
 }
 test('Report-only changes leave complete IR and Figma layout/style/text/naming/assets identical to be2d331', { skip: !baseline }, async () => {
   for (const file of ['layer-naming.ts', 'rich-text.ts', 'inline-layout.ts', 'sizing.ts', 'height-sizing.ts', 'grid.ts', 'svg.ts', 'gradients.ts', 'backgrounds.ts', 'form-controls.ts', 'optimizer.ts'])
-    assert.equal(await readFile(`src/${file}`, 'utf8'), await readFile(resolve(baseline, file), 'utf8'), `${file} unchanged`);
+    assert.equal(await readFile(resolve(implementation, file), 'utf8'), await readFile(resolve(baseline, file), 'utf8'), `${file} unchanged during Report stage`);
+  assert.equal(await readFile('src/report.ts', 'utf8'), await readFile(resolve(implementation, 'report.ts'), 'utf8'), 'Current report policy retains the report-stage implementation');
   const evidence = [];
   for (const file of ['test/actual/09-01_A-pc-list.html', 'examples/mvp.html', 'test/dashboard-rendering-regression.html', 'test/form-controls-regression.html', 'test/fixed-position-regression.html', 'test/phase2-test.html', 'test/rendering-regression.html', 'test/gradient-regression.html', 'test/inline-accessibility-regression.html', 'test/layer-naming-regression.html', 'test/rich-text-regression.html', 'test/nested-hug-regression.html']) {
     const html = await readFile(file, 'utf8'), before = await parse(html, oldParser), current = await parse(html, parser);
