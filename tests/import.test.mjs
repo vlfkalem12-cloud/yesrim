@@ -331,12 +331,12 @@ test('Form content changes retain checkbox, radio, button and neighboring Grid, 
   }
 });
 
-async function parseWithBrowserRects(html, selectors) {
+async function parseWithBrowserRects(html, selectors, overrides = {}) {
   const page = await browser.newPage();
   try {
     await page.goto(base); await page.addScriptTag({ content: parserBundle });
-    return JSON.parse(await page.evaluate(async ({ html, selectors }) => {
-      const rendered = await Parser.renderHTML(html, 1440, 900, document.getElementById('host'));
+    return JSON.parse(await page.evaluate(async ({ html, selectors, options }) => {
+      const rendered = await Parser.renderHTML(html, options.viewport, options.viewportHeight, document.getElementById('host'));
       try {
         const measurements = Object.fromEntries(selectors.map(selector => {
           const element = rendered.document.querySelector(selector), rect = element.getBoundingClientRect();
@@ -344,12 +344,102 @@ async function parseWithBrowserRects(html, selectors) {
             const box = child.getBoundingClientRect(); return { name: child.id || child.classList[0] || child.localName, x: box.x - rect.x, y: box.y - rect.y, width: box.width, height: box.height };
           }) }];
         }));
-        const doc = await Parser.parseRenderedHTML(rendered, { viewport: 1440, viewportHeight: 900, autoLayout: true, styles: true });
+        const doc = await Parser.parseRenderedHTML(rendered, options);
         return JSON.stringify({ doc, measurements });
       } finally { rendered.dispose(); }
-    }, { html, selectors }));
+    }, { html, selectors, options: { viewport: 1440, viewportHeight: 900, autoLayout: true, styles: true, ...overrides } }));
   } finally { await page.close(); }
 }
+
+test('Fixed bottom toolbar uses the viewport, escaping a long clipped parent while absolute stays parent-relative', async () => {
+  const { doc, measurements } = await parseWithBrowserRects(await readFile('test/fixed-position-regression.html', 'utf8'), ['#fixed-toolbar', '#clipped-parent', '#absolute-card', '#toolbar-absolute']);
+  const { frame, report } = await convert(doc);
+  const toolbar = find(frame, 'fixed-toolbar'), parent = find(frame, 'clipped-parent'), absolute = find(frame, 'absolute-card');
+  assert.ok(frame.height > 2400, 'full document remains tall');
+  assert.equal(toolbar.parent, frame, 'fixed layer escapes its DOM parent clipping');
+  assert.deepEqual({ x: toolbar.x, y: toolbar.y, width: toolbar.width, height: toolbar.height }, { x: 240, y: 824, width: 1200, height: 76 });
+  assert.deepEqual(measurements['#fixed-toolbar'].x, toolbar.x);
+  assert.deepEqual(measurements['#fixed-toolbar'].y, toolbar.y);
+  if (frame.layoutMode !== 'NONE') assert.equal(toolbar.layoutPositioning, 'ABSOLUTE');
+  assert.deepEqual(toolbar.constraints, { horizontal: 'MIN', vertical: 'MIN' });
+  assert.equal(parent.clipsContent, true);
+  assert.equal(absolute.parent, parent);
+  assert.equal(absolute.y, measurements['#absolute-card'].y - measurements['#clipped-parent'].y);
+  assert.deepEqual(absolute.constraints, { horizontal: 'STRETCH', vertical: 'MAX' });
+  const innerAbsolute = find(frame, 'toolbar-absolute');
+  assert.equal(innerAbsolute.parent, toolbar);
+  assert.equal(innerAbsolute.x, measurements['#toolbar-absolute'].x - toolbar.x);
+  assert.equal(innerAbsolute.y, measurements['#toolbar-absolute'].y - toolbar.y);
+  assert.deepEqual(innerAbsolute.constraints, { horizontal: 'MAX', vertical: 'MIN' });
+  assert.equal(find(frame, 'form-grid').layoutMode, 'VERTICAL');
+  for (const [name, value] of [['name-input', '김'], ['selected-city', '부산'], ['memo', '현재 입력된 내용'], ['toolbar-input', '김']]) assert.equal(find(frame, name).children[0].characters, value);
+  for (const name of ['checkbox', 'radio', 'toolbar-button', 'toolbar-copy']) assert.ok(find(frame, name), name);
+  assert.deepEqual(flatten(find(frame, 'toolbar-copy')).filter(node => node.type === 'TEXT').map(node => node.characters), ['Viewport bottom', '편집 가능한 자식 유지']);
+  assert.deepEqual(frame.children.slice(-3).map(node => node.name), ['fixed-top', 'fixed-toolbar', 'fixed-label']);
+  assert.equal(frame.numberOfFixedChildren, 3);
+  assert.ok(report.warnings.some(warning => warning.code === 'FIXED_ELEMENT'));
+  assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+});
+
+test('Fixed offsets follow custom viewport dimensions, percentages and Hug font width changes', async () => {
+  const html = await readFile('test/fixed-position-regression.html', 'utf8');
+  for (const [viewport, viewportHeight] of [[1111, 777], [375, 812], [1440, 500]]) {
+    const { doc, measurements } = await parseWithBrowserRects(html, ['#fixed-toolbar', '#fixed-top', '#fixed-label'], { viewport, viewportHeight });
+    const { frame } = await convert(doc, { intrinsicWidthScale: 1.25, textSizingShift: { x: 13, y: -7 } });
+    const toolbar = find(frame, 'fixed-toolbar'), top = find(frame, 'fixed-top'), label = find(frame, 'fixed-label');
+    assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, viewportHeight - 76, viewport - 240, 76]);
+    assert.equal(top.x, measurements['#fixed-top'].x);
+    assert.equal(top.y, measurements['#fixed-top'].y);
+    assert.ok(Math.abs(top.x - viewport * .1) < .02);
+    assert.ok(Math.abs(top.y - viewportHeight * .05) < .02);
+    assert.equal(viewport - label.x - label.width, 20);
+    assert.equal(viewportHeight - label.y - label.height, 100);
+    assert.equal(label.textAutoResize, 'WIDTH_AND_HEIGHT');
+    assert.equal(label.parent, frame);
+  }
+});
+
+test('Opposing fixed insets retain auto-sized flex boxes instead of Hug sizing; calc and margins preserve browser positions', async () => {
+  const html = '<style>body{margin:0}main{display:flex;flex-direction:column;padding-top:70px;height:3000px}.stretch{position:fixed;display:flex;left:30px;right:40px;top:50px;bottom:60px}.margin{position:fixed;left:calc(10% + 5px);top:20px;margin:7px;width:90px;height:25px}.center{position:fixed;left:0;right:0;bottom:10px;width:100px;height:30px;margin:auto}</style><main><div class="stretch"><p>Keep stretching</p></div><div class="margin">Keep margin</div><div class="center">Center</div></main>';
+  const { doc, measurements } = await parseWithBrowserRects(html, ['.stretch', '.margin', '.center']);
+  const { frame } = await convert(doc);
+  const stretch = find(frame, 'stretch');
+  assert.equal(frame.layoutMode, 'VERTICAL'); assert.equal(stretch.layoutPositioning, 'ABSOLUTE');
+  assert.deepEqual([stretch.x, stretch.y, stretch.width, stretch.height], [30, 50, 1370, 790]);
+  assert.equal(stretch.layoutSizingHorizontal, 'FIXED'); assert.equal(stretch.layoutSizingVertical, 'FIXED');
+  for (const name of ['stretch', 'margin', 'center']) {
+    const target = find(frame, name), measured = measurements[`.${name}`];
+    assert.deepEqual([target.x, target.y, target.width, target.height], [measured.x, measured.y, measured.width, measured.height], name);
+  }
+});
+
+test('Fixed subtrees survive options off and a rejected Figma scroll property without losing viewport coordinates', async () => {
+  const html = await readFile('test/fixed-position-regression.html', 'utf8');
+  for (const options of [{ autoLayout: false }, { styles: false }, {}]) {
+    const { frame, report } = await convert(await parse(html, options), { failFixedChildren: true });
+    const toolbar = find(frame, 'fixed-toolbar');
+    assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, 824, 1200, 76]);
+    assert.equal(toolbar.parent, frame);
+    assert.equal(find(toolbar, 'toolbar-input').children[0].characters, '김');
+    assert.equal(find(toolbar, 'toolbar-absolute').parent, toolbar);
+    assert.ok(report.warnings.some(warning => warning.code === 'FIXED_SCROLL'));
+    assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
+    if (options.autoLayout === false) assert.equal(toolbar.layoutMode, 'NONE');
+    if (options.styles === false) assert.deepEqual(toolbar.fills, []);
+  }
+});
+
+test('A fixed decorated text frame and nested fixed elements keep their editable descendants in the correct frame', async () => {
+  const doc = await parse('<style>body{margin:0}main{height:2600px}.badge{position:fixed;right:12px;bottom:16px;background:red;padding:4px;border-radius:6px}.outer{position:fixed;left:20px;top:30px;width:200px;height:150px}.inner{position:fixed;right:10px;top:40px;width:80px;height:25px}</style><main><span class="badge">NEW</span><div class="outer"><p>Outer text</p><div class="inner"><strong>Inner text</strong></div></div></main>');
+  const { frame } = await convert(doc);
+  const badge = find(frame, 'badge'), outer = find(frame, 'outer'), inner = find(frame, 'inner');
+  for (const node of [badge, outer, inner]) assert.equal(node.parent, frame);
+  assert.equal(badge.children[0].characters, 'NEW'); assert.equal(badge.children[0].parent, badge);
+  assert.equal(find(outer, 'p').characters, 'Outer text'); assert.equal(find(inner, 'strong').characters, 'Inner text');
+  assert.deepEqual([inner.x, inner.y], [1350, 40]);
+  assert.ok(frame.children.indexOf(outer) < frame.children.indexOf(inner), 'nested fixed child paints above its parent');
+  assert.equal(frame.numberOfFixedChildren, 3);
+});
 
 test('MVP fixture: computed CSS → JSON → editable Figma frames and text', async () => {
   const doc = await parse(sample);

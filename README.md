@@ -106,7 +106,8 @@ HTML → scripts-disabled iframe → DOM / computed styles / bounds → `ParsedD
 - Typed OM으로 `auto` / `%` / px를 구분하고 측정 치수, 부모의 Flex 흐름, grow / shrink / basis와 min/max로 Fixed / Fill / Hug를 결정합니다. `flex:1`과 `width:100%`는 Auto Layout 부모에서 Fill을 사용합니다. 부모 Hug와 자식 Fill이 순환하면 부모의 측정 치수를 고정하고 경고합니다. min/max는 지원되는 Auto Layout 노드에 적용하며 그 밖에는 측정 크기와 경고를 유지합니다.
 - 기본 Grid `repeat(2,1fr)` / `repeat(3,1fr)` / `1fr 1fr` / `200px 1fr`는 세로 Auto Layout → 가로 Row → Cell 구조로 변환합니다. `fr` Cell은 Fill, px Cell은 Fixed이며 row-gap / column-gap을 분리합니다. 마지막 행의 빈 Cell은 열 폭을 유지합니다.
 - 양수 Flex 자식 margin은 투명 padding wrapper로 표현합니다. 비 Flex 요소는 브라우저가 측정한 좌표를 유지합니다.
-- Absolute / fixed 요소는 Auto Layout 흐름에서 분리하고 부모 기준 상대 좌표를 유지합니다. top / right / bottom / left의 선언 방향에 따라 MIN / MAX / STRETCH constraints를 적용합니다. z-index는 흐름 위치를 유지할 수 있는 범위에서 레이어 순서로 반영합니다.
+- Absolute 요소는 Auto Layout 흐름에서 분리하고 부모 기준 상대 좌표를 유지합니다. top / right / bottom / left의 선언 방향에 따라 MIN / MAX / STRETCH constraints를 적용합니다. z-index는 흐름 위치를 유지할 수 있는 범위에서 레이어 순서로 반영합니다.
+- Fixed 요소는 선택한 viewport 너비·높이에서 브라우저가 측정한 위치를 유지하며, 내부 자식을 포함해 최상위 Frame으로 이동합니다. 부모의 overflow clipping과 긴 문서 높이에 의한 bottom 재배치를 피하고, right / bottom Hug 크기 변경도 viewport 기준으로 보정합니다. 양쪽 inset이 지정된 auto 크기는 측정 치수를 유지합니다. Figma API가 지원하면 최상위 Frame의 `numberOfFixedChildren`을 설정하며, 실패 시 좌표·자식을 보존하고 `FIXED_SCROLL` Warning을 남깁니다. Fixed 레이어는 Figma 스크롤 고정 정책에 따라 일반 콘텐츠 위에 배치하고 서로의 z-index 순서를 유지합니다.
 - hex / rgb(a) / hsl(a) / transparent 색상, 네 방향 border 폭, 네 모서리 radius, 요소별 opacity, overflow hidden / auto / scroll clipping. 부모·자식 opacity는 각각 유지하며 곱한 값을 중복 적용하지 않습니다.
 - 첫 번째 box-shadow를 Drop / Inner Shadow로 변환하며 다중 shadow는 경고합니다.
 - font family / size / weight / italic / line-height / letter-spacing / text-align / text-transform / underline / strikethrough / white-space. 줄바꿈 Text는 측정된 폭 또는 Fill 폭을 사용하고 높이는 자동 결정합니다. nowrap / pre는 줄바꿈을 강제하지 않습니다.
@@ -163,4 +164,6 @@ Gradient 검증은 요청한 4-stop 배경, CSS 방향과 Figma transform의 시
 
 접근성 / Mixed Inline 검증은 clip / inset / 보조 spacing 패턴, Debug 기록, 포커스 후 표시, 작은 SVG·Divider·Progress Bar 보존, Text + Badge / Icon의 스타일·DOM 순서·간격, 순수 Text / br 유지, 줄바꿈의 브라우저 상대 좌표, 옵션 OFF 및 같은 HTML 연속 변환 후 동일한 구조·좌표·스타일을 검사합니다.
 
-전체 54개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+Fixed 검증은 긴 문서의 하단 바 (`1440×900`에서 `240,824,1200,76`), 사용자 지정·모바일 viewport, percentage / calc / margin inset, Hug 폰트 치수 변경, 양쪽 inset의 auto 크기, clipped 부모에서 분리, 내부 Absolute·Form·Grid 유지, 중첩 fixed 레이어 순서, 옵션 OFF 및 스크롤 고정 API 실패를 검사합니다. 실제 iframe UI에서 동일 HTML을 viewport 크기를 바꾸며 연속 변환하는 흐름도 확인합니다. 테스트 HTML은 `test/fixed-position-regression.html`입니다.
+
+전체 60개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

@@ -903,7 +903,8 @@
         cssVariables: readCSSVariables(style, variableNames, selector(el))
       };
       count++;
-      if (node.layout.absolute) warn("ABSOLUTE_ELEMENT", name, "\uC808\uB300 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
+      if (node.layout.position === "fixed") warn("FIXED_ELEMENT", name, "\uC120\uD0DD\uD55C Viewport \uAE30\uC900 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
+      else if (node.layout.absolute) warn("ABSOLUTE_ELEMENT", name, "\uC808\uB300 \uC704\uCE58\uB97C \uC720\uC9C0\uD558\uACE0 Auto Layout \uD750\uB984\uC5D0\uC11C \uBD84\uB9AC\uD588\uC2B5\uB2C8\uB2E4.");
       if (node.layout.wrap) {
         node.layout.direction = "NONE";
         node.size.heightMode = "FIXED";

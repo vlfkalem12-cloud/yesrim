@@ -201,7 +201,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
       cssVariables: readCSSVariables(style, variableNames, selector(el))
     };
     count++;
-    if (node.layout.absolute) warn('ABSOLUTE_ELEMENT', name, '절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
+    if (node.layout.position === 'fixed') warn('FIXED_ELEMENT', name, '선택한 Viewport 기준 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
+    else if (node.layout.absolute) warn('ABSOLUTE_ELEMENT', name, '절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.');
     if (node.layout.wrap) { node.layout.direction = 'NONE'; node.size.heightMode = 'FIXED'; warn('FLEX_WRAP', name, '여러 줄 Flexbox는 측정된 고정 위치로 유지했습니다.'); }
     if (style.display.includes('grid')) parseGrid(node, style, el, warn);
     if (style.transform !== 'none') warn('TRANSFORM', name, 'CSS transform은 측정된 경계 상자로 단순화했습니다.');

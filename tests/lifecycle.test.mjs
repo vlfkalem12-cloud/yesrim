@@ -120,6 +120,26 @@ test('The same accessibility and Mixed Inline HTML repeats without changing its 
   } finally { await session.page.close(); }
 });
 
+test('Repeated fixed-position conversions use each viewport selected in the actual plugin UI', async () => {
+  const session = await openSession();
+  const content = await readFile('test/fixed-position-regression.html', 'utf8');
+  try {
+    for (const [index, [width, height]] of [[1440, 900], [1111, 777], [375, 812]].entries()) {
+      await choose(session, 'fixed-position.html', content);
+      await session.ui.locator('#viewport').selectOption('custom');
+      await session.ui.locator('#viewport-width').fill(String(width));
+      await session.ui.locator('#viewport-height').fill(String(height));
+      await convertOnce(session); await assertUnlocked(session, 'success');
+      assert.equal(session.requests[index].payload.options.viewport, width);
+      assert.equal(session.requests[index].payload.options.viewportHeight, height);
+      const root = session.mock.figma.currentPage.children[index];
+      const toolbar = root.children.find(node => node.name === 'fixed-toolbar');
+      assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, height - 76, width - 240, 76]);
+      assert.equal(root.numberOfFixedChildren, 3);
+    }
+  } finally { await session.page.close(); }
+});
+
 test('Main conversion failure releases UI controls and allows the same HTML to succeed next time', async () => {
   const session = await openSession({ failFrameOnce: true });
   try {

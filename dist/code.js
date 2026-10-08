@@ -181,6 +181,8 @@
     await fonts.initialize();
     const imageHashes = /* @__PURE__ */ new Map();
     const placements = [];
+    const fixedPlacements = [];
+    const isFixed = (parsed) => parsed.layout.absolute && parsed.layout.position === "fixed";
     let root;
     function imagePaint(image, name) {
       try {
@@ -283,6 +285,8 @@
       }
       const mode = (requested, horizontal) => {
         if (!doc.options.autoLayout) return "FIXED";
+        const offsets = parsed.layout.offsets;
+        if (isFixed(parsed) && (horizontal ? parsed.size.authoredWidth === "auto" && offsets.left !== "auto" && offsets.right !== "auto" : parsed.size.authoredHeight === "auto" && offsets.top !== "auto" && offsets.bottom !== "auto")) return "FIXED";
         if (requested === "FILL" && !autoParent) return "FIXED";
         if (requested === "HUG" && !canHug) return "FIXED";
         if (requested === "HUG" && node.type === "FRAME" && node.children.some((child) => "layoutPositioning" in child && "layoutSizingHorizontal" in child && child.layoutPositioning !== "ABSOLUTE" && (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) === "FILL")) {
@@ -333,6 +337,16 @@
           node.constraints = { horizontal: offsets.left !== "auto" && offsets.right !== "auto" ? "STRETCH" : offsets.right !== "auto" ? "MAX" : "MIN", vertical: offsets.top !== "auto" && offsets.bottom !== "auto" ? "STRETCH" : offsets.bottom !== "auto" ? "MAX" : "MIN" };
         }
       }
+    }
+    function placeFixed(node, parsed, viewportFrame) {
+      viewportFrame.appendChild(node);
+      if (viewportFrame.layoutMode !== "NONE") node.layoutPositioning = "ABSOLUTE";
+      const right = doc.options.viewport - parsed.rect.x - parsed.rect.width;
+      const bottom = doc.options.viewportHeight - parsed.rect.y - parsed.rect.height;
+      const offsets = parsed.layout.offsets;
+      node.x = offsets.left === "auto" && offsets.right !== "auto" ? doc.options.viewport - right - node.width : parsed.rect.x;
+      node.y = offsets.top === "auto" && offsets.bottom !== "auto" ? doc.options.viewportHeight - bottom - node.height : parsed.rect.y;
+      node.constraints = { horizontal: "MIN", vertical: "MIN" };
     }
     function countNode(node) {
       report.total++;
@@ -398,7 +412,9 @@
         node.setPluginData("html-source", parsed.source?.selector || parsed.tagName);
         if (parsed.grid?.supported) node.setPluginData("html-grid", "true");
         if (parsed.layout.absolute) node.setPluginData("html-absolute", "true");
+        if (isFixed(parsed)) node.setPluginData("html-position", "fixed");
         node.resize(clamp(parsed.size.width, 0.01), clamp(parsed.size.height, 0.01));
+        if (parent && isFixed(parsed)) fixedPlacements.push({ node, parsed });
         const margin = parsed.layout.margin;
         const autoParent = !!parent && parent.layoutMode !== "NONE" && !parsed.layout.absolute;
         if (autoParent && Object.values(margin).some((v) => v !== 0)) {
@@ -450,7 +466,7 @@
           if (parsed.size.widthMode === "HUG" && node.layoutSizingHorizontal !== "FILL") marginWrapper.layoutSizingHorizontal = "HUG";
           if (parsed.size.heightMode === "HUG" && node.layoutSizingVertical !== "FILL") marginWrapper.layoutSizingVertical = "HUG";
         }
-        if (!marginWrapper && parent && parentParsed && (parent.layoutMode === "NONE" || parsed.layout.absolute)) placements.push({ node, parsed, parent, parentParsed });
+        if (!isFixed(parsed) && !marginWrapper && parent && parentParsed && (parent.layoutMode === "NONE" || parsed.layout.absolute)) placements.push({ node, parsed, parent, parentParsed });
         countNode(node);
         if (report.total % 25 === 0) {
           onProgress(report.total);
@@ -470,6 +486,15 @@
       created.name = `Imported HTML${doc.options.debug && doc.root.source ? ` [${doc.root.source.selector}]` : ""}`;
       if (created.layoutMode !== "NONE") created.layoutSizingHorizontal = "FIXED";
       created.resizeWithoutConstraints(doc.options.viewport, clamp(created.height, 0.01));
+      const fixed = fixedPlacements.filter((item) => !item.node.removed).sort((a, b) => (a.parsed.layout.zIndex || 0) - (b.parsed.layout.zIndex || 0));
+      for (const { node, parsed } of fixed) placeFixed(node, parsed, created);
+      if (fixed.length && "numberOfFixedChildren" in created) {
+        try {
+          created.numberOfFixedChildren = fixed.length;
+        } catch (error) {
+          warn("FIXED_SCROLL", created.name, `Figma \uC2A4\uD06C\uB864 \uACE0\uC815\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD588\uC9C0\uB9CC Viewport \uAE30\uC900 \uC88C\uD45C\uB294 \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+        }
+      }
       for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
       created.x = figma.viewport.center.x - created.width / 2;
       created.y = figma.viewport.center.y - created.height / 2;

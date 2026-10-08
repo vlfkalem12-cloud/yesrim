@@ -124,6 +124,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   await fonts.initialize();
   const imageHashes = new Map<string, string>();
   const placements: { node: EditableNode; parsed: ParsedNode; parent: FrameNode; parentParsed: ParsedNode }[] = [];
+  const fixedPlacements: { node: EditableNode; parsed: ParsedNode }[] = [];
+  const isFixed = (parsed: ParsedNode) => parsed.layout.absolute && parsed.layout.position === 'fixed';
   let root: FrameNode | undefined;
   function imagePaint(image: ParsedImage, name: string): ImagePaint | null {
     try {
@@ -219,6 +221,11 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     }
     const mode = (requested: SizingMode, horizontal: boolean): SizingMode => {
       if (!doc.options.autoLayout) return 'FIXED';
+      // Opposing viewport insets define an auto-sized fixed box, even when it is a flex frame.
+      const offsets = parsed.layout.offsets;
+      if (isFixed(parsed) && (horizontal
+        ? parsed.size.authoredWidth === 'auto' && offsets.left !== 'auto' && offsets.right !== 'auto'
+        : parsed.size.authoredHeight === 'auto' && offsets.top !== 'auto' && offsets.bottom !== 'auto')) return 'FIXED';
       if (requested === 'FILL' && !autoParent) return 'FIXED';
       if (requested === 'HUG' && !canHug) return 'FIXED';
       if (requested === 'HUG' && node.type === 'FRAME' && node.children.some(child => 'layoutPositioning' in child && 'layoutSizingHorizontal' in child && child.layoutPositioning !== 'ABSOLUTE' && (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) === 'FILL')) {
@@ -266,6 +273,19 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         node.constraints = { horizontal: offsets.left !== 'auto' && offsets.right !== 'auto' ? 'STRETCH' : offsets.right !== 'auto' ? 'MAX' : 'MIN', vertical: offsets.top !== 'auto' && offsets.bottom !== 'auto' ? 'STRETCH' : offsets.bottom !== 'auto' ? 'MAX' : 'MIN' };
       }
     }
+  }
+  function placeFixed(node: EditableNode, parsed: ParsedNode, viewportFrame: FrameNode): void {
+    viewportFrame.appendChild(node);
+    if (viewportFrame.layoutMode !== 'NONE') node.layoutPositioning = 'ABSOLUTE';
+    // The browser measured this rect in the selected viewport, resolving %, calc(), and margins.
+    // Preserve those used insets when a Hug node changes size with its Figma font.
+    const right = doc.options.viewport - parsed.rect.x - parsed.rect.width;
+    const bottom = doc.options.viewportHeight - parsed.rect.y - parsed.rect.height;
+    const offsets = parsed.layout.offsets;
+    node.x = offsets.left === 'auto' && offsets.right !== 'auto' ? doc.options.viewport - right - node.width : parsed.rect.x;
+    node.y = offsets.top === 'auto' && offsets.bottom !== 'auto' ? doc.options.viewportHeight - bottom - node.height : parsed.rect.y;
+    // MAX/STRETCH would anchor to the full document height, not the selected viewport height.
+    node.constraints = { horizontal: 'MIN', vertical: 'MIN' };
   }
   function countNode(node: EditableNode): void {
     report.total++;
@@ -319,7 +339,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       node.setPluginData('html-source', parsed.source?.selector || parsed.tagName);
       if (parsed.grid?.supported) node.setPluginData('html-grid', 'true');
       if (parsed.layout.absolute) node.setPluginData('html-absolute', 'true');
+      if (isFixed(parsed)) node.setPluginData('html-position', 'fixed');
       node.resize(clamp(parsed.size.width, 0.01), clamp(parsed.size.height, 0.01));
+      // Record before recursion so a nested fixed layer paints above its parent at equal z-index.
+      if (parent && isFixed(parsed)) fixedPlacements.push({ node, parsed });
       // CSS margins have no native Figma equivalent. Add an unpainted padding wrapper in flex flow.
       const margin = parsed.layout.margin;
       const autoParent = !!parent && parent.layoutMode !== 'NONE' && !parsed.layout.absolute;
@@ -366,7 +389,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         if (parsed.size.widthMode === 'HUG' && node.layoutSizingHorizontal !== 'FILL') marginWrapper.layoutSizingHorizontal = 'HUG';
         if (parsed.size.heightMode === 'HUG' && node.layoutSizingVertical !== 'FILL') marginWrapper.layoutSizingVertical = 'HUG';
       }
-      if (!marginWrapper && parent && parentParsed && (parent.layoutMode === 'NONE' || parsed.layout.absolute)) placements.push({ node, parsed, parent, parentParsed });
+      if (!isFixed(parsed) && !marginWrapper && parent && parentParsed && (parent.layoutMode === 'NONE' || parsed.layout.absolute)) placements.push({ node, parsed, parent, parentParsed });
       countNode(node);
       if (report.total % 25 === 0) {
         onProgress(report.total);
@@ -386,6 +409,14 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     created.name = `Imported HTML${doc.options.debug && doc.root.source ? ` [${doc.root.source.selector}]` : ''}`;
     if (created.layoutMode !== 'NONE') created.layoutSizingHorizontal = 'FIXED';
     created.resizeWithoutConstraints(doc.options.viewport, clamp(created.height, 0.01));
+    // Fixed layers belong to the viewport, outside DOM parents' clipping and document anchors.
+    // Hoist the whole subtree before placing its descendants; keep fixed layers in z-index order.
+    const fixed = fixedPlacements.filter(item => !item.node.removed).sort((a, b) => (a.parsed.layout.zIndex || 0) - (b.parsed.layout.zIndex || 0));
+    for (const { node, parsed } of fixed) placeFixed(node, parsed, created);
+    if (fixed.length && 'numberOfFixedChildren' in created) {
+      try { created.numberOfFixedChildren = fixed.length; }
+      catch (error) { warn('FIXED_SCROLL', created.name, `Figma 스크롤 고정을 적용하지 못했지만 Viewport 기준 좌표는 유지합니다: ${errorMessage(error)}`); }
+    }
     // Sizing and reparenting can change node geometry. Apply browser-relative positions last,
     // from outer frames to descendants, after the root viewport size is final.
     for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);

@@ -13,7 +13,7 @@ export interface ParsedLayout {
   padding: Insets;
   margin: Insets;
   position: string;
-  absolute: boolean;
+  absolute: boolean; // Out of normal flow (absolute or fixed); position retains the CSS policy.
   grow: number;
   shrink: number;
   basis: string;

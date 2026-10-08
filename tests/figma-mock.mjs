@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1 } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -11,7 +11,7 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
   }
   function make(type) {
     const data = new Map();
-    let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName, textAutoResize = 'NONE', fills = [];
+    let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName, textAutoResize = 'NONE', fills = [], fixedChildren = 0;
     const node = {
       id: String(nextId++), type, name: '', parent: undefined, children: [], removed: false, width: 100, height: 100, x: 0, y: 0,
       layoutMode: 'NONE', layoutPositioning: 'AUTO', fills: [], strokes: [], opacity: 1, textAutoResize: 'NONE',
@@ -32,6 +32,11 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       if (value === 'HUG' && type !== 'TEXT' && node.layoutMode === 'NONE') throw new Error('Hug requires text or auto-layout');
     }
     Object.defineProperties(node, {
+      numberOfFixedChildren: { get: () => fixedChildren, set: value => {
+        if (failFixedChildren) throw new Error('Simulated fixed scrolling rejection');
+        if (!Number.isInteger(value) || value < 0 || value > node.children.length) throw new Error('Invalid fixed child count');
+        fixedChildren = value;
+      } },
       fills: { get: () => fills, set: value => {
         if (failGradientPaint && value.some(paint => paint.type === 'GRADIENT_LINEAR')) throw new Error('Simulated Gradient Paint rejection');
         fills = value;
