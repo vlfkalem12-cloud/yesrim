@@ -168,6 +168,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   const gridBackgrounds: { node: FrameNode; parsed: ParsedNode; lines: BackgroundGridLine[] }[] = [];
   const backgroundDiagnostics: { node: FrameNode | RectangleNode; parsed: ParsedNode; layers: ParsedBackgroundLayer[] }[] = [];
   const namingAssignments: { node: SceneNode; parsed: ParsedNode; margin?: boolean }[] = [];
+  const heightDecisions = new Map<SceneNode, { target: SizingMode; reason: string }>();
   const isFixed = (parsed: ParsedNode) => parsed.layout.absolute && parsed.layout.position === 'fixed';
   let root: FrameNode | undefined;
   function imagePaint(image: ParsedImage, name: string): ImagePaint | null {
@@ -322,28 +323,36 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       node.textAutoResize = intrinsic ? 'WIDTH_AND_HEIGHT' : parsed.ranges !== undefined ? 'HEIGHT' : !doc.options.autoLayout ? 'NONE' : parsed.size.heightMode === 'HUG' ? 'HEIGHT' : 'NONE';
     }
     const mode = (requested: SizingMode, horizontal: boolean): SizingMode => {
-      if (!doc.options.autoLayout) return 'FIXED';
+      const decision = (target: SizingMode, reason: string) => {
+        if (!horizontal) heightDecisions.set(node, { target, reason });
+        return target;
+      };
+      if (!doc.options.autoLayout) return decision('FIXED', 'Auto Layout disabled');
       // Opposing viewport insets define an auto-sized fixed box, even when it is a flex frame.
       const offsets = parsed.layout.offsets;
       if (isFixed(parsed) && (horizontal
         ? parsed.size.authoredWidth === 'auto' && offsets.left !== 'auto' && offsets.right !== 'auto'
-        : parsed.size.authoredHeight === 'auto' && offsets.top !== 'auto' && offsets.bottom !== 'auto')) return 'FIXED';
-      if (requested === 'FILL' && !autoParent) return 'FIXED';
-      if (requested === 'HUG' && !canHug) return 'FIXED';
+        : parsed.size.authoredHeight === 'auto' && offsets.top !== 'auto' && offsets.bottom !== 'auto')) return decision('FIXED', 'Opposing fixed viewport insets');
+      if (requested === 'FILL' && !autoParent) return decision('FIXED', 'Fill requires a normal-flow Auto Layout parent');
+      if (requested === 'HUG' && !canHug) return decision('FIXED', 'Measured frame has layoutMode NONE; cannot Hug');
       if (requested === 'HUG' && node.type === 'FRAME' && node.children.some(child => 'layoutPositioning' in child && 'layoutSizingHorizontal' in child && child.layoutPositioning !== 'ABSOLUTE' && (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) === 'FILL')) {
         warn('SIZING_CYCLE', parsed.name, 'Hug 부모와 Fill 자식의 순환 크기를 피하려고 부모의 측정 치수를 고정했습니다.');
-        return 'FIXED';
+        const fills = node.children.filter(child => 'layoutSizingVertical' in child && child.layoutPositioning !== 'ABSOLUTE' &&
+          (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) === 'FILL');
+        return decision('FIXED', `Hug/Fill dependency: ${fills.map(child => `${child.name} (${child.id})`).join(', ')}`);
       }
-      return requested;
+      return decision(requested, parsed.size.heightSource?.reason || 'Existing sizing policy');
     };
+    const horizontalMode = mode(parsed.size.widthMode, true), verticalMode = mode(parsed.size.heightMode, false);
     // Standalone text uses textAutoResize; avoid runtime-dependent Auto Layout setters there.
     if (autoFrame || autoParent) {
-      try {
-        node.layoutSizingHorizontal = mode(parsed.size.widthMode, true);
-        node.layoutSizingVertical = mode(parsed.size.heightMode, false);
-      } catch (error) {
-        // An optional sizing property must not delete this node and its entire descendant tree.
-        warn('SIZING_API', parsed.name, `일부 Auto Layout 크기 설정을 적용하지 못했지만 노드와 자식 구조를 유지합니다: ${errorMessage(error)}`);
+      // Each axis is independent: a rejected width setting must not skip the height setting.
+      for (const [axis, target] of [['Horizontal', horizontalMode], ['Vertical', verticalMode]] as const) {
+        try { node[`layoutSizing${axis}`] = target; }
+        catch (error) {
+          warn('SIZING_API', parsed.name, `${axis} 크기 설정을 적용하지 못했지만 노드와 자식 구조를 유지합니다: ${errorMessage(error)}`);
+          if (axis === 'Vertical') heightDecisions.set(node, { target, reason: `Height API rejected: ${errorMessage(error)}` });
+        }
       }
     }
     for (const key of ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'] as const) {
@@ -360,13 +369,77 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       const alignment = parsed.layout.alignSelf.includes('center') ? 'CENTER' : parsed.layout.alignSelf.includes('end') ? 'MAX' : 'MIN';
       if (alignment !== parent.counterAxisAlignItems) warn('ALIGN_SELF', parsed.name, '개별 align-self 정렬은 부모의 정렬로 단순화했습니다.');
     }
-    if (doc.options.debug && node.type === 'FRAME' && parsed.size.heightSource) {
-      const details = { ...parsed.size.heightSource, authoredHeight: parsed.size.authoredHeight, intent: parsed.size.heightIntent,
-        display: parsed.layout.display, flexWrap: parsed.layout.wrap, flexGrow: parsed.layout.grow,
-        mode: autoFrame || autoParent ? node.layoutSizingVertical : 'FIXED' };
-      node.setPluginData('html-height-sizing', JSON.stringify(details));
-      warn('HEIGHT_SIZING', parsed.name, `renderedHeight: ${details.renderedHeight}px\nauthoredHeight: ${details.authoredHeight}\ndisplay: ${details.display}\nflexWrap: ${details.flexWrap}\nflexGrow: ${details.flexGrow}\nFigma Height Mode: ${details.mode}\nreason: ${details.reason || 'Existing sizing policy'}`);
+  }
+  function finalizeContentHeights(): void {
+    // Reparenting, constraints and viewport resize can invalidate a prior shorthand setting.
+    // Restore only already-approved Hug frames, bottom-up; never promote a measured/Fixed/Fill frame.
+    for (const { node, parsed, margin } of [...namingAssignments].reverse()) {
+      if (margin || node.removed || node.type !== 'FRAME' || parsed.type !== 'FRAME' || node.layoutMode === 'NONE') continue;
+      const decision = heightDecisions.get(node);
+      if (parsed.size.heightMode !== 'HUG' || decision?.target !== 'HUG' || node.layoutSizingVertical === 'HUG') continue;
+      try { node.layoutSizingVertical = 'HUG'; } catch { /* Use the documented axis properties if the shorthand is unavailable. */ }
+      if (node.layoutSizingVertical !== 'HUG') {
+        try {
+          if (node.parent?.type === 'FRAME' && node.layoutPositioning !== 'ABSOLUTE') {
+            if (node.parent.layoutMode === 'VERTICAL') node.layoutGrow = 0;
+            else if (node.parent.layoutMode === 'HORIZONTAL') node.layoutAlign = 'INHERIT';
+          }
+          if (node.layoutMode === 'VERTICAL') node.primaryAxisSizingMode = 'AUTO';
+          else node.counterAxisSizingMode = 'AUTO';
+        } catch (error) { decision.reason = `Height Hug restoration rejected: ${errorMessage(error)}`; }
+      }
+      if (node.layoutSizingVertical === 'HUG') decision.reason = `${parsed.size.heightSource?.reason || 'Intrinsic content'}; final Height Hug restored`;
+      else {
+        decision.reason = `Final height is ${node.layoutSizingVertical}, requested Hug; ${decision.reason}`;
+        warn('HEIGHT_LAYOUT', parsed.name, `${node.name} (${node.id}): ${decision.reason}`);
+      }
     }
+  }
+  function debugHeightHierarchy(created: FrameNode): void {
+    if (!doc.options.debug) return;
+    const save = (node: SceneNode, key: string, value: string) => {
+      try { node.setPluginData(key, value); }
+      catch (error) { warn('HEIGHT_HIERARCHY', node.name, `Debug data (${node.id}, ${key}) could not be stored: ${errorMessage(error)}`); }
+    };
+    const path = (node: SceneNode): string => {
+      if (node === created) return 'Root';
+      if (!node.parent || node.parent.type !== 'FRAME') return node.id;
+      return `${path(node.parent)} / ${node.parent.children.indexOf(node)}`;
+    };
+    const hierarchy = namingAssignments.filter(({ node }) => !node.removed && node.type === 'FRAME').map(({ node, parsed, margin }) => {
+      const frame = node as FrameNode, decision = heightDecisions.get(node);
+      const entry = { id: node.id, parentId: node.parent?.id || '', path: path(node), name: node.name,
+        source: parsed.source?.selector || parsed.tagName, marginWrapper: !!margin, layoutMode: frame.layoutMode,
+        heightMode: frame.layoutSizingVertical, requestedHeightMode: parsed.size.heightMode,
+        primaryAxisSizingMode: frame.primaryAxisSizingMode, counterAxisSizingMode: frame.counterAxisSizingMode,
+        positioning: frame.layoutPositioning, height: frame.height, y: frame.y, width: frame.width, minHeight: frame.minHeight ?? null,
+        parsedReason: parsed.size.heightSource?.reason || 'Existing sizing policy',
+        reason: margin ? 'Existing CSS margin wrapper; follows child height policy' : decision?.reason || 'Measured geometry retained' };
+      const details = { ...parsed.size.heightSource, authoredHeight: parsed.size.authoredHeight, intent: parsed.size.heightIntent,
+        display: parsed.layout.display, flexWrap: parsed.layout.wrap, flexGrow: parsed.layout.grow, mode: entry.heightMode, ...entry };
+      save(node, 'html-height-sizing', JSON.stringify(details));
+      warn('HEIGHT_SIZING', parsed.name, `${entry.path} (${entry.id})\nlayoutMode: ${entry.layoutMode}\nFigma Height Mode: ${entry.heightMode}\nheight: ${entry.height}px\ny: ${entry.y}px\nrenderedHeight: ${parsed.rect.height}px\nauthoredHeight: ${parsed.size.authoredHeight}\nreason: ${entry.reason}`);
+      return entry;
+    });
+    report.heightHierarchy = hierarchy;
+    // Plugin data has a 100 kB entry limit. Each valid JSON shard stays below 24k UTF-16 units.
+    const serialized = JSON.stringify(hierarchy);
+    if (serialized.length <= 24000) save(created, 'html-height-hierarchy', serialized);
+    else {
+      const keys: string[] = []; let batch: typeof hierarchy = [];
+      const flush = () => {
+        const key = `html-height-hierarchy-${keys.length}`; keys.push(key);
+        save(created, key, JSON.stringify(batch)); batch = [];
+      };
+      for (const entry of hierarchy) {
+        if (batch.length && JSON.stringify([...batch, entry]).length > 24000) flush();
+        batch.push(entry);
+      }
+      if (batch.length) flush();
+      save(created, 'html-height-hierarchy', JSON.stringify({ frames: hierarchy.length, keys }));
+    }
+    console.info('HTML → Figma final height hierarchy', hierarchy);
+    warn('HEIGHT_HIERARCHY', created.name, `Final runtime readback: ${hierarchy.length} Frames. Unique paths and parent IDs are included in HEIGHT_SIZING and html-height-hierarchy.`);
   }
   function place(node: EditableNode, parsed: ParsedNode, parent: FrameNode | undefined, parentParsed: ParsedNode | undefined): void {
     if (!parent || !parentParsed) return;
@@ -574,6 +647,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       try { created.numberOfFixedChildren = fixed.length; }
       catch (error) { warn('FIXED_SCROLL', created.name, `Figma 스크롤 고정을 적용하지 못했지만 Viewport 기준 좌표는 유지합니다: ${errorMessage(error)}`); }
     }
+    finalizeContentHeights();
     // Sizing and reparenting can change node geometry. Apply browser-relative positions last,
     // from outer frames to descendants, after the root viewport size is final.
     for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
@@ -598,10 +672,11 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       if (current.type === 'FRAME' && current.layoutMode !== 'NONE') report.autoLayout++;
       if ('children' in current) nodes.push(...current.children);
     }
-    report.warningGroups = enrichWarnings(report.warnings, doc.root);
-    report.durationMs = Date.now() - started;
     // Naming is a final presentation pass, after all geometry, styling, SVG and reporting work.
     applyLayerNames(namingAssignments, doc.options.debug === true);
+    debugHeightHierarchy(created);
+    report.warningGroups = enrichWarnings(report.warnings, doc.root);
+    report.durationMs = Date.now() - started;
     return { frame: created, report };
   } catch (error) { if (root && !root.removed) root.remove(); throw error; }
 }

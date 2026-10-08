@@ -319,6 +319,11 @@ function allowedHeightChange(current, previous) {
       node.layout.direction = old.layout.direction; node.size.heightMode = old.size.heightMode;
       node.size.heightSource.reason = old.size.heightSource.reason; delete node.layout.normalFlow;
     }
+    // Fallback explanations are diagnostic text; geometry/sizing decisions remain compared in full.
+    if (node.size.heightSource && old.size.heightSource) {
+      if ('reason' in old.size.heightSource) node.size.heightSource.reason = old.size.heightSource.reason;
+      else delete node.size.heightSource.reason;
+    }
     node.children.forEach((child, index) => visit(child, old.children[index]));
   }
   visit(copy.root, previous.root);

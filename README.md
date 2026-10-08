@@ -94,6 +94,8 @@ Wrap은 가로 row / 기본 wrap / 고정된 자식 폭 / margin 없음이며 �
 
 카드 추가·삭제 및 긴 Text 변경 시 List → Inner → Section의 높이가 전파되고 Root Auto Layout이 다음 Section을 옮깁니다. Min Height는 최소 제약으로 유지하며 명시적 Root Height, Viewport 및 Fill 의존성은 기존 정책을 유지합니다. 복잡한 block flow와 viewport 폭 변경으로 정렬이 바뀌는 경우는 측정 좌표로 fallback합니다. 변경 전후 계층, 테스트 수치, 지원 범위 및 실제 Figma에서 확인할 항목은 [Nested Hug 결과 보고서](docs/nested-hug-report.md)에 정리했습니다.
 
+첨부된 실제 원본은 `test/actual/09-01_A-pc-list.html`에 그대로 보관합니다. 후속 보강은 폭/높이 API setter의 오류를 분리하고, 최종 viewport 처리 후 안전한 Hug Frame의 실제 Height Mode를 확인·복원합니다. Debug에는 Node ID·부모 ID·고유 계층 경로·Native axis sizing·높이·Y·구체적 fallback 이유가 기록됩니다. [원본 후속 조사 보고서](docs/actual-nested-hug-report.md)는 이전 기본 모의 실행에서도 통과한 결과, 실패 주입 테스트, 실제 Figma 수동 확인을 구분합니다. 실제 Figma에서 겹침 해결은 아직 확인되지 않았습니다.
+
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
 
 ## 구현 구조
@@ -133,6 +135,7 @@ test/layer-naming-regression.html  의미 있는 Layer 이름과 Form / SVG / Ut
 test/rich-text-regression.html  모바일 질문 카드 6개·Rich Text·Badge 회귀 HTML
 test/height-sizing-regression.html  3×2 카드 Wrap·Hug·Fixed·min-height·clipping 회귀 HTML
 test/nested-hug-regression.html  Nested Hug·Section 전파·Root min-height 편집 재현 HTML
+test/actual/09-01_A-pc-list.html  사용자가 첨부한 실제 원본·원본 DOM 계층 및 높이 API 회귀 HTML
 tests/                 Chromium 파싱·UI 및 Figma API 모의 테스트
 ```
 
@@ -222,4 +225,6 @@ Height 검증은 동일한 computed px의 auto / 명시적 선언 구분, 3×2 /
 
 Nested Hug 검증은 6→7→6 카드·긴 Text·조상 높이·다음 Section 이동, 원본 재현 CSS와 독립 브라우저 비교, collapsed margin·기존 Wrapper·Fill Width 유지, 상세 FAQ/Aside·모바일 300px Hero, Root Fixed/최소 높이·Fixed Action Bar, 복잡한 흐름 fallback·Debug·JSON 검증을 포함합니다. `NESTED_BASELINE_SRC`를 `d56ef4a`의 src 경로로 지정하면 12개 샘플의 폭·이름·Wrapper·텍스트·Paint·이미지·SVG를 비교합니다. 산출물은 `test-results/nested-hug.json`, `test-results/nested-text-growth.json`, `test-results/nested-regression.json`입니다. 이는 실제 Figma 편집 테스트가 아닙니다.
 
-최신 검증은 117개 중 116개 테스트 통과, 실패 0개이며 TypeScript 검사·빌드가 통과했습니다. Chromium 동시 실행은 `node --test --test-concurrency=2 tests/*.test.mjs`로 제한했습니다. 이전 Rich Text 단계의 조건부 엔진 비교 1개는 실행 조건이 없어 skip했습니다. Height 단계의 `4200294`, Nested Hug 단계의 `d56ef4a` 비교 검증을 모두 실행했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교와 원본 HTML 편집은 Figma 데스크톱 앱에서 확인해야 합니다.
+실제 원본 후속 테스트 9개는 ID/class 없는 DOM 계층, Footer Fill/Root Fixed, 카드 복제·삭제·Text 박스 성장, 원본 DOM 편집, 독립 axis API 실패·최종 Height reset·native axis fallback·복구 불가 보고, Debug 저장 제한과 정확한 readback을 검사합니다. `ACTUAL_HUG_BASELINE_SRC`를 `c682e41`의 src로 지정하면 원본의 기존 291개 Node 결과와 보호된 모듈을 비교합니다. 상세 산출물은 `test-results/actual-nested-hug.json`입니다. Google Fonts 요청을 차단한 결정적 대체 폰트 테스트이며 실제 IBM Plex/Figma font metrics 검증은 아닙니다.
+
+최신 검증은 126개 중 125개 테스트 통과, 실패 0개이며 TypeScript 검사·빌드가 통과했습니다. 실제 원본 후속 테스트 9개를 모두 실행했습니다. Chromium 동시 실행은 `node --test --test-concurrency=2 tests/*.test.mjs`로 제한했습니다. 이전 Rich Text 단계의 조건부 엔진 비교 1개는 실행 조건이 없어 skip했습니다. Height 단계의 `4200294`, Nested Hug 단계의 `d56ef4a`, 실제 원본 단계의 `c682e41` 비교 검증을 모두 실행했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교와 원본 HTML 편집은 Figma 데스크톱 앱에서 확인해야 합니다.

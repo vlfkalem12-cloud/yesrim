@@ -51,27 +51,30 @@ export function configureContentHeight(node: ParsedNode, element: Element, style
   if (node.layout.direction !== 'NONE') { node.size.heightMode = 'HUG'; reason('Intrinsic Auto Layout content'); return; }
   // Inline/form/table boxes and anonymous wrappers keep their existing layout path.
   const identifiableBox = !!element.id || !!element.classList.length || element.hasAttribute('style') || (element.localName === 'body' && noMargins(node));
-  if (style.display !== 'block' || node.size.widthMode === 'HUG' || !identifiableBox || style.transform !== 'none' ||
-    !children.every(child => ['block', 'flex', 'grid'].includes(child.layout.display))) { reason('Flow cannot safely use vertical Auto Layout'); return; }
+  const blockRejection = style.display !== 'block' ? `display:${style.display}` : node.size.widthMode === 'HUG' ? 'Width Hug' :
+    !identifiableBox ? 'Anonymous box' : style.transform !== 'none' ? `transform:${style.transform}` :
+    children.some(child => !['block', 'flex', 'grid'].includes(child.layout.display)) ? 'Inline/mixed child flow' : '';
+  if (blockRejection) { reason(`Flow cannot safely use vertical Auto Layout: ${blockRejection}`); return; }
   if (children.every(noMargins) && matchesVerticalBoxes(node, children)) {
     node.layout.direction = 'VERTICAL'; node.layout.align = 'MIN'; node.layout.justify = 'MIN'; node.layout.gap = 0;
     node.size.heightMode = 'HUG'; reason('Measured vertical normal flow'); return;
   }
-  const flow = measuredBlockFlow(node, element, style, children);
-  if (!flow) { reason('Flow cannot safely use vertical Auto Layout'); return; }
+  const flow = measuredBlockFlow(node, element, style, children, failure => reason(`Flow cannot safely use vertical Auto Layout: ${failure}`));
+  if (!flow) return;
   // Keep the CSS padding/margins and every existing child. Store only the verified Figma flow geometry.
   node.layout.direction = 'VERTICAL'; node.layout.normalFlow = flow;
   node.size.heightMode = 'HUG'; reason('Measured block margins/alignment; ancestor height propagation');
 }
 
 /** One vertical track with uniform measured gaps; complex/overlapping flow keeps its original coordinates. */
-function measuredBlockFlow(parent: ParsedNode, element: Element, style: CSSStyleDeclaration, children: ParsedNode[]): NonNullable<ParsedNode['layout']['normalFlow']> | null {
-  if (parent.layout.reverse || children.some(child => child.layout.order !== 0 || Object.values(child.layout.margin).some(value => value < 0))) return null;
+function measuredBlockFlow(parent: ParsedNode, element: Element, style: CSSStyleDeclaration, children: ParsedNode[], failed: (reason: string) => void): NonNullable<ParsedNode['layout']['normalFlow']> | null {
+  const reject = (message: string) => { failed(message); return null; };
+  if (parent.layout.reverse || children.some(child => child.layout.order !== 0 || Object.values(child.layout.margin).some(value => value < 0))) return reject('Reversed/order/negative-margin flow');
   for (const child of element.children) {
     const css = element.ownerDocument.defaultView!.getComputedStyle(child);
     if (css.display === 'none' || ['absolute', 'fixed'].includes(css.position)) continue;
     if (css.cssFloat !== 'none' || css.transform !== 'none' || (css.position === 'relative' &&
-      [css.top, css.right, css.bottom, css.left].some(value => !['auto', '0px'].includes(value)))) return null;
+      [css.top, css.right, css.bottom, css.left].some(value => !['auto', '0px'].includes(value)))) return reject(`Child ${child.localName} has float/transform/relative offset`);
   }
   const padding = { ...parent.layout.padding };
   const contentLeft = parent.rect.x + padding.left + parent.style.borderWidths.left;
@@ -80,23 +83,23 @@ function measuredBlockFlow(parent: ParsedNode, element: Element, style: CSSStyle
   const align = candidates.find(candidate => children.every(child =>
     (candidate === 'MIN' || child.size.widthMode === 'FIXED') && close(child.rect.x, contentLeft +
       (candidate === 'CENTER' ? (contentWidth - child.rect.width) / 2 : candidate === 'MAX' ? contentWidth - child.rect.width : 0))));
-  if (!align) return null;
+  if (!align) return reject('Child X/Width Mode does not match a common left/center/right alignment');
   // A changed font's intrinsic Text width must not move a centered block or affect the Width policy.
   const leading = children[0]!.rect.y - parent.rect.y - parent.style.borderWidths.top;
-  if (leading < padding.top - 1 || leading > padding.top + children[0]!.layout.margin.top + 1) return null;
+  if (leading < padding.top - 1 || leading > padding.top + children[0]!.layout.margin.top + 1) return reject(`Leading offset ${leading}px does not match padding + margin`);
   padding.top = Math.max(padding.top, leading);
   const gaps = children.slice(1).map((child, index) => child.rect.y - children[index]!.rect.y - children[index]!.rect.height);
   const gap = Math.max(0, gaps[0] || 0);
-  if (gaps.some((value, index) => value < -.01 || !close(value, gap) || value > children[index]!.layout.margin.bottom + children[index + 1]!.layout.margin.top + 1)) return null;
+  if (gaps.some((value, index) => value < -.01 || !close(value, gap) || value > children[index]!.layout.margin.bottom + children[index + 1]!.layout.margin.top + 1)) return reject(`Overlapping/non-uniform/unexplained measured gaps: ${gaps.join(', ')}px`);
   const contents = children.reduce((sum, child) => sum + child.rect.height, 0) + gap * Math.max(0, children.length - 1) + padding.top + border(parent, 'y');
   const bounded = (height: number) => Math.max(parent.size.minHeight || 0, Math.min(parent.size.maxHeight ?? Infinity, height));
   const lastMargin = children[children.length - 1]!.layout.margin.bottom;
   const bottoms = [...new Set([padding.bottom, padding.bottom + lastMargin])].filter(bottom => close(bounded(contents + bottom), parent.rect.height));
   // A binding min/max height can hide whether the last margin collapses. Do not guess the growth behavior.
-  if (bottoms.length !== 1) return null;
+  if (bottoms.length !== 1) return reject(`Trailing margin/bounded height is ambiguous: ${bottoms.length} matching paddings`);
   padding.bottom = bottoms[0]!;
   if (style.boxSizing !== 'border-box' && (parent.size.minHeight || parent.size.maxHeight != null) &&
-    padding.top + padding.bottom + border(parent, 'y') > 0) return null;
+    padding.top + padding.bottom + border(parent, 'y') > 0) return reject('Content-box min/max height with padding/border');
   return { gap, padding, align };
 }
 

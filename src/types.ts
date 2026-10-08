@@ -117,6 +117,27 @@ export interface ConversionReport {
   durationMs: number;
   warningGroups: Record<string, number>;
   warnings: ConversionWarning[];
+  heightHierarchy?: HeightHierarchyEntry[]; // Debug-only readback from the final Figma nodes, not parser predictions.
+}
+export interface HeightHierarchyEntry {
+  id: string;
+  parentId: string;
+  path: string;
+  name: string;
+  source: string;
+  marginWrapper: boolean;
+  layoutMode: 'HORIZONTAL' | 'VERTICAL' | 'NONE' | 'GRID';
+  heightMode: SizingMode;
+  requestedHeightMode: SizingMode;
+  primaryAxisSizingMode: 'FIXED' | 'AUTO';
+  counterAxisSizingMode: 'FIXED' | 'AUTO';
+  positioning: 'AUTO' | 'ABSOLUTE';
+  height: number;
+  y: number;
+  width: number;
+  minHeight: number | null;
+  parsedReason: string;
+  reason: string;
 }
 export type UIMessage = { type: 'CREATE_FIGMA'; requestId: string; payload: ParsedDocument } | { type: 'CANCEL' };
 export type ConversionStatus = 'idle' | 'converting' | 'success' | 'error';

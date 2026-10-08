@@ -1,5 +1,7 @@
 # Nested Hug / Ancestor Height Propagation 수정 결과
 
+이 문서는 `c682e41` 단계의 재현 파일 검증 기록입니다. 이후 첨부된 실제 `09-01_A-pc-list.html` 조사와 런타임 높이 적용 보강은 [원본 후속 보고서](actual-nested-hug-report.md)를 참조하세요.
+
 원본 `09-01_A-pc-list.html`, `09-02_A-pc-detail.html`, `01-01_Main.html` 파일은 첨부되지 않았습니다. 아래 결과는 요청에 명시된 CSS로 만든 `test/nested-hug-regression.html`과 상세/모바일 재현 사례에 대한 결과입니다. 실제 Figma 편집 검증과 구분합니다.
 
 ## 실제로 재현한 원인

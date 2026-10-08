@@ -23,7 +23,7 @@
 
   // src/report.ts
   function warningCategory(code) {
-    if (code === "BACKGROUND_DEBUG" || code === "HEIGHT_SIZING") return "Debug";
+    if (code === "BACKGROUND_DEBUG" || code === "HEIGHT_SIZING" || code === "HEIGHT_HIERARCHY") return "Debug";
     if (/FONT/.test(code)) return "Fonts";
     if (/GRADIENT|BACKGROUND_LAYER/.test(code)) return "Unsupported CSS";
     if (/IMAGE|ASSET|BACKGROUND/.test(code)) return "Images";
@@ -292,6 +292,7 @@
     const gridBackgrounds = [];
     const backgroundDiagnostics = [];
     const namingAssignments = [];
+    const heightDecisions = /* @__PURE__ */ new Map();
     const isFixed = (parsed) => parsed.layout.absolute && parsed.layout.position === "fixed";
     let root;
     function imagePaint(image, name) {
@@ -465,23 +466,31 @@
         node.textAutoResize = intrinsic ? "WIDTH_AND_HEIGHT" : parsed.ranges !== void 0 ? "HEIGHT" : !doc.options.autoLayout ? "NONE" : parsed.size.heightMode === "HUG" ? "HEIGHT" : "NONE";
       }
       const mode = (requested, horizontal) => {
-        if (!doc.options.autoLayout) return "FIXED";
+        const decision = (target, reason) => {
+          if (!horizontal) heightDecisions.set(node, { target, reason });
+          return target;
+        };
+        if (!doc.options.autoLayout) return decision("FIXED", "Auto Layout disabled");
         const offsets = parsed.layout.offsets;
-        if (isFixed(parsed) && (horizontal ? parsed.size.authoredWidth === "auto" && offsets.left !== "auto" && offsets.right !== "auto" : parsed.size.authoredHeight === "auto" && offsets.top !== "auto" && offsets.bottom !== "auto")) return "FIXED";
-        if (requested === "FILL" && !autoParent) return "FIXED";
-        if (requested === "HUG" && !canHug) return "FIXED";
+        if (isFixed(parsed) && (horizontal ? parsed.size.authoredWidth === "auto" && offsets.left !== "auto" && offsets.right !== "auto" : parsed.size.authoredHeight === "auto" && offsets.top !== "auto" && offsets.bottom !== "auto")) return decision("FIXED", "Opposing fixed viewport insets");
+        if (requested === "FILL" && !autoParent) return decision("FIXED", "Fill requires a normal-flow Auto Layout parent");
+        if (requested === "HUG" && !canHug) return decision("FIXED", "Measured frame has layoutMode NONE; cannot Hug");
         if (requested === "HUG" && node.type === "FRAME" && node.children.some((child) => "layoutPositioning" in child && "layoutSizingHorizontal" in child && child.layoutPositioning !== "ABSOLUTE" && (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) === "FILL")) {
           warn("SIZING_CYCLE", parsed.name, "Hug \uBD80\uBAA8\uC640 Fill \uC790\uC2DD\uC758 \uC21C\uD658 \uD06C\uAE30\uB97C \uD53C\uD558\uB824\uACE0 \uBD80\uBAA8\uC758 \uCE21\uC815 \uCE58\uC218\uB97C \uACE0\uC815\uD588\uC2B5\uB2C8\uB2E4.");
-          return "FIXED";
+          const fills = node.children.filter((child) => "layoutSizingVertical" in child && child.layoutPositioning !== "ABSOLUTE" && (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) === "FILL");
+          return decision("FIXED", `Hug/Fill dependency: ${fills.map((child) => `${child.name} (${child.id})`).join(", ")}`);
         }
-        return requested;
+        return decision(requested, parsed.size.heightSource?.reason || "Existing sizing policy");
       };
+      const horizontalMode = mode(parsed.size.widthMode, true), verticalMode = mode(parsed.size.heightMode, false);
       if (autoFrame || autoParent) {
-        try {
-          node.layoutSizingHorizontal = mode(parsed.size.widthMode, true);
-          node.layoutSizingVertical = mode(parsed.size.heightMode, false);
-        } catch (error) {
-          warn("SIZING_API", parsed.name, `\uC77C\uBD80 Auto Layout \uD06C\uAE30 \uC124\uC815\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD588\uC9C0\uB9CC \uB178\uB4DC\uC640 \uC790\uC2DD \uAD6C\uC870\uB97C \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+        for (const [axis, target] of [["Horizontal", horizontalMode], ["Vertical", verticalMode]]) {
+          try {
+            node[`layoutSizing${axis}`] = target;
+          } catch (error) {
+            warn("SIZING_API", parsed.name, `${axis} \uD06C\uAE30 \uC124\uC815\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD588\uC9C0\uB9CC \uB178\uB4DC\uC640 \uC790\uC2DD \uAD6C\uC870\uB97C \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+            if (axis === "Vertical") heightDecisions.set(node, { target, reason: `Height API rejected: ${errorMessage(error)}` });
+          }
         }
       }
       for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
@@ -504,7 +513,71 @@
         const alignment = parsed.layout.alignSelf.includes("center") ? "CENTER" : parsed.layout.alignSelf.includes("end") ? "MAX" : "MIN";
         if (alignment !== parent.counterAxisAlignItems) warn("ALIGN_SELF", parsed.name, "\uAC1C\uBCC4 align-self \uC815\uB82C\uC740 \uBD80\uBAA8\uC758 \uC815\uB82C\uB85C \uB2E8\uC21C\uD654\uD588\uC2B5\uB2C8\uB2E4.");
       }
-      if (doc.options.debug && node.type === "FRAME" && parsed.size.heightSource) {
+    }
+    function finalizeContentHeights() {
+      for (const { node, parsed, margin } of [...namingAssignments].reverse()) {
+        if (margin || node.removed || node.type !== "FRAME" || parsed.type !== "FRAME" || node.layoutMode === "NONE") continue;
+        const decision = heightDecisions.get(node);
+        if (parsed.size.heightMode !== "HUG" || decision?.target !== "HUG" || node.layoutSizingVertical === "HUG") continue;
+        try {
+          node.layoutSizingVertical = "HUG";
+        } catch {
+        }
+        if (node.layoutSizingVertical !== "HUG") {
+          try {
+            if (node.parent?.type === "FRAME" && node.layoutPositioning !== "ABSOLUTE") {
+              if (node.parent.layoutMode === "VERTICAL") node.layoutGrow = 0;
+              else if (node.parent.layoutMode === "HORIZONTAL") node.layoutAlign = "INHERIT";
+            }
+            if (node.layoutMode === "VERTICAL") node.primaryAxisSizingMode = "AUTO";
+            else node.counterAxisSizingMode = "AUTO";
+          } catch (error) {
+            decision.reason = `Height Hug restoration rejected: ${errorMessage(error)}`;
+          }
+        }
+        if (node.layoutSizingVertical === "HUG") decision.reason = `${parsed.size.heightSource?.reason || "Intrinsic content"}; final Height Hug restored`;
+        else {
+          decision.reason = `Final height is ${node.layoutSizingVertical}, requested Hug; ${decision.reason}`;
+          warn("HEIGHT_LAYOUT", parsed.name, `${node.name} (${node.id}): ${decision.reason}`);
+        }
+      }
+    }
+    function debugHeightHierarchy(created) {
+      if (!doc.options.debug) return;
+      const save = (node, key, value) => {
+        try {
+          node.setPluginData(key, value);
+        } catch (error) {
+          warn("HEIGHT_HIERARCHY", node.name, `Debug data (${node.id}, ${key}) could not be stored: ${errorMessage(error)}`);
+        }
+      };
+      const path = (node) => {
+        if (node === created) return "Root";
+        if (!node.parent || node.parent.type !== "FRAME") return node.id;
+        return `${path(node.parent)} / ${node.parent.children.indexOf(node)}`;
+      };
+      const hierarchy = namingAssignments.filter(({ node }) => !node.removed && node.type === "FRAME").map(({ node, parsed, margin }) => {
+        const frame = node, decision = heightDecisions.get(node);
+        const entry = {
+          id: node.id,
+          parentId: node.parent?.id || "",
+          path: path(node),
+          name: node.name,
+          source: parsed.source?.selector || parsed.tagName,
+          marginWrapper: !!margin,
+          layoutMode: frame.layoutMode,
+          heightMode: frame.layoutSizingVertical,
+          requestedHeightMode: parsed.size.heightMode,
+          primaryAxisSizingMode: frame.primaryAxisSizingMode,
+          counterAxisSizingMode: frame.counterAxisSizingMode,
+          positioning: frame.layoutPositioning,
+          height: frame.height,
+          y: frame.y,
+          width: frame.width,
+          minHeight: frame.minHeight ?? null,
+          parsedReason: parsed.size.heightSource?.reason || "Existing sizing policy",
+          reason: margin ? "Existing CSS margin wrapper; follows child height policy" : decision?.reason || "Measured geometry retained"
+        };
         const details = {
           ...parsed.size.heightSource,
           authoredHeight: parsed.size.authoredHeight,
@@ -512,17 +585,41 @@
           display: parsed.layout.display,
           flexWrap: parsed.layout.wrap,
           flexGrow: parsed.layout.grow,
-          mode: autoFrame || autoParent ? node.layoutSizingVertical : "FIXED"
+          mode: entry.heightMode,
+          ...entry
         };
-        node.setPluginData("html-height-sizing", JSON.stringify(details));
-        warn("HEIGHT_SIZING", parsed.name, `renderedHeight: ${details.renderedHeight}px
-authoredHeight: ${details.authoredHeight}
-display: ${details.display}
-flexWrap: ${details.flexWrap}
-flexGrow: ${details.flexGrow}
-Figma Height Mode: ${details.mode}
-reason: ${details.reason || "Existing sizing policy"}`);
+        save(node, "html-height-sizing", JSON.stringify(details));
+        warn("HEIGHT_SIZING", parsed.name, `${entry.path} (${entry.id})
+layoutMode: ${entry.layoutMode}
+Figma Height Mode: ${entry.heightMode}
+height: ${entry.height}px
+y: ${entry.y}px
+renderedHeight: ${parsed.rect.height}px
+authoredHeight: ${parsed.size.authoredHeight}
+reason: ${entry.reason}`);
+        return entry;
+      });
+      report.heightHierarchy = hierarchy;
+      const serialized = JSON.stringify(hierarchy);
+      if (serialized.length <= 24e3) save(created, "html-height-hierarchy", serialized);
+      else {
+        const keys = [];
+        let batch = [];
+        const flush = () => {
+          const key = `html-height-hierarchy-${keys.length}`;
+          keys.push(key);
+          save(created, key, JSON.stringify(batch));
+          batch = [];
+        };
+        for (const entry of hierarchy) {
+          if (batch.length && JSON.stringify([...batch, entry]).length > 24e3) flush();
+          batch.push(entry);
+        }
+        if (batch.length) flush();
+        save(created, "html-height-hierarchy", JSON.stringify({ frames: hierarchy.length, keys }));
       }
+      console.info("HTML \u2192 Figma final height hierarchy", hierarchy);
+      warn("HEIGHT_HIERARCHY", created.name, `Final runtime readback: ${hierarchy.length} Frames. Unique paths and parent IDs are included in HEIGHT_SIZING and html-height-hierarchy.`);
     }
     function place(node, parsed, parent, parentParsed) {
       if (!parent || !parentParsed) return;
@@ -745,6 +842,7 @@ reason: ${details.reason || "Existing sizing policy"}`);
           warn("FIXED_SCROLL", created.name, `Figma \uC2A4\uD06C\uB864 \uACE0\uC815\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD588\uC9C0\uB9CC Viewport \uAE30\uC900 \uC88C\uD45C\uB294 \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
         }
       }
+      finalizeContentHeights();
       for (const { node, parsed, parent, parentParsed } of placements.reverse()) if (!node.removed) place(node, parsed, parent, parentParsed);
       for (const { node, parsed, lines } of gridBackgrounds) if (!node.removed) createBackgroundGrid(node, parsed, lines);
       for (const { node, parsed, layers } of backgroundDiagnostics) if (!node.removed) debugBackground(node, parsed, layers);
@@ -770,9 +868,10 @@ reason: ${details.reason || "Existing sizing policy"}`);
         if (current.type === "FRAME" && current.layoutMode !== "NONE") report.autoLayout++;
         if ("children" in current) nodes.push(...current.children);
       }
+      applyLayerNames(namingAssignments, doc.options.debug === true);
+      debugHeightHierarchy(created);
       report.warningGroups = enrichWarnings(report.warnings, doc.root);
       report.durationMs = Date.now() - started;
-      applyLayerNames(namingAssignments, doc.options.debug === true);
       return { frame: created, report };
     } catch (error) {
       if (root && !root.removed) root.remove();

@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, resizeResetsHug = false } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -13,15 +13,16 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
   function make(type) {
     const data = new Map();
     let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName, textAutoResize = 'NONE', fills = [], fixedChildren = 0, name = '', originalName = '', wrap = 'NO_WRAP', measuredHeight = 100;
+    let primarySizing = 'FIXED', counterSizing = 'FIXED', grow = 0, align = 'INHERIT';
     const node = {
       id: String(nextId++), type, name: '', parent: undefined, children: [], removed: false, width: 100, height: 100, x: 0, y: 0,
       layoutMode: 'NONE', layoutPositioning: 'AUTO', fills: [], strokes: [], opacity: 1, textAutoResize: 'NONE',
       appendChild(child) { append(this, child); },
       insertChild(index, child) { append(this, child); this.children = this.children.filter(node => node !== child); this.children.splice(index, 0, child); },
-      resize(width, height) { if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Invalid resize'); this.width = width; this.height = height; if (resizeResetsHug) vertical = 'FIXED'; },
-      resizeWithoutConstraints(width, height) { this.resize(width, height); },
+      resize(width, height) { if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Invalid resize'); this.width = width; this.height = height; if (resizeResetsHug) { vertical = 'FIXED'; if (simulateSizingCoupling) primarySizing = counterSizing = 'FIXED'; } },
+      resizeWithoutConstraints(width, height) { this.resize(width, height); afterResizeWithoutConstraints(this); },
       remove() { this.removed = true; for (const child of [...this.children]) child.remove(); if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
-      setPluginData(key, value) { data.set(key, value); }, getPluginData(key) { return data.get(key) || ''; }
+      setPluginData(key, value) { if (new TextEncoder().encode(key + value).length > maxPluginDataBytes) throw new Error('Plugin data exceeds entry limit'); data.set(key, value); }, getPluginData(key) { return data.get(key) || ''; }
     };
     function sizing(value) {
       if (failSizingNames.includes(node.name)) throw new Error('Simulated layout sizing failure');
@@ -31,6 +32,31 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       if (type !== 'TEXT' && node.layoutMode === 'NONE' && !autoParent) throw new Error('Sizing requires auto-layout frame or child');
       if (value === 'FILL' && !autoParent) throw new Error('Fill requires auto-layout parent');
       if (value === 'HUG' && type !== 'TEXT' && node.layoutMode === 'NONE') throw new Error('Hug requires text or auto-layout');
+    }
+    function getSizing(isHorizontal) {
+      if (!simulateSizingCoupling || type !== 'FRAME') return isHorizontal ? horizontal : vertical;
+      const autoParent = node.parent?.layoutMode && node.parent.layoutMode !== 'NONE' && node.layoutPositioning !== 'ABSOLUTE';
+      const parentPrimary = isHorizontal ? node.parent?.layoutMode === 'HORIZONTAL' : node.parent?.layoutMode === 'VERTICAL';
+      if (autoParent && (parentPrimary ? grow === 1 : align === 'STRETCH')) return 'FILL';
+      if (node.layoutMode === 'NONE') return 'FIXED';
+      const primary = isHorizontal ? node.layoutMode === 'HORIZONTAL' : node.layoutMode === 'VERTICAL';
+      return (primary ? primarySizing : counterSizing) === 'AUTO' ? 'HUG' : 'FIXED';
+    }
+    function setSizing(value, isHorizontal) {
+      const axis = isHorizontal ? 'Horizontal' : 'Vertical';
+      if (rejectSizingAxis(node, axis)) throw new Error(`Simulated ${axis} sizing rejection`);
+      sizing(value);
+      if (isHorizontal) horizontal = value; else vertical = value;
+      if (!simulateSizingCoupling || type !== 'FRAME') return;
+      const autoParent = node.parent?.layoutMode && node.parent.layoutMode !== 'NONE' && node.layoutPositioning !== 'ABSOLUTE';
+      if (autoParent) {
+        const parentPrimary = isHorizontal ? node.parent.layoutMode === 'HORIZONTAL' : node.parent.layoutMode === 'VERTICAL';
+        if (parentPrimary) grow = value === 'FILL' ? 1 : 0;
+        else align = value === 'FILL' ? 'STRETCH' : 'INHERIT';
+      }
+      const primary = isHorizontal ? node.layoutMode === 'HORIZONTAL' : node.layoutMode === 'VERTICAL';
+      if (primary) primarySizing = value === 'HUG' ? 'AUTO' : 'FIXED';
+      else counterSizing = value === 'HUG' ? 'AUTO' : 'FIXED';
     }
     Object.defineProperties(node, {
       layoutWrap: { get: () => wrap, set: value => {
@@ -58,14 +84,20 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
           if (value === 'WIDTH_AND_HEIGHT') node.width *= intrinsicWidthScale;
         }
       } },
-      layoutSizingHorizontal: { get: () => horizontal, set: value => { sizing(value); horizontal = value; } },
-      layoutSizingVertical: { get: () => vertical, set: value => { sizing(value); vertical = value; } },
+      layoutSizingHorizontal: { get: () => getSizing(true), set: value => setSizing(value, true) },
+      layoutSizingVertical: { get: () => getSizing(false), set: value => setSizing(value, false) },
       fontName: { get: () => fontName, set: value => { if (!loaded.has(`${value.family}|${value.style}`)) throw new Error('Font not loaded'); fontName = value; } },
       characters: { get: () => characters, set: value => { if (!fontName) throw new Error('Load font first'); if (failText && value.includes(failText)) throw new Error('Simulated text failure'); characters = value; } }
     });
+    if (simulateSizingCoupling) Object.defineProperties(node, {
+      primaryAxisSizingMode: { enumerable: true, get: () => primarySizing, set: value => { if (rejectLegacySizing(node, 'Primary', value)) throw new Error('Simulated native primary sizing rejection'); primarySizing = value; } },
+      counterAxisSizingMode: { enumerable: true, get: () => counterSizing, set: value => { if (rejectLegacySizing(node, 'Counter', value)) throw new Error('Simulated native counter sizing rejection'); counterSizing = value; } },
+      layoutGrow: { enumerable: true, get: () => grow, set: value => { grow = value; } },
+      layoutAlign: { enumerable: true, get: () => align, set: value => { align = value; } }
+    });
     if (simulateAutoHeight) Object.defineProperty(node, 'height', { enumerable: true, get: () => {
       // A deliberately limited box-only height model; text metrics and full Figma layout remain outside this double.
-      if (vertical !== 'HUG' || type !== 'FRAME' || node.layoutMode === 'NONE') return measuredHeight;
+      if (node.layoutSizingVertical !== 'HUG' || type !== 'FRAME' || node.layoutMode === 'NONE') return measuredHeight;
       const children = node.children.filter(child => child.layoutPositioning !== 'ABSOLUTE');
       const padding = (node.paddingTop || 0) + (node.paddingBottom || 0);
       const stroke = node.strokesIncludedInLayout ? (node.strokeTopWeight || 0) + (node.strokeBottomWeight || 0) : 0;
@@ -82,6 +114,25 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       } else contents = Math.max(0, ...children.map(child => child.height));
       return Math.max(node.minHeight || .01, Math.min(node.maxHeight ?? Infinity, contents + padding + stroke));
     }, set: value => { measuredHeight = value; } });
+    if (simulateAutoPosition) {
+      let measuredY = 0;
+      Object.defineProperty(node, 'y', { enumerable: true, get: () => {
+        const parent = node.parent;
+        if (!parent?.layoutMode || parent.layoutMode === 'NONE' || node.layoutPositioning === 'ABSOLUTE') return measuredY;
+        const flow = parent.children.filter(child => child.layoutPositioning !== 'ABSOLUTE'), index = flow.indexOf(node);
+        const top = (parent.paddingTop || 0) + (parent.strokesIncludedInLayout ? parent.strokeTopWeight || 0 : 0);
+        if (parent.layoutMode === 'VERTICAL') return top + flow.slice(0, index).reduce((sum, child) => sum + child.height, 0) + index * (parent.itemSpacing || 0);
+        if (parent.layoutWrap !== 'WRAP') return top;
+        const available = parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0);
+        let used = 0, rowHeight = 0, rowTop = top;
+        for (const child of flow) {
+          if (used && used + (parent.itemSpacing || 0) + child.width > available + .01) { rowTop += rowHeight + (parent.counterAxisSpacing || 0); used = 0; rowHeight = 0; }
+          if (child === node) return rowTop;
+          used += (used ? parent.itemSpacing || 0 : 0) + child.width; rowHeight = Math.max(rowHeight, child.height);
+        }
+        return measuredY;
+      }, set: value => { measuredY = value; } });
+    }
     if (type === 'TEXT') {
       for (const property of ['fontName', 'fills', 'fontSize', 'letterSpacing', 'textDecoration', 'lineHeight']) {
         node[`setRange${property[0].toUpperCase()}${property.slice(1)}`] = (start, end, value) => {
