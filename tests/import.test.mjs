@@ -40,7 +40,7 @@ async function convert(doc, options) {
   const mock = createFigmaMock(options); globalThis.figma = mock.figma;
   return { ...await converter.convertDocument(doc), ...mock };
 }
-const find = (root, name) => flatten(root).find(node => node.name === name);
+const find = (root, name) => flatten(root).find(node => node.originalName === name || node.name === name);
 const parsedNodes = root => [root, ...root.children.flatMap(parsedNodes)];
 
 async function compareSvgPixels(original, serialized) {
@@ -397,7 +397,7 @@ test('Accessibility skipping is based on computed clipping, logs only in Debug a
 test('Mixed Inline preserves alternating DOM order, typography and small icons without flattening their parent', async () => {
   const { frame } = await convert(await parse(await readFile('test/inline-accessibility-regression.html', 'utf8')));
   const ordered = find(frame, 'ordered');
-  assert.deepEqual(ordered.children.map(child => child.type === 'TEXT' ? child.characters : child.name), ['Before', 'ordered-badge', 'After', 'ordered-icon', 'End']);
+  assert.deepEqual(ordered.children.map(child => child.type === 'TEXT' ? child.characters : child.originalName), ['Before', 'ordered-badge', 'After', 'ordered-icon', 'End']);
   assert.equal(find(frame, 'ordered-icon').getPluginData('html-type'), 'svg');
   assert.equal(find(frame, 'ordered-badge').children[0].characters, 'NEW');
   const iconLabel = find(frame, 'icon-label');
@@ -675,7 +675,7 @@ test('Fixed bottom toolbar uses the viewport, escaping a long clipped parent whi
   for (const [name, value] of [['name-input', '김'], ['selected-city', '부산'], ['memo', '현재 입력된 내용'], ['toolbar-input', '김']]) assert.equal(find(frame, name).children[0].characters, value);
   for (const name of ['checkbox', 'radio', 'toolbar-button', 'toolbar-copy']) assert.ok(find(frame, name), name);
   assert.deepEqual(flatten(find(frame, 'toolbar-copy')).filter(node => node.type === 'TEXT').map(node => node.characters), ['Viewport bottom', '편집 가능한 자식 유지']);
-  assert.deepEqual(frame.children.slice(-3).map(node => node.name), ['fixed-top', 'fixed-toolbar', 'fixed-label']);
+  assert.deepEqual(frame.children.slice(-3).map(node => node.originalName), ['fixed-top', 'fixed-toolbar', 'fixed-label']);
   assert.equal(frame.numberOfFixedChildren, 3);
   assert.ok(report.warnings.some(warning => warning.code === 'FIXED_ELEMENT'));
   assert.ok(!report.warnings.some(warning => warning.code === 'NODE_FAILED'));
@@ -817,7 +817,7 @@ test('MVP fixture: computed CSS → JSON → editable Figma frames and text', as
   assert.equal(report.text, 13);
   assert.ok(report.autoLayout >= 9);
   assert.equal(report.total, flatten(frame).length);
-  assert.ok(flatten(frame).some(n => n.name.endsWith('/ margin')));
+  assert.ok(flatten(frame).some(n => n.originalName.endsWith('/ margin')));
   assert.ok(report.warnings.some(w => w.code === 'VIEWPORT_OVERFLOW'));
   assert.equal(frame.x, 1000 - frame.width / 2);
   assert.deepEqual(figma.currentPage.selection, [frame]);
@@ -919,7 +919,7 @@ test('absolute position is preserved outside flex flow; reverse/order and explic
   const { frame, report } = await convert(doc);
   assert.equal(frame.layoutMode, 'HORIZONTAL');
   assert.equal(frame.primaryAxisAlignItems, 'MAX');
-  assert.equal(frame.children[0].name, 'last');
+  assert.equal(frame.children[0].originalName, 'last');
   assert.equal(find(frame, 'first').layoutSizingHorizontal, 'FIXED');
   assert.equal(find(frame, 'fill').layoutSizingHorizontal, 'FILL');
   assert.equal(find(frame, 'fixed').layoutPositioning, 'ABSOLUTE');
@@ -1090,7 +1090,7 @@ test('Normal Flow block frames retain all element and direct text descendants at
         assert.equal(target.children.length, source.children.length, source.name);
         source.children.forEach((child, index) => {
           const layer = target.children[index];
-          assert.equal(layer.name, child.name);
+          assert.equal(layer.originalName, child.name);
           assert.equal(layer.x, child.rect.x - source.rect.x, `${child.name}: parent-relative x`);
           assert.equal(layer.y, child.rect.y - source.rect.y, `${child.name}: parent-relative y`);
           assert.equal(layer.width, child.size.width);
@@ -1259,7 +1259,7 @@ test('absolute right/bottom anchors use parent coordinates; z-index keeps Auto L
   assert.equal(report.absolute, 2);
   const reverse = await parse('<style>body{margin:0}main{display:flex}.a{position:relative;z-index:3}.b{position:relative;z-index:2}.c{position:relative;z-index:1}</style><main><span class="a">A</span><span class="b">B</span><span class="c">C</span></main>');
   const reversed = await convert(reverse);
-  assert.deepEqual(reversed.frame.children.map(child => child.name), ['a', 'b', 'c']);
+  assert.deepEqual(reversed.frame.children.map(child => child.originalName), ['a', 'b', 'c']);
   assert.equal(reversed.frame.itemReverseZIndex, true);
 });
 
@@ -1313,7 +1313,7 @@ test('wrapper optimization is conservative and debug names retain source selecto
   assert.ok(parsedNodes(optimized.root).some(node => node.name === 'styled'));
   assert.equal(parsedNodes(optimized.root).find(node => node.type === 'TEXT' && node.text === 'Hello').size.widthMode, 'HUG', 'removing a wrapper preserves intrinsic text width');
   const { frame } = await convert(optimized);
-  assert.ok(flatten(frame).some(node => node.name === 'styled [div.styled.extra.classes]'));
+  assert.ok(flatten(frame).some(node => node.name === 'Styled [div.styled.extra.classes]'));
   assert.ok(flatten(frame).some(node => node.type === 'TEXT' && node.characters === 'Hello'));
   assert.equal(flatten(frame).find(node => node.type === 'TEXT' && node.characters === 'Hello').textAutoResize, 'WIDTH_AND_HEIGHT');
 });

@@ -133,7 +133,7 @@ test('Repeated fixed-position conversions use each viewport selected in the actu
       assert.equal(session.requests[index].payload.options.viewport, width);
       assert.equal(session.requests[index].payload.options.viewportHeight, height);
       const root = session.mock.figma.currentPage.children[index];
-      const toolbar = root.children.find(node => node.name === 'fixed-toolbar');
+      const toolbar = root.children.find(node => node.originalName === 'fixed-toolbar');
       assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, height - 76, width - 240, 76]);
       assert.equal(root.numberOfFixedChildren, 3);
     }
@@ -150,7 +150,7 @@ test('Dashboard HTML converts repeatedly with one Donut arc, all gradient layers
       await choose(session, 'dashboard.html', content); await convertOnce(session); await assertUnlocked(session, 'success');
       const root = session.mock.figma.currentPage.children[index];
       const nodes = node => [node, ...node.children.flatMap(nodes)];
-      const chart = nodes(root).find(node => node.name === 'chart-wrap');
+      const chart = nodes(root).find(node => node.originalName === 'chart-wrap');
       assert.deepEqual(Array.from(chart.fills, paint => paint.type), ['GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'GRADIENT_LINEAR', 'SOLID']);
       assert.deepEqual(Array.from(chart.children.filter(node => node.getPluginData('html-background-grid-line')), node => node.y), [75, 150, 225]);
       const donut = session.mock.svgImports[index * 3];
@@ -193,7 +193,7 @@ test('Viewport presets include height, round-trip custom dimensions and anchor f
       await convertOnce(session); await assertUnlocked(session, 'success');
       const doc = session.requests[index].payload;
       assert.deepEqual([doc.options.viewport, doc.options.viewportHeight], [width, height]);
-      const root = session.mock.figma.currentPage.children[index], toolbar = root.children.find(node => node.name === 'fixed-toolbar');
+      const root = session.mock.figma.currentPage.children[index], toolbar = root.children.find(node => node.originalName === 'fixed-toolbar');
       assert.ok(root.height > 2000);
       assert.deepEqual([toolbar.x, toolbar.y, toolbar.width, toolbar.height], [240, height - 76, width - 240, 76]);
       assert.equal(toolbar.constraints.horizontal, 'MIN'); assert.equal(toolbar.constraints.vertical, 'MIN');

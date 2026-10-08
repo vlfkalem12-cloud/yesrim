@@ -3,6 +3,7 @@ import { clamp, errorMessage, isViewportDimension } from './utils';
 import { enrichWarnings } from './report';
 import { linearGradientPaint } from './gradients';
 import { backgroundLayers, thinHorizontalGridLines, type BackgroundGridLine } from './backgrounds';
+import { applyLayerNames } from './layer-naming';
 
 type EditableNode = FrameNode | TextNode | RectangleNode;
 const solid = (color: Color): SolidPaint => ({ type: 'SOLID', color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
@@ -91,6 +92,7 @@ export function validateDocument(value: unknown): asserts value is ParsedDocumen
     const { node, depth } = stack.pop()!;
     if (++count > LIMITS.nodes || depth > LIMITS.depth) throw new Error('문서의 노드 수 또는 깊이 제한을 초과했습니다.');
     if (!node || !['FRAME', 'TEXT', 'IMAGE', 'SVG'].includes(node.type) || typeof node.name !== 'string' || typeof node.tagName !== 'string' || !Array.isArray(node.children) || !node.size || !node.layout || !node.style || !node.rect) throw new Error('잘못된 노드 데이터입니다.');
+    if (node.layerName !== undefined && (typeof node.layerName !== 'string' || node.layerName.length > 160)) throw new Error('잘못된 Layer Name 데이터입니다.');
     if (node.svg !== undefined && (typeof node.svg !== 'string' || node.svg.length > LIMITS.fileBytes)) throw new Error('잘못된 SVG 데이터입니다.');
     if (node.type === 'TEXT' && (typeof node.text !== 'string' || node.text.length > 1000000)) throw new Error('잘못된 텍스트 데이터입니다.');
     if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !['FIXED', 'FILL', 'HUG'].includes(node.size.widthMode) || !['FIXED', 'FILL', 'HUG'].includes(node.size.heightMode)) throw new Error('잘못된 크기 데이터입니다.');
@@ -150,6 +152,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
   const fixedPlacements: { node: EditableNode; parsed: ParsedNode }[] = [];
   const gridBackgrounds: { node: FrameNode; parsed: ParsedNode; lines: BackgroundGridLine[] }[] = [];
   const backgroundDiagnostics: { node: FrameNode | RectangleNode; parsed: ParsedNode; layers: ParsedBackgroundLayer[] }[] = [];
+  const namingAssignments: { node: SceneNode; parsed: ParsedNode; margin?: boolean }[] = [];
   const isFixed = (parsed: ParsedNode) => parsed.layout.absolute && parsed.layout.position === 'fixed';
   let root: FrameNode | undefined;
   function imagePaint(image: ParsedImage, name: string): ImagePaint | null {
@@ -445,6 +448,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       }
       node.name = doc.options.debug && parsed.source ? `${parsed.name} [${parsed.source.selector}]` : parsed.name;
       node.setPluginData('html-source', parsed.source?.selector || parsed.tagName);
+      namingAssignments.push({ node, parsed });
       if (parsed.grid?.supported) node.setPluginData('html-grid', 'true');
       if (parsed.layout.absolute) node.setPluginData('html-absolute', 'true');
       if (isFixed(parsed)) node.setPluginData('html-position', 'fixed');
@@ -461,6 +465,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         marginWrapper.layoutMode = 'VERTICAL'; marginWrapper.primaryAxisSizingMode = 'FIXED'; marginWrapper.counterAxisSizingMode = 'FIXED';
         marginWrapper.paddingTop = top; marginWrapper.paddingRight = right; marginWrapper.paddingBottom = bottom; marginWrapper.paddingLeft = left;
         marginWrapper.resize(clamp(parsed.size.width + left + right, 0.01), clamp(parsed.size.height + top + bottom, 0.01));
+        namingAssignments.push({ node: marginWrapper, parsed, margin: true });
         parent.appendChild(marginWrapper); marginWrapper.appendChild(node);
         marginWrapper.layoutSizingHorizontal = parsed.size.widthMode === 'FILL' ? 'FILL' : 'FIXED';
         marginWrapper.layoutSizingVertical = parsed.size.heightMode === 'FILL' ? 'FILL' : 'FIXED';
@@ -551,6 +556,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     }
     report.warningGroups = enrichWarnings(report.warnings, doc.root);
     report.durationMs = Date.now() - started;
+    // Naming is a final presentation pass, after all geometry, styling, SVG and reporting work.
+    applyLayerNames(namingAssignments, doc.options.debug === true);
     return { frame: created, report };
   } catch (error) { if (root && !root.removed) root.remove(); throw error; }
 }

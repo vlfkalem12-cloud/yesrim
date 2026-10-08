@@ -12,7 +12,7 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
   }
   function make(type) {
     const data = new Map();
-    let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName, textAutoResize = 'NONE', fills = [], fixedChildren = 0;
+    let horizontal = 'FIXED', vertical = 'FIXED', characters = '', fontName, textAutoResize = 'NONE', fills = [], fixedChildren = 0, name = '', originalName = '';
     const node = {
       id: String(nextId++), type, name: '', parent: undefined, children: [], removed: false, width: 100, height: 100, x: 0, y: 0,
       layoutMode: 'NONE', layoutPositioning: 'AUTO', fills: [], strokes: [], opacity: 1, textAutoResize: 'NONE',
@@ -33,6 +33,9 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       if (value === 'HUG' && type !== 'TEXT' && node.layoutMode === 'NONE') throw new Error('Hug requires text or auto-layout');
     }
     Object.defineProperties(node, {
+      // Stable identity for existing layout tests; production naming is checked through node.name.
+      name: { enumerable: true, get: () => name, set: value => { name = value; if (!originalName && value) originalName = value; } },
+      originalName: { get: () => originalName },
       numberOfFixedChildren: { get: () => fixedChildren, set: value => {
         if (failFixedChildren) throw new Error('Simulated fixed scrolling rejection');
         if (!Number.isInteger(value) || value < 0 || value > node.children.length) throw new Error('Invalid fixed child count');

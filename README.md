@@ -32,8 +32,8 @@ npm run dev
 1. `examples/mvp.html`을 업로드합니다. 요청에 포함된 원본 성공 조건 예제를 그대로 제공했습니다.
 2. Desktop 1440, Auto Layout 적용, CSS 스타일 적용을 선택합니다.
 3. **Figma로 변환**을 클릭합니다.
-4. 현재 viewport 중앙에 생성된 **Imported HTML**을 확인합니다. 자동 선택 및 화면 맞춤이 적용됩니다.
-5. Layers에서 `header → nav`, `hero → button`, `card-list → card` 구조를 펼칩니다. Text 내용, Auto Layout 방향·gap·padding, 카드 배경·border·radius를 직접 편집해 보세요. 텍스트의 기본 CSS margin을 표현하기 위해 일부 `/ margin` Frame이 추가됩니다.
+4. 현재 viewport 중앙에 생성된 최상위 Frame을 확인합니다. HTML 정보에 따라 `Page`, `Dashboard`, `Main` 등의 이름을 사용하고, 정보가 없으면 `Imported HTML`을 사용합니다. 자동 선택 및 화면 맞춤이 적용됩니다.
+5. Layers에서 Header / Navigation, Section / Hero, Card / 제목, Button / 표시 텍스트를 탐색합니다. Text 내용, Auto Layout 방향·gap·padding, 카드 배경·border·radius를 직접 편집해 보세요. 텍스트의 기본 CSS margin을 표현하는 Margin Frame도 유지됩니다.
 6. UI에서 실제 생성된 Nodes / Frames / Text / Images / Auto Layout / Grid / Absolute / SVG 수와 생성 시간을 확인합니다. Warning은 Fonts / Images / Unsupported CSS / Grid Fallback 등으로 묶이며 해당 HTML 요소가 표시됩니다. **JSON 저장**은 변환에 사용한 중간 데이터를 저장합니다. 플러그인 UI 콘솔에도 동일한 데이터가 출력됩니다.
 
 변환 상태는 idle → converting → success / error로 관리합니다. 생성 완료 또는 오류 후 Loading이 종료되고 파일 선택·Convert·Drag & Drop이 다시 활성화됩니다. 같은 HTML 파일도 연속으로 선택하거나 바로 다시 변환할 수 있으며 플러그인을 닫을 필요가 없습니다. 새 HTML 파일을 선택하면 idle 상태로 초기화됩니다. 완료 보고서 표시 오류가 있어도 다음 변환은 가능합니다.
@@ -62,6 +62,16 @@ Auto Layout / CSS 스타일 / Images / Shadows / Optimize Empty Wrappers는 기�
 
 Multiple Background를 확인할 때는 **Debug Mode**를 켜고 완료 보고서의 **Debug** 항목을 펼치세요. 실제 computed `backgroundImage` / `background`, 레이어별 종류·색상·stop 위치·alpha, 최종 `figma fills` 수와 순서를 표시합니다. 요청한 Chart 배경은 `background layers: 4` (Gradient 3개 + Solid #FFFFFF), `figma fills: 4`로 표시됩니다. CSS shorthand의 마지막 색상은 computed `backgroundImage`에서 `none`이고 `backgroundColor`에 색상이 저장되므로, JSON에서는 이를 하나의 Solid base로 합칩니다. 같은 정보는 콘솔과 Frame의 `html-background-debug` plugin data에도 기록합니다.
 
+### Layer Naming
+
+`test/layer-naming-regression.html`은 Card / Widget, Navigation, Button, Form Label, Image alt, SVG Icon / Chart와 Utility class 필터링을 확인하는 예제입니다. Naming은 별도 `generateLayerName(element, context)`에서 계산하고, 모든 배치·스타일·SVG·크기·보고서 처리가 끝난 뒤 `node.name`에만 적용합니다. 기존 wrapper 구조와 Optimize 옵션 동작을 유지합니다.
+
+이름의 우선순위는 aria-label → Semantic Tag와 짧은 대표 텍스트·연결된 label → id → 의미 있는 class → role → tag fallback입니다. id / class의 kebab-case, snake_case, camelCase를 읽기 쉬운 이름으로 바꾸며 Bootstrap / Tailwind의 배치·외형 Utility는 제외합니다. Card의 heading이나 짧은 label을 활용하고, Navigation의 첫 메뉴 항목이나 여러 문장으로 된 본문을 Container 제목으로 사용하지 않습니다. 대표 텍스트는 30자 이하, 최종 이름은 약 40자로 제한합니다. 같은 이름에 강제 번호를 붙이지 않습니다.
+
+예를 들어 `Card / 오늘 업로드`, `Button / 저장`, `Input / Email`, `Select / Country`, `Checkbox / Save this information`, `Image / Bootstrap Logo`, `Icon / Search`, `Chart / Traffic`를 사용합니다. Form은 `for`로 연결된 label과 감싸는 label을 모두 읽습니다. Image는 alt, SVG는 aria-label / title / id / class / 크기와 Chart 문맥을 활용합니다. 순수 Text의 이름은 표시 내용을 사용하고 긴 이름만 축약합니다. 실제 `characters`는 전체 내용을 그대로 유지합니다.
+
+중간 JSON의 `name`은 기존 내부 식별자이며 `layerName`이 Figma에서 보이는 이름입니다. 이전 JSON도 계속 처리합니다. Debug Mode의 콘솔에서 `HTML → Figma naming`을 펼치면 tag / class / id / label / text 후보, 선택 이유와 최종 이름을 확인할 수 있습니다. Debug의 레이어 이름에는 기존처럼 원본 HTML selector를 덧붙입니다.
+
 상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
 
 ## 구현 구조
@@ -78,6 +88,7 @@ src/gradients.ts       Linear Gradient 파싱, Solid fallback, Figma Paint 방�
 src/backgrounds.ts     다중 배경·Solid base 통합, 얇은 반복 Grid Line 패턴 판별
 src/dom-visibility.ts  접근성 숨김 clipping 조합 판정
 src/inline-layout.ts   Mixed Inline 스타일 구분과 한 줄 Auto Layout
+src/layer-naming.ts    의미 기반 이름 생성과 최종 node.name 적용
 src/sizing.ts          부모·Flex·CSS 크기와 min/max → Fixed / Fill / Hug
 src/grid.ts            기본 Grid → 세로·가로 Auto Layout 중첩
 src/assets.ts          이미지·배경 이미지 로딩, 상대 경로 연결, 캐시
@@ -94,6 +105,7 @@ test/rendering-regression.html  Block / Absolute / 다중 배경 렌더링 재�
 test/form-controls-regression.html  Form Control 내용과 주변 Layout 회귀 HTML
 test/gradient-regression.html  Linear Gradient 배경과 fallback 회귀 HTML
 test/inline-accessibility-regression.html  접근성 숨김과 Mixed Inline 회귀 HTML
+test/layer-naming-regression.html  의미 있는 Layer 이름과 Form / SVG / Utility class 예제
 tests/                 Chromium 파싱·UI 및 Figma API 모의 테스트
 ```
 
@@ -175,4 +187,6 @@ Fixed 검증은 긴 문서의 하단 바 (`1440×900`에서 `240,824,1200,76`), 
 
 Dashboard 검증은 원본 Donut과 직렬화한 Arc SVG의 Chromium 픽셀 비교, 양·음 dashoffset / pathLength / full circle / seam / CSS 회전 기준, 일반 SVG 도형·Line dashoffset 및 Vector import 전달을 확인합니다. 세 Grid Line은 최종 Solid base·Rectangle을 별도 SVG로 표현해 25% / 50% / 75%의 1px 선과 정확히 픽셀 비교하고, 원본 CSS 스크린샷과도 비교합니다. computed CSS와 IR 4개 레이어·4개 Paint·alpha·stop, UI Debug 표시, Auto Layout 제외·최종 폭·opacity, 제한된 fallback 패턴과 Rectangle / Gradient API 실패도 검사합니다. 다중 URL·Gradient 순서 / alpha / 이미지 캐시·옵션, 한 레이어의 파싱·Paint·이미지 실패 후 나머지 유지, 합성 Text·Grid Fill 중복 방지, wrapper / html / body / 기존 JSON 및 같은 Dashboard 연속 변환도 검사합니다.
 
-전체 78개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.
+Naming 검증은 우선순위·Semantic / Label / SVG / Image·Utility 제외·이름 길이·중복·본문 제외·DOM 보존·Debug 후보를 확인합니다. Landing / Dashboard / Form / Fixed / Phase 2 / Rendering / Gradient / Inline / Naming의 9종 샘플에서 이름을 제외한 모든 노드 속성, 구조·생성 수, 보고서, SVG·이미지 bytes를 비교합니다. 이번 변경에서는 수정 전 엔진 `b7d456e`와도 직접 비교해 Naming 메타데이터를 제외한 파싱 데이터 및 이름을 제외한 477개 노드의 결과가 동일함을 확인했습니다. 비교 산출물은 `test-results/layer-naming-regression.json`입니다.
+
+전체 83개 테스트와 TypeScript 검사·빌드가 통과했습니다. `test-results/mvp-intermediate.json`, `test-results/phase2-intermediate.json`, `test-results/ui.png`, `test-results/phase2-ui.png`는 현재 실행의 검증 산출물이며 Git에서 제외됩니다. Figma API 모의 환경은 실제 layout engine·font metrics·SVG importer를 구현하지 않으므로 최종 시각적 비교는 Figma 데스크톱 앱에서 제공한 테스트 HTML로 확인해야 합니다.

@@ -739,6 +739,156 @@
     return lines;
   }
 
+  // src/layer-naming.ts
+  var NAME_LIMIT = 40;
+  var TEXT_LIMIT = 30;
+  var normalize = (value) => value.replace(/\s+/g, " ").trim();
+  var clip = (value, limit = NAME_LIMIT) => {
+    const characters = [...normalize(value)];
+    return characters.length <= limit ? characters.join("") : characters.slice(0, limit - 1).join("").trimEnd() + "\u2026";
+  };
+  var words = (value) => normalize(value.replace(/([A-Z])([A-Z][a-z])/g, "$1 $2").replace(/([a-z\d])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " "));
+  var readable = (value) => words(value).split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+  var meaningful = (value) => /\p{L}/u.test(value) && !/^(?:undefined|null|true|false|none)$/i.test(value);
+  var shortText = (value) => {
+    const text = normalize(value);
+    return meaningful(text) && [...text].length <= TEXT_LIMIT && (text.match(/[.!?。！？]/g)?.length || 0) <= 1 ? text : "";
+  };
+  var meaningfulIdentifier = (value) => meaningful(value) && !/^(?:[\da-f]{8,}|(?:id|node|element)[_-]?\d+|(?:css|jsx|sc)[_-][\da-z]+)$/i.test(value);
+  function isUtilityClass(value) {
+    if (/[\[\]]/.test(value)) return true;
+    const token = value.split(":").pop().replace(/^!/, "").replace(/^-/, "");
+    return /^(?:flex|inline-flex|block|inline|inline-block|grid|inline-grid|hidden|contents|relative|absolute|fixed|sticky|static|row|col|container|container-fluid|clearfix|sr-only|not-sr-only|visually-hidden|antialiased|subpixel-antialiased|truncate|grow|shrink|italic|not-italic|underline|no-underline|uppercase|lowercase|capitalize|normal-case|overflow-hidden|rounded|shadow|border)$/i.test(token) || /^(?:d|display|flex|align|justify|items|self|place|order|gap|space|col|row|g|gx|gy|p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me|w|h|min-w|max-w|min-h|max-h|text|bg|font|leading|tracking|border|rounded|opacity|object|position|top|right|bottom|left|inset|z|float|clear|visible|invisible|cursor|pointer-events|select|outline|ring|fill|stroke|transition|duration|ease|delay|animate|translate|rotate|scale|skew|origin|basis|grow|shrink|whitespace|break|decoration)-/i.test(token) || /^(?:content-(?:start|end|center|between|around|evenly|baseline|normal|stretch)|grid-(?:cols|rows|flow)-[\w-]+|overflow-(?:[xy]-)?(?:auto|hidden|clip|visible|scroll)|shadow-(?:sm|md|lg|xl|2xl|inner|none)|list-(?:none|disc|decimal|inside|outside)|table-(?:auto|fixed))$/i.test(token) || /^(?:ng-scope|ng-star-inserted|js-|is-|has-|css-|jsx-|sc-)/i.test(token);
+  }
+  var semantics = {
+    header: "Header",
+    nav: "Navigation",
+    main: "Main",
+    aside: "Sidebar",
+    footer: "Footer",
+    form: "Form",
+    table: "Table",
+    thead: "Table Header",
+    tbody: "Table Body",
+    tfoot: "Table Footer",
+    tr: "Table Row",
+    th: "Table Header Cell",
+    td: "Table Cell",
+    ul: "List",
+    ol: "List",
+    li: "List Item",
+    button: "Button",
+    input: "Input",
+    select: "Select",
+    textarea: "Textarea",
+    section: "Section",
+    article: "Article",
+    a: "Link",
+    label: "Label",
+    h1: "Heading",
+    h2: "Heading",
+    h3: "Heading",
+    h4: "Heading",
+    h5: "Heading",
+    h6: "Heading"
+  };
+  var roles = {
+    navigation: "Navigation",
+    main: "Main",
+    complementary: "Sidebar",
+    banner: "Header",
+    contentinfo: "Footer",
+    form: "Form",
+    dialog: "Dialog",
+    alert: "Alert",
+    status: "Status",
+    toolbar: "Toolbar",
+    tablist: "Tabs",
+    tab: "Tab",
+    list: "List",
+    listitem: "List Item",
+    group: "Group",
+    region: "Section",
+    button: "Button",
+    checkbox: "Checkbox",
+    radio: "Radio",
+    textbox: "Input",
+    img: "Image",
+    table: "Table",
+    row: "Table Row",
+    cell: "Table Cell",
+    columnheader: "Column Header",
+    rowheader: "Row Header"
+  };
+  function structure(value) {
+    const tokens = words(value).toLowerCase().split(" ");
+    if (tokens.includes("button") && tokens.includes("group")) return "Button Group";
+    for (const [token, name] of Object.entries({ card: "Card", widget: "Widget", modal: "Modal", dialog: "Dialog", toolbar: "Toolbar", tabs: "Tabs", tab: "Tab", sidebar: "Sidebar", navigation: "Navigation", content: "Content", section: "Section", list: "List", table: "Table", badge: "Badge" })) {
+      if (tokens.includes(token)) return name;
+    }
+    return "";
+  }
+  function generateLayerName(element, context) {
+    const tag = element.localName;
+    const aria = normalize(element.getAttribute("aria-label") || "");
+    const id = meaningfulIdentifier(element.id) ? element.id : "";
+    const classes = [...element.classList].filter((name) => !isUtilityClass(name) && meaningfulIdentifier(name));
+    const componentClass = classes.find((name) => !!structure(name)) || classes[0] || "";
+    const role = element.getAttribute("role")?.trim().split(/\s+/)[0]?.toLowerCase() || "";
+    const content = (parent2, skipHidden = true) => {
+      if (skipHidden && context.isHidden?.(parent2)) return "";
+      if (["svg", "script", "style", "input", "textarea", "select", "option", "title", "desc"].includes(parent2.localName)) return "";
+      return [...parent2.childNodes].map((child) => child.nodeType === 3 ? child.textContent || "" : child.nodeType === 1 ? content(child, skipHidden) : "").join(" ");
+    };
+    const ownText = () => shortText(content(element));
+    const heading = [...element.children].find((child) => /^h[1-6]$/.test(child.localName)) || [...element.children].filter((child) => child.localName === "header" || /(?:^|[-_])header(?:$|[-_\s])/.test(`${child.id} ${child.getAttribute("class") || ""}`)).flatMap((child) => [...child.children]).find((child) => /^h[1-6]$/.test(child.localName));
+    const inlineLabel = [...element.children].filter((child) => !context.isHidden?.(child)).length === 1 || [structure(id), structure(componentClass)].some((name) => ["Card", "Widget", "Badge", "Tab"].includes(name));
+    const representative = (heading ? shortText(content(heading)) : "") || shortText([...element.childNodes].filter((child) => child.nodeType === 3).map((child) => child.textContent || "").join(" ")) || (inlineLabel ? [...element.children].filter((child) => ["span", "strong", "b", "em", "small"].includes(child.localName)).map((child) => shortText(content(child))).find(Boolean) : "") || "";
+    const control = tag === "input" ? element.type.toLowerCase() : tag;
+    const controlName = control === "checkbox" ? "Checkbox" : control === "radio" ? "Radio" : ["button", "submit", "reset"].includes(control) ? "Button" : semantics[tag];
+    const labels = ["input", "select", "textarea"].includes(tag) ? [...element.labels || []].map((label) => shortText(content(label, false))).find(Boolean) || "" : "";
+    const category = structure(id) || structure(componentClass) || semantics[tag] || "";
+    const finish = (value, reason) => {
+      const final = clip(value);
+      context.debug?.({ tag, ariaLabel: aria, id: element.id, class: [...element.classList], meaningfulClass: componentClass, role, label: labels, text: representative, reason, final });
+      return final;
+    };
+    if (context.type === "TEXT") return finish(context.text ? textLayerName(context.text) : clip(ownText() || "Text"), "text");
+    if (tag === "svg") {
+      const title2 = normalize(element.querySelector(":scope > title")?.textContent || "");
+      const own = `${element.id} ${classes.join(" ")} ${title2}`;
+      const parent2 = `${element.parentElement?.id || ""} ${element.parentElement?.getAttribute("class") || ""}`;
+      const chartWords = /(?:chart|graph|plot|donut|sparkline)/i;
+      const chart = chartWords.test(own) || (context.width || 0) >= 160 && (context.height || 0) >= 80 || !/icon/i.test(own) && chartWords.test(parent2) && (context.width || 0) > 80 && (context.height || 0) > 40;
+      const prefix = chart ? "Chart" : "Icon";
+      const hint = meaningful(aria) ? readable(aria) : meaningful(title2) ? readable(title2) : id ? readable(id) : componentClass ? readable(componentClass) : "";
+      const detail = normalize(hint.replace(new RegExp(`(?:^${prefix}\\s*|\\s*${prefix}$)`, "gi"), ""));
+      return finish(detail ? `${prefix} / ${detail}` : prefix, "svg");
+    }
+    if (meaningful(aria)) return finish(readable(aria), "aria-label");
+    if (tag === "img") {
+      const alt = normalize(element.getAttribute("alt") || "");
+      return finish(meaningful(alt) ? `Image / ${readable(alt)}` : "Image", "alt");
+    }
+    if (["input", "select", "textarea"].includes(tag)) {
+      if (labels) return finish(`${controlName} / ${labels}`, "label");
+      if (tag === "input" && controlName === "Button") {
+        const value = shortText(element.value);
+        if (value) return finish(`Button / ${value}`, "button text");
+      }
+    }
+    const title = ["button", "a", "li"].includes(tag) ? ownText() : representative;
+    if (category && title) return finish(`${category} / ${title}`, "semantic text");
+    if (id) return finish(readable(id), "id");
+    if (componentClass) return finish(componentClass === tag && semantics[tag] ? controlName || semantics[tag] : readable(componentClass), "class");
+    if (roles[role]) return finish(title ? `${roles[role]} / ${title}` : roles[role], "role");
+    if (["input", "select", "textarea"].includes(tag)) return finish(controlName || "Input", "control");
+    if (semantics[tag]) return finish(semantics[tag], "semantic tag");
+    const fallback = tag === "body" || tag === "html" ? "Imported HTML" : tag === "div" ? "Container" : tag === "span" ? "Text Container" : tag === "p" ? "Paragraph" : readable(tag);
+    return finish(title && !["body", "html", "p"].includes(tag) ? `${fallback} / ${title}` : fallback, "tag");
+  }
+  var textLayerName = (text) => clip(text || "Text");
+
   // src/dom-visibility.ts
   function isAccessibilityHidden(style) {
     if (!["absolute", "fixed"].includes(style.position) || style.display === "contents") return false;
@@ -1183,6 +1333,14 @@
         warn("GRID_FALLBACK", name, "\uB178\uB4DC/\uAE4A\uC774 \uC81C\uD55C\uC73C\uB85C Grid \uD589 \uC0DD\uC131\uC744 \uC0DD\uB7B5\uD588\uC2B5\uB2C8\uB2E4.");
       }
       if (!options.autoLayout) node.layout.direction = "NONE";
+      node.layerName = generateLayerName(el, {
+        type: node.type,
+        text: node.text,
+        width: rect.width,
+        height: rect.height,
+        isHidden: skipped,
+        debug: options.debug ? (candidates) => console.info("HTML \u2192 Figma naming", selector(el), candidates) : void 0
+      });
       return [node];
     }
     function parseChildren(el, depth, inlineContent = false) {

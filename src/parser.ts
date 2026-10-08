@@ -9,6 +9,7 @@ import { allowedAsset, collectImages, resolveLocalAsset } from './assets';
 import { measureFormText, readFormContent } from './form-controls';
 import { parseLinearGradient } from './gradients';
 import { backgroundLayers, thinHorizontalGridLines } from './backgrounds';
+import { generateLayerName } from './layer-naming';
 import { isAccessibilityHidden } from './dom-visibility';
 import { configureInlineRow, hasInlineBoxStyle, needsInlineChildren } from './inline-layout';
 
@@ -318,6 +319,8 @@ export async function parseRenderedHTML(rendered: RenderedHTML, options: ImportO
     }
     else if (node.grid?.supported && options.autoLayout) { node.grid.supported = false; warn('GRID_FALLBACK', name, '노드/깊이 제한으로 Grid 행 생성을 생략했습니다.'); }
     if (!options.autoLayout) node.layout.direction = 'NONE';
+    node.layerName = generateLayerName(el, { type: node.type, text: node.text, width: rect.width, height: rect.height, isHidden: skipped,
+      debug: options.debug ? candidates => console.info('HTML → Figma naming', selector(el), candidates) : undefined });
     return [node];
   }
   function parseChildren(el: Element, depth: number, inlineContent = false): ParsedNode[] {

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Layer Naming Regression</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f8fafc; font: 16px/24px Inter, sans-serif; }
+  #dashboard { display: flex; flex-direction: column; gap: 24px; padding: 32px; }
+  header, nav, .toolbar, form { display: flex; gap: 16px; align-items: center; }
+  #summary-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card, .summary-card, .traffic-widget, .modal { padding: 16px; border: 1px solid #e5e7eb; border-radius: 12px; background: white; }
+  h1, h2, h3, p { margin: 0; }
+  form { flex-direction: column; align-items: flex-start; }
+  input, select, textarea, button { font: inherit; }
+  .p-4, .px-3, .mt-2, .d-flex, .flex { padding: 8px; }
+  svg { flex-shrink: 0; }
+  #action-bar { position: fixed; bottom: 0; left: 240px; right: 0; height: 76px; background: #fff; }
+</style>
+<main id="dashboard" aria-label="Dashboard">
+  <header><h1>Dashboard</h1><nav aria-label="Main navigation"><a>Overview</a><a>Reports</a></nav></header>
+  <section id="summary-cards">
+    <div class="summary-card p-4 d-flex align-items-center"><h3>오늘 업로드</h3><p>1,204 files</p></div>
+    <div class="card px-3 mt-2"><h3>저장소 사용량</h3><p>72%</p></div>
+    <div class="card"><h3>저장소 사용량</h3><p>72%</p></div>
+  </section>
+  <div class="traffic-widget p-4"><div class="widget-header flex"><h3>업로드 다운로드 트래픽</h3></div>
+    <svg id="traffic-chart" width="320" height="160" viewBox="0 0 320 160"><path d="M0 150L80 90L160 110L240 30L320 10" fill="none" stroke="#2563eb" stroke-width="3"/></svg>
+  </div>
+  <nav id="quick-links"><a>양도소득세</a><a>취득세</a><a>종합부동산세</a></nav>
+  <form id="profile-form">
+    <label for="email">Email</label><input id="email" value="김">
+    <label for="country">Country</label><select id="country"><option selected>대한민국</option><option>일본</option></select>
+    <label>Memo<textarea id="memo">현재 메모</textarea></label>
+    <label for="save-info">Save this information</label><input type="checkbox" id="save-info" checked>
+    <input type="radio" id="credit" checked><label for="credit">Credit card</label>
+    <button>저장</button><input type="button" value="Cancel">
+  </form>
+  <div class="toolbar px-3 flex items-center">
+    <button aria-label="Search"><svg width="24" height="24" viewBox="0 0 24 24" aria-label="Search"><circle cx="10" cy="10" r="6" fill="none" stroke="black"/></svg><span>검색</span></button>
+    <svg class="download-icon text-sm" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2v16m-6-6 6 6 6-6" fill="none" stroke="black"/></svg>
+    <svg width="24" height="24" viewBox="0 0 24 24"><title>Settings</title><path d="M2 2h20v20H2z" fill="#2563eb"/></svg>
+    <img alt="Bootstrap logo" width="24" height="24" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==">
+  </div>
+  <div class="flex items-center justify-between px-4 py-2 text-sm bg-white"><span>Utility classes</span><span>Not layer names</span></div>
+  <div class="modal"><h3>확인</h3><p>이 본문에는 여러 문장이 있습니다. 전체 본문은 이름으로 사용하지 않습니다.</p></div>
+  <div id="action-bar"><button>저장 후 계속</button></div>
+</main>
+</html>

@@ -72,6 +72,7 @@ export interface ParsedNode {
   type: 'FRAME' | 'TEXT' | 'IMAGE' | 'SVG';
   tagName: string;
   name: string;
+  layerName?: string; // Presentation only; never used by layout/style conversion.
   text?: string;
   image?: ParsedImage;
   svg?: string;

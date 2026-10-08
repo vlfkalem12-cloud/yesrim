@@ -110,6 +110,28 @@
     return lines;
   }
 
+  // src/layer-naming.ts
+  var NAME_LIMIT = 40;
+  var normalize = (value) => value.replace(/\s+/g, " ").trim();
+  var clip = (value, limit = NAME_LIMIT) => {
+    const characters = [...normalize(value)];
+    return characters.length <= limit ? characters.join("") : characters.slice(0, limit - 1).join("").trimEnd() + "\u2026";
+  };
+  var textLayerName = (text) => clip(text || "Text");
+  function parsedLayerName(node) {
+    if (node.type === "TEXT") return textLayerName(node.text || "Text");
+    if (node.layerName) return node.layerName;
+    if (node.source?.synthetic && node.source.selector.endsWith(" / row")) return "Grid Row";
+    if (node.source?.synthetic && node.source.selector.endsWith(" / cell")) return node.children[0] ? clip(`Grid Cell / ${parsedLayerName(node.children[0])}`) : "Grid Cell";
+    return node.name;
+  }
+  function applyLayerNames(assignments, debug) {
+    for (const { node, parsed, margin } of assignments) if (!node.removed) {
+      const base = margin ? clip(`${parsedLayerName(parsed)} / Margin`) : parsedLayerName(parsed);
+      node.name = debug && parsed.source ? `${base} [${parsed.source.selector}${margin ? " / margin" : ""}]` : base;
+    }
+  }
+
   // src/converter.ts
   var solid = (color) => ({ type: "SOLID", color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
   var fontWeight = (style) => {
@@ -201,6 +223,7 @@
       const { node, depth } = stack.pop();
       if (++count > LIMITS.nodes || depth > LIMITS.depth) throw new Error("\uBB38\uC11C\uC758 \uB178\uB4DC \uC218 \uB610\uB294 \uAE4A\uC774 \uC81C\uD55C\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4.");
       if (!node || !["FRAME", "TEXT", "IMAGE", "SVG"].includes(node.type) || typeof node.name !== "string" || typeof node.tagName !== "string" || !Array.isArray(node.children) || !node.size || !node.layout || !node.style || !node.rect) throw new Error("\uC798\uBABB\uB41C \uB178\uB4DC \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
+      if (node.layerName !== void 0 && (typeof node.layerName !== "string" || node.layerName.length > 160)) throw new Error("\uC798\uBABB\uB41C Layer Name \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.svg !== void 0 && (typeof node.svg !== "string" || node.svg.length > LIMITS.fileBytes)) throw new Error("\uC798\uBABB\uB41C SVG \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (node.type === "TEXT" && (typeof node.text !== "string" || node.text.length > 1e6)) throw new Error("\uC798\uBABB\uB41C \uD14D\uC2A4\uD2B8 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
       if (!finite(node.size.width) || !finite(node.size.height) || node.size.width < 0 || node.size.height < 0 || !["FIXED", "FILL", "HUG"].includes(node.size.widthMode) || !["FIXED", "FILL", "HUG"].includes(node.size.heightMode)) throw new Error("\uC798\uBABB\uB41C \uD06C\uAE30 \uB370\uC774\uD130\uC785\uB2C8\uB2E4.");
@@ -262,6 +285,7 @@
     const fixedPlacements = [];
     const gridBackgrounds = [];
     const backgroundDiagnostics = [];
+    const namingAssignments = [];
     const isFixed = (parsed) => parsed.layout.absolute && parsed.layout.position === "fixed";
     let root;
     function imagePaint(image, name) {
@@ -581,6 +605,7 @@
         }
         node.name = doc.options.debug && parsed.source ? `${parsed.name} [${parsed.source.selector}]` : parsed.name;
         node.setPluginData("html-source", parsed.source?.selector || parsed.tagName);
+        namingAssignments.push({ node, parsed });
         if (parsed.grid?.supported) node.setPluginData("html-grid", "true");
         if (parsed.layout.absolute) node.setPluginData("html-absolute", "true");
         if (isFixed(parsed)) node.setPluginData("html-position", "fixed");
@@ -603,6 +628,7 @@
           marginWrapper.paddingBottom = bottom;
           marginWrapper.paddingLeft = left;
           marginWrapper.resize(clamp(parsed.size.width + left + right, 0.01), clamp(parsed.size.height + top + bottom, 0.01));
+          namingAssignments.push({ node: marginWrapper, parsed, margin: true });
           parent.appendChild(marginWrapper);
           marginWrapper.appendChild(node);
           marginWrapper.layoutSizingHorizontal = parsed.size.widthMode === "FILL" ? "FILL" : "FIXED";
@@ -693,6 +719,7 @@
       }
       report.warningGroups = enrichWarnings(report.warnings, doc.root);
       report.durationMs = Date.now() - started;
+      applyLayerNames(namingAssignments, doc.options.debug === true);
       return { frame: created, report };
     } catch (error) {
       if (root && !root.removed) root.remove();
