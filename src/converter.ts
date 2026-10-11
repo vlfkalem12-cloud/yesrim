@@ -4,6 +4,7 @@ import { enrichWarnings, warningCollector, warningNode } from './report';
 import { linearGradientPaint } from './gradients';
 import { backgroundLayers, thinHorizontalGridLines, type BackgroundGridLine } from './backgrounds';
 import { applyLayerNames } from './layer-naming';
+import { selfAlignment, configureSelfAlignment } from './alignment';
 
 type EditableNode = FrameNode | TextNode | RectangleNode;
 const solid = (color: Color): SolidPaint => ({ type: 'SOLID', color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
@@ -505,6 +506,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (cancelled()) throw new Error('변환을 취소했습니다.');
     let node: EditableNode | undefined;
     let marginWrapper: FrameNode | undefined;
+    let alignment: ReturnType<typeof selfAlignment>;
     try {
       if (parsed.type === 'TEXT') {
         const font = await fonts.resolve(parsed, doc.options.styles);
@@ -582,6 +584,33 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         marginWrapper.layoutSizingVertical = parsed.size.heightMode === 'FILL' ? 'FILL' : 'FIXED';
         countNode(marginWrapper);
       } else if (parent) parent.appendChild(node);
+      alignment = selfAlignment(parsed, parent, parentParsed);
+      if (alignment && parent) {
+        const existing = marginWrapper;
+        const wrapper = existing || figma.createFrame();
+        if (!existing) { wrapper.name = 'Alignment'; wrapper.fills = []; parent.appendChild(wrapper); wrapper.appendChild(node); }
+        const previous = { layout: wrapper.layoutMode, width: wrapper.width, height: wrapper.height,
+          horizontal: wrapper.layoutSizingHorizontal, vertical: wrapper.layoutSizingVertical,
+          primary: wrapper.primaryAxisAlignItems || 'MIN', counter: wrapper.counterAxisAlignItems || 'MIN' };
+        try {
+          const vertical = parent.layoutMode === 'VERTICAL';
+          wrapper.resize(vertical ? clamp(parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0), .01) : wrapper.width,
+            !vertical ? clamp(parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0), .01) : wrapper.height);
+          configureSelfAlignment(wrapper, parsed, parent, alignment);
+          wrapper.setPluginData('html-align-self', parsed.layout.alignSelf);
+          marginWrapper = wrapper;
+          if (!existing) countNode(wrapper);
+        } catch (error) {
+          alignment = undefined;
+          if (!existing) { parent.appendChild(node); wrapper.remove(); }
+          else {
+            try { wrapper.layoutMode = previous.layout; wrapper.resize(previous.width, previous.height);
+              wrapper.primaryAxisAlignItems = previous.primary; wrapper.counterAxisAlignItems = previous.counter;
+              wrapper.layoutSizingHorizontal = previous.horizontal; wrapper.layoutSizingVertical = previous.vertical; } catch { /* Keep the original source node and margin container. */ }
+          }
+          warn('ALIGN_SELF', parsed.name, `개별 정렬 Auto Layout을 적용하지 못해 기존 부모 정렬을 유지합니다: ${errorMessage(error)}`);
+        }
+      }
       // Absolute children must leave their parent's flow before their own descendants are created.
       if (parent && parent.layoutMode !== 'NONE' && parsed.layout.absolute) node.layoutPositioning = 'ABSOLUTE';
       if (node.type === 'FRAME' && parsed.type === 'FRAME') {
@@ -608,7 +637,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         applyStacking(node, childNodes);
       }
       applySizing(node, parsed, marginWrapper || parent, parsed.layout.absolute);
-      if (marginWrapper) {
+      if (alignment && marginWrapper && parent) configureSelfAlignment(marginWrapper, parsed, parent, alignment);
+      if (marginWrapper && !alignment) {
         // A fixed/Hug child plus padding can hug. Fill must retain measured size on that axis.
         if (parsed.size.widthMode === 'HUG' && node.layoutSizingHorizontal !== 'FILL') marginWrapper.layoutSizingHorizontal = 'HUG';
         if (parsed.size.heightMode === 'HUG' && node.layoutSizingVertical !== 'FILL') marginWrapper.layoutSizingVertical = 'HUG';

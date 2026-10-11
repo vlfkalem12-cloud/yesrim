@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, simulateHugWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, simulateHugWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectDeprecatedAlignment = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -93,7 +93,7 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
       primaryAxisSizingMode: { enumerable: true, get: () => primarySizing, set: value => { if (rejectLegacySizing(node, 'Primary', value)) throw new Error('Simulated native primary sizing rejection'); primarySizing = value; } },
       counterAxisSizingMode: { enumerable: true, get: () => counterSizing, set: value => { if (rejectLegacySizing(node, 'Counter', value)) throw new Error('Simulated native counter sizing rejection'); counterSizing = value; } },
       layoutGrow: { enumerable: true, get: () => grow, set: value => { grow = value; } },
-      layoutAlign: { enumerable: true, get: () => align, set: value => { align = value; } }
+      layoutAlign: { enumerable: true, get: () => align, set: value => { if (rejectDeprecatedAlignment && ['MIN', 'CENTER', 'MAX'].includes(value)) throw new Error('Deprecated per-child layoutAlign'); align = value; } }
     });
     if (simulateAutoWidth) {
       let measuredWidth = 100;

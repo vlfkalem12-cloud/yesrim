@@ -219,6 +219,26 @@
     }
   }
 
+  // src/alignment.ts
+  function selfAlignment(parsed, parent, parentParsed) {
+    if (!parent || !parentParsed || parent.layoutMode === "NONE" || parsed.layout.absolute || !["flex", "inline-flex"].includes(parentParsed.layout.display) || parsed.layout.alignSelf !== "center" || parent.counterAxisAlignItems === "CENTER") return;
+    const cross = parent.layoutMode === "VERTICAL" ? "widthMode" : "heightMode";
+    if (parentParsed.layout.wrap || parentParsed.size[cross] === "HUG") return;
+    return "CENTER";
+  }
+  function configureSelfAlignment(wrapper, parsed, parent, alignment) {
+    const vertical = parent.layoutMode === "VERTICAL";
+    wrapper.layoutMode = parent.layoutMode;
+    wrapper.primaryAxisAlignItems = "MIN";
+    wrapper.counterAxisAlignItems = alignment;
+    wrapper.itemSpacing = 0;
+    wrapper.clipsContent = false;
+    wrapper.fills = [];
+    const primary = vertical ? parsed.size.heightMode : parsed.size.widthMode;
+    wrapper.layoutSizingHorizontal = vertical ? "FILL" : primary === "FILL" ? "FILL" : "HUG";
+    wrapper.layoutSizingVertical = !vertical ? "FILL" : primary === "FILL" ? "FILL" : "HUG";
+  }
+
   // src/converter.ts
   var solid = (color) => ({ type: "SOLID", color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
   var fontWeight = (style) => {
@@ -767,6 +787,7 @@ reason: ${entry.reason}`);
       if (cancelled2()) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
       let node;
       let marginWrapper;
+      let alignment;
       try {
         if (parsed.type === "TEXT") {
           const font = await fonts.resolve(parsed, doc.options.styles);
@@ -864,6 +885,54 @@ reason: ${entry.reason}`);
           marginWrapper.layoutSizingVertical = parsed.size.heightMode === "FILL" ? "FILL" : "FIXED";
           countNode(marginWrapper);
         } else if (parent) parent.appendChild(node);
+        alignment = selfAlignment(parsed, parent, parentParsed);
+        if (alignment && parent) {
+          const existing = marginWrapper;
+          const wrapper = existing || figma.createFrame();
+          if (!existing) {
+            wrapper.name = "Alignment";
+            wrapper.fills = [];
+            parent.appendChild(wrapper);
+            wrapper.appendChild(node);
+          }
+          const previous = {
+            layout: wrapper.layoutMode,
+            width: wrapper.width,
+            height: wrapper.height,
+            horizontal: wrapper.layoutSizingHorizontal,
+            vertical: wrapper.layoutSizingVertical,
+            primary: wrapper.primaryAxisAlignItems || "MIN",
+            counter: wrapper.counterAxisAlignItems || "MIN"
+          };
+          try {
+            const vertical = parent.layoutMode === "VERTICAL";
+            wrapper.resize(
+              vertical ? clamp(parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0), 0.01) : wrapper.width,
+              !vertical ? clamp(parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0), 0.01) : wrapper.height
+            );
+            configureSelfAlignment(wrapper, parsed, parent, alignment);
+            wrapper.setPluginData("html-align-self", parsed.layout.alignSelf);
+            marginWrapper = wrapper;
+            if (!existing) countNode(wrapper);
+          } catch (error) {
+            alignment = void 0;
+            if (!existing) {
+              parent.appendChild(node);
+              wrapper.remove();
+            } else {
+              try {
+                wrapper.layoutMode = previous.layout;
+                wrapper.resize(previous.width, previous.height);
+                wrapper.primaryAxisAlignItems = previous.primary;
+                wrapper.counterAxisAlignItems = previous.counter;
+                wrapper.layoutSizingHorizontal = previous.horizontal;
+                wrapper.layoutSizingVertical = previous.vertical;
+              } catch {
+              }
+            }
+            warn("ALIGN_SELF", parsed.name, `\uAC1C\uBCC4 \uC815\uB82C Auto Layout\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD574 \uAE30\uC874 \uBD80\uBAA8 \uC815\uB82C\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
+          }
+        }
         if (parent && parent.layoutMode !== "NONE" && parsed.layout.absolute) node.layoutPositioning = "ABSOLUTE";
         if (node.type === "FRAME" && parsed.type === "FRAME") {
           let children = [...parsed.children];
@@ -888,7 +957,8 @@ reason: ${entry.reason}`);
           applyStacking(node, childNodes);
         }
         applySizing(node, parsed, marginWrapper || parent, parsed.layout.absolute);
-        if (marginWrapper) {
+        if (alignment && marginWrapper && parent) configureSelfAlignment(marginWrapper, parsed, parent, alignment);
+        if (marginWrapper && !alignment) {
           if (parsed.size.widthMode === "HUG" && node.layoutSizingHorizontal !== "FILL") marginWrapper.layoutSizingHorizontal = "HUG";
           if (parsed.size.heightMode === "HUG" && node.layoutSizingVertical !== "FILL") marginWrapper.layoutSizingVertical = "HUG";
         }
