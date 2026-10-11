@@ -1,3 +1,4 @@
+import { sourceChildren, sourcePosition } from './alignment-compat.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -144,12 +145,12 @@ test('Controlled Chip text width rewraps its row and propagates through Card/Sec
 });
 
 function snapshot(n) {
-  return { type:n.type,name:n.name,width:n.width,height:n.height,x:n.parent?.type==='PAGE'?0:n.x,y:n.parent?.type==='PAGE'?0:n.y,
+  return { type:n.type,name:n.name,width:n.width,height:n.height,x:n.parent?.type==='PAGE'?0:sourcePosition(n).x,y:n.parent?.type==='PAGE'?0:sourcePosition(n).y,
     horizontal:n.layoutSizingHorizontal,vertical:n.layoutSizingVertical,layout:n.layoutMode,wrap:n.layoutWrap,gap:n.itemSpacing,
     padding:[n.paddingTop,n.paddingRight,n.paddingBottom,n.paddingLeft],align:n.counterAxisAlignItems,justify:n.primaryAxisAlignItems,
     primary:n.primaryAxisSizingMode,counter:n.counterAxisSizingMode,minWidth:n.minWidth,maxWidth:n.maxWidth,minHeight:n.minHeight,maxHeight:n.maxHeight,
     radii:[n.topLeftRadius,n.topRightRadius,n.bottomRightRadius,n.bottomLeftRadius],fills:n.fills,strokes:n.strokes,effects:n.effects,opacity:n.opacity,clips:n.clipsContent,
-    text:n.characters,font:n.fontName,fontSize:n.fontSize,lineHeight:n.lineHeight,resize:n.textAutoResize,ranges:n.rangeStyles,children:n.children.map(snapshot) };
+    text:n.characters,font:n.fontName,fontSize:n.fontSize,lineHeight:n.lineHeight,resize:n.textAutoResize,ranges:n.rangeStyles,children:sourceChildren(n).map(snapshot) };
 }
 function restoreComponentIR(current,previous) {
   const copy=structuredClone(current);

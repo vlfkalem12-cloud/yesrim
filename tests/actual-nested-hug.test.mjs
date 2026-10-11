@@ -1,3 +1,4 @@
+import { sourceChildren, sourcePosition } from './alignment-compat.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile, access } from 'node:fs/promises';
@@ -294,15 +295,15 @@ function frozenPresentation(node) {
   return { name: node.name, type: node.type, layout: node.layoutMode, width: node.width, horizontal: node.layoutSizingHorizontal,
     fills: node.fills, strokes: node.strokes, effects: node.effects, opacity: node.opacity, clips: node.clipsContent,
     characters: node.characters, font: node.fontName, fontSize: node.fontSize, resize: node.textAutoResize, ranges: node.rangeStyles,
-    children: node.children.map(frozenPresentation) };
+    children: sourceChildren(node).map(frozenPresentation) };
 }
 
 function unchanged(node) {
   return { name: node.name, type: node.type, width: node.width, horizontal: node.layoutSizingHorizontal, vertical: node.layoutSizingVertical,
-    layout: node.layoutMode, wrap: node.layoutWrap, height: node.height, y: node.parent?.type === 'PAGE' ? 0 : node.y, positioning: node.layoutPositioning,
+    layout: node.layoutMode, wrap: node.layoutWrap, height: node.height, y: node.parent?.type === 'PAGE' ? 0 : sourcePosition(node).y, positioning: node.layoutPositioning,
     padding: [node.paddingTop, node.paddingRight, node.paddingBottom, node.paddingLeft], minHeight: node.minHeight, maxHeight: node.maxHeight,
     fills: node.fills, strokes: node.strokes, effects: node.effects, opacity: node.opacity, characters: node.characters, font: node.fontName,
-    fontSize: node.fontSize, resize: node.textAutoResize, ranges: node.rangeStyles, children: node.children.map(unchanged) };
+    fontSize: node.fontSize, resize: node.textAutoResize, ranges: node.rangeStyles, children: sourceChildren(node).map(unchanged) };
 }
 test('Normal-runtime actual HTML output, names, widths, wrappers and styles match c682e41; protected modules are byte-identical', { skip: !baseline }, async () => {
   for (const file of ['layer-naming.ts', 'rich-text.ts', 'inline-layout.ts', 'sizing.ts', 'grid.ts', 'svg.ts', 'gradients.ts', 'backgrounds.ts', 'form-controls.ts', 'optimizer.ts'])

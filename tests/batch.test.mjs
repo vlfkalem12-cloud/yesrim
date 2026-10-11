@@ -8,12 +8,13 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { createFigmaMock } from './figma-mock.mjs';
 
-let browser, server, base, mainBundle, oldMain;
+let browser, server, base, mainBundle, oldMain, historicalMain;
 const baseline = process.env.BATCH_BASELINE_SRC;
 // Historical stage protection is frozen; the next UX stage separately proves its allowed resource-input changes.
 const implementation = process.env.BATCH_IMPLEMENTATION_SRC || 'src';
 before(async () => {
   const ui = await readFile('dist/ui.html', 'utf8'); mainBundle = await readFile('dist/code.js', 'utf8');
+  if(process.env.ALIGNMENT_BASELINE_SRC)historicalMain=(await build({entryPoints:[resolve(process.env.ALIGNMENT_BASELINE_SRC,'code.ts')],bundle:true,write:false,format:'iife'})).outputFiles[0].text;
   if (baseline) oldMain = (await build({ entryPoints: [resolve(baseline, 'code.ts')], bundle: true, write: false, format: 'iife', target: 'es2020' })).outputFiles[0].text;
   server = createServer((req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(req.url === '/ui' ? ui : '<!doctype html><iframe src="/ui" width="440" height="1200"></iframe>'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${server.address().port}`;
@@ -27,7 +28,7 @@ async function until(predicate) {
   const deadline = Date.now() + 15000;
   while (!predicate()) { if (Date.now() > deadline) throw new Error('Timed out waiting for test gate'); await new Promise(resolve => setTimeout(resolve, 20)); }
 }
-async function session({ failAt = [], corruptAt = [], moveViewport = false, rejectBatch = false } = {}) {
+async function session({ mainImplementation = mainBundle, failAt = [], corruptAt = [], moveViewport = false, rejectBatch = false } = {}) {
   const page = await browser.newPage(); await page.route('https://fonts.googleapis.com/**', route => route.abort()); await page.goto(base);
   const ui = page.frames().find(frame => frame.url() === `${base}/ui`); await ui.locator('#file').waitFor();
   const mock = createFigmaMock(), requests = [], replies = [], deliveries = [], held = [], timeline = [], artifacts = new Map();
@@ -46,7 +47,7 @@ async function session({ failAt = [], corruptAt = [], moveViewport = false, reje
     const copy = structuredClone(message);
     if (hold && ['CONVERSION_COMPLETE', 'CONVERSION_ERROR'].includes(copy.type)) held.push(copy); else deliver(copy);
   };
-  runInNewContext(mainBundle, { figma: mock.figma, __html__: '', setTimeout, Uint8Array, console: { warn() {}, info() {} } });
+  runInNewContext(mainImplementation, { figma: mock.figma, __html__: '', setTimeout, Uint8Array, console: { warn() {}, info() {} } });
   await page.exposeFunction('toMain', async original => {
     const message = structuredClone(original); requests.push(original); timeline.push(['ui', message.type, message.itemId]);
     if (message.type === 'BATCH_START' && rejectBatch) { deliver({ type: 'BATCH_ERROR', batchId: message.batchId, message: 'Injected batch start failure' }); return; }
@@ -318,7 +319,7 @@ test('Batch preserves the stable single conversion engine, schema, reports and a
   const files = ['test/actual/09-01_A-pc-list.html', 'examples/mvp.html', 'test/dashboard-rendering-regression.html', 'test/form-controls-regression.html', 'test/fixed-position-regression.html', 'test/phase2-test.html', 'test/rendering-regression.html', 'test/gradient-regression.html', 'test/inline-accessibility-regression.html', 'test/layer-naming-regression.html', 'test/rich-text-regression.html', 'test/content-components-regression.html'];
   const evidence = [];
   // Two batches keep within the actual 10-file maximum and exercise repeated upload.
-  const s = await session(); try {
+  const s = await session({mainImplementation:historicalMain||mainBundle}); try {
     await s.ui.locator('#viewport-width').fill('1920'); await s.ui.locator('#debug').check();
     for (const chunk of [files.slice(0, 6), files.slice(6)]) {
       await choose(s, await Promise.all(chunk.map(async path => file(path.split('/').at(-1), await readFile(path, 'utf8')))));

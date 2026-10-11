@@ -4,7 +4,7 @@ import { enrichWarnings, warningCollector, warningNode } from './report';
 import { linearGradientPaint } from './gradients';
 import { backgroundLayers, thinHorizontalGridLines, type BackgroundGridLine } from './backgrounds';
 import { applyLayerNames } from './layer-naming';
-import { selfAlignment, configureSelfAlignment } from './alignment';
+import { selfAlignment, configureSelfAlignment, alignmentIntent, alignedPlainText, centeredControlStack } from './alignment';
 
 type EditableNode = FrameNode | TextNode | RectangleNode;
 const solid = (color: Color): SolidPaint => ({ type: 'SOLID', color: { r: clamp(color.r, 0, 1), g: clamp(color.g, 0, 1), b: clamp(color.b, 0, 1) }, opacity: clamp(color.a, 0, 1) });
@@ -363,10 +363,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         catch { warn('SIZE_CONSTRAINT', parsed.name, `${key}:${value}px는 측정 크기로 유지합니다.`); }
       } else warn('SIZE_CONSTRAINT', parsed.name, `${key}:${value}px는 고정 치수에 반영되어 있습니다.`);
     }
-    if (autoParent && parsed.layout.alignSelf !== 'auto' && !['stretch', 'normal'].includes(parsed.layout.alignSelf)) {
-      const alignment = parsed.layout.alignSelf.includes('center') ? 'CENTER' : parsed.layout.alignSelf.includes('end') ? 'MAX' : 'MIN';
-      if (alignment !== parent.counterAxisAlignItems) warn('ALIGN_SELF', parsed.name, '개별 align-self 정렬은 부모의 정렬로 단순화했습니다.');
-    }
+
   }
   function finalizeContentHeights(): void {
     // Reparenting, constraints and viewport resize can invalidate a prior shorthand setting.
@@ -502,11 +499,19 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (node.type === 'TEXT') report.text++;
     if (node.type === 'FRAME' && node.layoutMode !== 'NONE') report.autoLayout++;
   }
-  async function create(parsed: ParsedNode, parent?: FrameNode, parentParsed?: ParsedNode): Promise<EditableNode> {
+  const selfAlignedFrames: { wrapper: FrameNode; parsed: ParsedNode; parent: FrameNode; alignment: NonNullable<ReturnType<typeof selfAlignment>> }[] = [];
+  async function create(parsed: ParsedNode, parent?: FrameNode, parentParsed?: ParsedNode, inheritedAlignment = false): Promise<EditableNode> {
     if (cancelled()) throw new Error('변환을 취소했습니다.');
     let node: EditableNode | undefined;
     let marginWrapper: FrameNode | undefined;
     let alignment: ReturnType<typeof selfAlignment>;
+    const alignmentContext = inheritedAlignment || (!!parentParsed && parentParsed.layout.direction === 'VERTICAL' && ['flex', 'inline-flex'].includes(parentParsed.layout.display) && alignmentIntent(parsed.layout.alignSelf) !== undefined);
+    const plainText = doc.options.autoLayout && alignedPlainText(parsed, alignmentContext);
+    const centeredStack = doc.options.autoLayout && centeredControlStack(parsed, parentParsed);
+    const nativeParsed: ParsedNode = plainText || centeredStack ? { ...parsed,
+      layout: { ...parsed.layout, direction: 'VERTICAL', align: 'MIN', justify: 'MIN', gap: 0, normalFlow: undefined },
+      size: { ...parsed.size, widthMode: plainText && parsed.size.widthMode === 'HUG' ? 'FIXED' : parsed.size.widthMode,
+        heightSource: parsed.size.heightSource ? { ...parsed.size.heightSource, reason: 'Verified aligned text flow; measured outer width retained' } : undefined } } : parsed;
     try {
       if (parsed.type === 'TEXT') {
         const font = await fonts.resolve(parsed, doc.options.styles);
@@ -557,7 +562,8 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
       } else {
         const frame = figma.createFrame(); node = frame;
         if (!parent) root = frame;
-        configureLayout(frame, parsed); applyBoxStyle(frame, parsed);
+        configureLayout(frame, nativeParsed); applyBoxStyle(frame, parsed);
+        if (plainText || centeredStack) frame.setPluginData('html-aligned-text-flow', plainText ? 'bubble' : 'centered-control-stack');
       }
       node.name = doc.options.debug && parsed.source ? `${parsed.name} [${parsed.source.selector}]` : parsed.name;
       node.setPluginData('html-source', parsed.source?.selector || parsed.tagName);
@@ -594,12 +600,13 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
           primary: wrapper.primaryAxisAlignItems || 'MIN', counter: wrapper.counterAxisAlignItems || 'MIN' };
         try {
           const vertical = parent.layoutMode === 'VERTICAL';
-          wrapper.resize(vertical ? clamp(parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0), .01) : wrapper.width,
-            !vertical ? clamp(parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0), .01) : wrapper.height);
+          wrapper.resize(vertical ? clamp(parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0), .01) : existing ? wrapper.width : clamp(parsed.size.width, .01),
+            !vertical ? clamp(parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0), .01) : existing ? wrapper.height : clamp(parsed.size.height, .01));
           configureSelfAlignment(wrapper, parsed, parent, alignment);
           wrapper.setPluginData('html-align-self', parsed.layout.alignSelf);
           marginWrapper = wrapper;
-          if (!existing) countNode(wrapper);
+          if (!existing) { wrapper.setPluginData('html-alignment-wrapper', 'true'); countNode(wrapper); }
+          selfAlignedFrames.push({ wrapper, parsed, parent, alignment });
         } catch (error) {
           alignment = undefined;
           if (!existing) { parent.appendChild(node); wrapper.remove(); }
@@ -610,6 +617,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
           }
           warn('ALIGN_SELF', parsed.name, `개별 정렬 Auto Layout을 적용하지 못해 기존 부모 정렬을 유지합니다: ${errorMessage(error)}`);
         }
+      }
+      if (autoParent && parent && parentParsed && ['flex', 'inline-flex'].includes(parentParsed.layout.display)) {
+        const target = alignmentIntent(parsed.layout.alignSelf);
+        if (target && target !== (parent.counterAxisAlignItems || 'MIN') && !alignment) warn('ALIGN_SELF', parsed.name, 'Wrap 또는 Cross-axis Hug에서 개별 align-self를 안전하게 표현할 수 없어 부모 정렬을 유지했습니다.');
       }
       // Absolute children must leave their parent's flow before their own descendants are created.
       if (parent && parent.layoutMode !== 'NONE' && parsed.layout.absolute) node.layoutPositioning = 'ABSOLUTE';
@@ -628,7 +639,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
           children = children.map(child => child.layout.grow > 0 ? { ...child, size: { ...child.size, [parsed.layout.direction === 'VERTICAL' ? 'heightMode' : 'widthMode']: 'FIXED' } } : child);
         }
         for (const child of children) {
-          try { childNodes.push({ parsed: child, node: await create(child, node, parsed) }); }
+          try {
+            const nativeChild = (plainText || centeredStack) ? { ...child, size: { ...child.size, widthMode: 'FILL' as const } } : child;
+            childNodes.push({ parsed: child, node: await create(nativeChild, node, nativeParsed, alignmentContext) });
+          }
           catch (error) {
             if (cancelled()) throw error;
             warn('NODE_FAILED', child.name, `이 요소를 생략했습니다: ${errorMessage(error)}`, { element: warningNode(child), detail: { reason: errorMessage(error) } });
@@ -636,8 +650,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         }
         applyStacking(node, childNodes);
       }
-      applySizing(node, parsed, marginWrapper || parent, parsed.layout.absolute);
-      if (alignment && marginWrapper && parent) configureSelfAlignment(marginWrapper, parsed, parent, alignment);
+      applySizing(node, nativeParsed, marginWrapper || parent, parsed.layout.absolute);
       if (marginWrapper && !alignment) {
         // A fixed/Hug child plus padding can hug. Fill must retain measured size on that axis.
         if (parsed.size.widthMode === 'HUG' && node.layoutSizingHorizontal !== 'FILL') marginWrapper.layoutSizingHorizontal = 'HUG';
@@ -673,6 +686,10 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
     if (fixed.length && 'numberOfFixedChildren' in created) {
       try { created.numberOfFixedChildren = fixed.length; }
       catch (error) { warn('FIXED_SCROLL', created.name, `Figma 스크롤 고정을 적용하지 못했지만 Viewport 기준 좌표는 유지합니다: ${errorMessage(error)}`); }
+    }
+    for (const entry of [...selfAlignedFrames].reverse()) if (!entry.wrapper.removed) {
+      try { configureSelfAlignment(entry.wrapper, entry.parsed, entry.parent, entry.alignment); }
+      catch (error) { warn('ALIGN_SELF', entry.parsed.name, `최종 정렬 크기를 복원하지 못했지만 원본 노드를 유지합니다: ${errorMessage(error)}`); }
     }
     finalizeContentHeights();
     // Sizing and reparenting can change node geometry. Apply browser-relative positions last,

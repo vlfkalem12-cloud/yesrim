@@ -1,5 +1,5 @@
 // This double enforces API preconditions; it does not simulate Figma's text metrics or layout engine.
-export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, simulateHugWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectDeprecatedAlignment = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
+export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' }, { family: 'Noto Sans KR', style: 'Regular' }, { family: 'Noto Sans KR', style: 'Bold' }], failFonts = [], failText = '', failSvg = false, failGradientPaint = false, rejectPaint = () => false, rejectStandaloneTextSizing = false, failSizingNames = [], textSizingShift, intrinsicWidthScale = 1, failFixedChildren = false, failRangeAPI = '', failWrap = false, simulateAutoHeight = false, simulateAutoWidth = false, simulateHugWidth = false, resizeResetsHug = false, simulateSizingCoupling = false, simulateAutoPosition = false, rejectDeprecatedAlignment = false, simulateAlignment = false, rejectSizingAxis = () => false, rejectLegacySizing = () => false, afterResizeWithoutConstraints = () => {}, maxPluginDataBytes = Infinity } = {}) {
   const loaded = new Set();
   const fontLoads = [];
   const images = [];
@@ -119,6 +119,12 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
     }
     if (simulateAutoHeight) Object.defineProperty(node, 'height', { enumerable: true, get: () => {
       // A deliberately limited box-only height model; text metrics and full Figma layout remain outside this double.
+      if (simulateAlignment && node.layoutSizingVertical === 'FILL' && node.parent?.layoutMode && node.parent.layoutMode !== 'NONE' && node.layoutPositioning !== 'ABSOLUTE') {
+        const parent = node.parent, available = parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0) - (parent.strokesIncludedInLayout ? (parent.strokeTopWeight || 0) + (parent.strokeBottomWeight || 0) : 0);
+        if (parent.layoutMode === 'HORIZONTAL') return available;
+        const flow = parent.children.filter(child => child.layoutPositioning !== 'ABSOLUTE'), fills = flow.filter(child => child.layoutSizingVertical === 'FILL');
+        return (available - flow.filter(child => child.layoutSizingVertical !== 'FILL').reduce((sum, child) => sum + child.height, 0) - Math.max(0, flow.length - 1) * (parent.itemSpacing || 0)) / Math.max(1, fills.length);
+      }
       if (node.layoutSizingVertical !== 'HUG' || type !== 'FRAME' || node.layoutMode === 'NONE') return measuredHeight;
       const children = node.children.filter(child => child.layoutPositioning !== 'ABSOLUTE');
       const padding = (node.paddingTop || 0) + (node.paddingBottom || 0);
@@ -151,8 +157,9 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
           }
           const row = rows.find(row => row.includes(node)) || [], index = row.indexOf(node);
           const width = row.reduce((sum, child) => sum + child.width, 0) + Math.max(0, row.length - 1) * (parent.itemSpacing || 0);
+          const gap = simulateAlignment && parent.primaryAxisAlignItems === 'SPACE_BETWEEN' && row.length > 1 ? Math.max(parent.itemSpacing || 0, (available - row.reduce((sum, child) => sum + child.width, 0)) / (row.length - 1)) : parent.itemSpacing || 0;
           const offset = parent.primaryAxisAlignItems === 'CENTER' ? (available - width) / 2 : parent.primaryAxisAlignItems === 'MAX' ? available - width : 0;
-          return left + offset + row.slice(0, index).reduce((sum, child) => sum + child.width, 0) + index * (parent.itemSpacing || 0);
+          return left + offset + row.slice(0, index).reduce((sum, child) => sum + child.width, 0) + index * gap;
         }
         if (!parent?.layoutMode || parent.layoutMode !== 'VERTICAL' || node.layoutPositioning === 'ABSOLUTE') return measuredX;
         const left = (parent.paddingLeft || 0) + (parent.strokesIncludedInLayout ? parent.strokeLeftWeight || 0 : 0);
@@ -165,9 +172,16 @@ export function createFigmaMock({ fonts = [{ family: 'Inter', style: 'Regular' }
         if (!parent?.layoutMode || parent.layoutMode === 'NONE' || node.layoutPositioning === 'ABSOLUTE') return measuredY;
         const flow = parent.children.filter(child => child.layoutPositioning !== 'ABSOLUTE'), index = flow.indexOf(node);
         const top = (parent.paddingTop || 0) + (parent.strokesIncludedInLayout ? parent.strokeTopWeight || 0 : 0);
-        if (parent.layoutMode === 'VERTICAL') return top + flow.slice(0, index).reduce((sum, child) => sum + child.height, 0) + index * (parent.itemSpacing || 0);
+        if (parent.layoutMode === 'VERTICAL') {
+          const available = parent.height - top - (parent.paddingBottom || 0) - (parent.strokesIncludedInLayout ? parent.strokeBottomWeight || 0 : 0);
+          const occupied = flow.reduce((sum, child) => sum + child.height, 0) + Math.max(0, flow.length - 1) * (parent.itemSpacing || 0);
+          const offset = simulateAlignment ? parent.primaryAxisAlignItems === 'MAX' ? available - occupied : parent.primaryAxisAlignItems === 'CENTER' ? (available - occupied) / 2 : 0 : 0;
+          const gap = simulateAlignment && parent.primaryAxisAlignItems === 'SPACE_BETWEEN' && flow.length > 1 ? Math.max(parent.itemSpacing || 0, (available - flow.reduce((sum, child) => sum + child.height, 0)) / (flow.length - 1)) : parent.itemSpacing || 0;
+          return top + offset + flow.slice(0, index).reduce((sum, child) => sum + child.height, 0) + index * gap;
+        }
         if (parent.layoutWrap !== 'WRAP') {
-          if (simulateHugWidth && parent.counterAxisAlignItems === 'CENTER') return top + (parent.height - top - (parent.paddingBottom || 0) - (parent.strokesIncludedInLayout ? parent.strokeBottomWeight || 0 : 0) - node.height) / 2;
+          if (simulateAlignment && parent.counterAxisAlignItems === 'MAX') return top + parent.height - top - (parent.paddingBottom || 0) - (parent.strokesIncludedInLayout ? parent.strokeBottomWeight || 0 : 0) - node.height;
+          if ((simulateHugWidth || simulateAlignment) && parent.counterAxisAlignItems === 'CENTER') return top + (parent.height - top - (parent.paddingBottom || 0) - (parent.strokesIncludedInLayout ? parent.strokeBottomWeight || 0 : 0) - node.height) / 2;
           return top;
         }
         const available = parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0);
