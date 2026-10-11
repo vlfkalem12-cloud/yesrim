@@ -1,13 +1,31 @@
-import { LIMITS, type ImportOptions, type LocalAssets, type ParsedImage, type ParsedNode, type WarningContext } from './types';
+import { LIMITS, type ImportOptions, type LocalAssetInput, type LocalAssetBundle, type ParsedImage, type ParsedNode, type WarningContext } from './types';
 import { errorMessage, withTimeout } from './utils';
 import { warningNode } from './report';
 
 export const allowedAsset = (url: string) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
-export function resolveLocalAsset(url: string, files: LocalAssets): string | undefined {
-  if (/^[a-z][a-z\d+.-]*:/i.test(url) || url.startsWith('//')) return undefined;
-  let path: string;
-  try { path = decodeURIComponent(url.split(/[?#]/)[0]!).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, ''); } catch { return undefined; }
-  const found = files[path] || files[path.split('/').pop()!];
+export function normalizeLocalAssetPath(url: string): string | undefined {
+  const input = url.trim();
+  if (/^[a-z][a-z\d+.-]*:/i.test(input) || input.startsWith('//')) return undefined;
+  let decoded: string;
+  try { decoded = decodeURIComponent(input.split(/[?#]/)[0]!).replace(/\\/g, '/'); } catch { return undefined; }
+  if (/^[a-z][a-z\d+.-]*:/i.test(decoded) || decoded.startsWith('//')) return undefined;
+  const segments: string[] = [];
+  for (const part of decoded.replace(/^\/+/, '').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && segments.length && segments[segments.length - 1] !== '..') segments.pop();
+    else segments.push(part);
+  }
+  return segments.length ? segments.join('/') : undefined;
+}
+export function resolveLocalAsset(url: string, files: LocalAssetInput): string | undefined {
+  const path = normalizeLocalAssetPath(url); if (!path) return undefined;
+  const own = (map: Record<string, string>, key: string) => Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+  const bundled = typeof files.paths === 'object' && typeof files.basenames === 'object';
+  // Bundled inputs separate exact paths from unique filenames, so an ambiguous
+  // filename can never accidentally act as a fallback alias.
+  const found = bundled
+    ? own((files as LocalAssetBundle).paths, path) ?? own((files as LocalAssetBundle).basenames, path.split('/').pop()!)
+    : own(files as Record<string, string>, path) || own(files as Record<string, string>, path.split('/').pop()!);
   return found && allowedAsset(found) ? found : undefined;
 }
 export async function collectImages(root: ParsedNode, doc: Document, options: ImportOptions, assets: Record<string, number[]>, warn: (code: string, node: string, message: string, context?: WarningContext) => void): Promise<void> {

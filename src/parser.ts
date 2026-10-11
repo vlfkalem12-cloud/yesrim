@@ -1,4 +1,4 @@
-import { IMPORT_DEFAULTS, LIMITS, type Bounds, type ConversionWarning, type FixedInsets, type ImportOptions, type LocalAssets, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedStyle, type ViewportPreset } from './types';
+import { IMPORT_DEFAULTS, LIMITS, type Bounds, type ConversionWarning, type FixedInsets, type ImportOptions, type LocalAssetInput, type ParsedDocument, type ParsedLayout, type ParsedNode, type ParsedStyle, type ViewportPreset } from './types';
 import { clamp, errorMessage, isViewportDimension, number, parseColor, parseShadow, readInsets, splitCSSList, withTimeout } from './utils';
 import { authoredDimension, inferSizing, inferTextWidth, isSingleTextLine } from './sizing';
 import { buildGridRows, parseGrid } from './grid';
@@ -24,7 +24,7 @@ const zero = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
 const layerName = (el: Element) => el.id || el.getAttribute('class')?.trim().split(/\s+/)[0] || el.tagName.toLowerCase();
 const selector = (el: Element) => `${el.localName}${el.id ? `#${el.id}` : ''}${[...el.classList].map(name => `.${name}`).join('')}`;
 
-function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: LocalAssets): string {
+function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: LocalAssetInput): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const warn = warningCollector(warnings, 500);
   const scripts = doc.querySelectorAll('script');
@@ -76,7 +76,7 @@ function sanitizeHTML(html: string, warnings: ConversionWarning[], localAssets: 
 }
 
 export interface RenderedHTML { iframe: HTMLIFrameElement; document: Document; warnings: ConversionWarning[]; dispose: () => void }
-export async function renderHTML(html: string, viewport: number, viewportHeight: number, host: HTMLElement, localAssets: LocalAssets = {}): Promise<RenderedHTML> {
+export async function renderHTML(html: string, viewport: number, viewportHeight: number, host: HTMLElement, localAssets: LocalAssetInput = {}): Promise<RenderedHTML> {
   if (!isViewportDimension(viewport) || !isViewportDimension(viewportHeight)) throw new Error('Viewport 너비와 높이는 1~10,000px의 정수로 입력하세요.');
   const warnings: ConversionWarning[] = [];
   const iframe = document.createElement('iframe');
@@ -463,7 +463,7 @@ function transformText(text: string, transform: string): string {
   return text;
 }
 
-export async function parseHTML(html: string, options: ImportOptions, host: HTMLElement, localAssets: LocalAssets = {}): Promise<ParsedDocument> {
+export async function parseHTML(html: string, options: ImportOptions, host: HTMLElement, localAssets: LocalAssetInput = {}): Promise<ParsedDocument> {
   const rendered = await renderHTML(html, options.viewport, options.viewportHeight, host, localAssets);
   try { return await parseRenderedHTML(rendered, options); }
   finally { rendered.dispose(); }

@@ -90,7 +90,8 @@ async function convertOnce(session) {
 }
 async function assertUnlocked(session, expected, ready = true) {
   assert.equal(await session.ui.locator('#status').getAttribute('data-state'), expected);
-  for (const id of ['file', 'viewport', 'viewport-width', 'viewport-height', 'autolayout', 'styles', 'images', 'shadows', 'optimize', 'debug', 'asset-files']) assert.ok(await session.ui.locator(`#${id}`).isEnabled(), id);
+  for (const id of ['file', 'viewport', 'viewport-width', 'viewport-height', 'autolayout', 'styles', 'images', 'shadows', 'optimize', 'debug']) assert.ok(await session.ui.locator(`#${id}`).isEnabled(), id);
+  assert.ok(await session.ui.locator('.item-assets').evaluateAll(inputs => inputs.every(input => !input.disabled)));
   assert.equal(await session.ui.locator('#convert').isEnabled(), ready);
   assert.equal(await session.ui.locator('#convert').textContent(), 'Figma로 변환');
   assert.equal(await session.ui.locator('#file').inputValue(), '');

@@ -1,9 +1,10 @@
 import { parseHTML } from './parser';
-import { LIMITS, VIEWPORT_PRESETS, type ConversionOutcome, type ConversionReport, type ConversionStatus, type LocalAssets, type MainMessage, type FileMessage, type FileConversionStatus, type ImportOptions, type ParsedDocument, type UIMessage } from './types';
+import { LIMITS, VIEWPORT_PRESETS, type ConversionOutcome, type ConversionReport, type ConversionStatus, type MainMessage, type FileMessage, type FileConversionStatus, type ImportOptions, type ParsedDocument, type UIMessage } from './types';
 import { errorMessage, isViewportDimension } from './utils';
 import { failedOutcome, REPORT_LABELS, reportText } from './report';
 import { MAX_HTML_FILES, batchSummary } from './batch';
 import { readHTMLFile, validateHTMLSelection } from './upload-files';
+import { buildImageBundle, imageMappingNotice, readFileImages, type FileImage } from './file-images';
 import { createJSONSnapshot, snapshotJSONBlob, type JSONSnapshot } from './json-snapshots';
 
 function get<T extends HTMLElement>(id: string): T {
@@ -25,10 +26,8 @@ const images = get<HTMLInputElement>('images');
 const shadows = get<HTMLInputElement>('shadows');
 const optimize = get<HTMLInputElement>('optimize');
 const debug = get<HTMLInputElement>('debug');
-const assetFiles = get<HTMLInputElement>('asset-files');
-let localAssets: LocalAssets = {};
 interface UploadItem {
-  id: string; file: File; state: FileConversionStatus;
+  id: string; file: File; state: FileConversionStatus; images: FileImage[]; imageError?: string; settingsOpen?: boolean;
   report?: ConversionReport; outcome?: ConversionOutcome; frameId?: string;
   viewport?: { width?: number; height?: number };
   snapshot?: JSONSnapshot; snapshotOptions?: ImportOptions; snapshotError?: string;
@@ -60,9 +59,16 @@ function validateViewport(): boolean {
   get('viewport-error').hidden = widthValid && heightValid;
   const filesValid = items.every(item => [item.viewport?.width, item.viewport?.height].every(value => value === undefined || isViewportDimension(value)));
   get('file-viewport-error').hidden = filesValid;
-  for (const field of document.querySelectorAll<HTMLInputElement>('.file-viewport input')) field.placeholder = field.dataset.dimension === 'width' ? viewportWidth.value : viewportHeight.value;
+  for (const field of document.querySelectorAll<HTMLInputElement>('.file-viewport input[data-dimension]')) field.placeholder = field.dataset.dimension === 'width' ? viewportWidth.value : viewportHeight.value;
+  for (const row of document.querySelectorAll<HTMLElement>('#file-list > li')) {
+    const item = items.find(entry => entry.id === row.dataset.itemId), summary = row.querySelector('details > summary');
+    if (item && summary) summary.textContent = itemSettingsLabel(item);
+  }
   convert.disabled = isBusy() || items.length === 0 || !widthValid || !heightValid || !filesValid;
   return widthValid && heightValid && filesValid;
+}
+function itemSettingsLabel(item: UploadItem): string {
+  return `파일별 설정 · Viewport: ${item.viewport?.width ?? viewportWidth.value} × ${item.viewport?.height ?? viewportHeight.value} · 이미지 ${item.images.length}개`;
 }
 viewport.addEventListener('change', () => {
   const preset = VIEWPORT_PRESETS[viewport.value];
@@ -80,7 +86,7 @@ function renderControls(): void {
   const value = isBusy();
   validateViewport();
   input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
-  images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
+  images.disabled = shadows.disabled = optimize.disabled = debug.disabled = value;
   dropzone.setAttribute('aria-disabled', String(value));
   for (const field of document.querySelectorAll<HTMLInputElement>('.file-viewport input')) field.disabled = value;
   cancel.hidden = !value;
@@ -100,9 +106,11 @@ function renderItems(): void {
     const name = document.createElement('strong'); name.textContent = `${index + 1}. ${item.file.name}`; row.append(name);
     const state = document.createElement('span'); state.className = 'muted';
     state.textContent = `${labels[item.state]}${item.outcome && item.state !== 'ERROR' ? ` · 경고 ${item.outcome.warningCount}건` : ''}`; row.append(state);
-    if (items.length > 1) {
+    {
       const dimensions = document.createElement('details'); dimensions.className = 'file-viewport';
-      const summary = document.createElement('summary'); summary.textContent = item.viewport && Object.values(item.viewport).some(value => value !== undefined) ? `Viewport: ${item.viewport.width ?? viewportWidth.value} × ${item.viewport.height ?? viewportHeight.value}` : 'Viewport 지정 (기본: 공통 설정)'; dimensions.append(summary);
+      const summary = document.createElement('summary');
+      const settingsLabel = () => itemSettingsLabel(item);
+      summary.textContent = settingsLabel(); dimensions.append(summary); dimensions.open = !!item.settingsOpen; dimensions.ontoggle = () => { item.settingsOpen = dimensions.open; };
       const fields = document.createElement('div'); fields.className = 'dimensions';
       for (const [dimension, label] of [['width', '너비'], ['height', '높이']] as const) {
         const wrapper = document.createElement('label'); wrapper.className = 'dimension'; wrapper.textContent = `${label} (px)`;
@@ -112,11 +120,11 @@ function renderItems(): void {
         field.oninput = () => {
           item.viewport ||= {}; item.viewport[dimension] = field.value === '' && !field.validity.badInput ? undefined : field.valueAsNumber;
           field.setAttribute('aria-invalid', String(item.viewport[dimension] !== undefined && !isViewportDimension(item.viewport[dimension]!)));
-          summary.textContent = `Viewport: ${item.viewport.width ?? viewportWidth.value} × ${item.viewport.height ?? viewportHeight.value}`; validateViewport();
+          summary.textContent = settingsLabel(); validateViewport();
         };
         wrapper.append(field); fields.append(wrapper);
       }
-      dimensions.append(fields); row.append(dimensions);
+      dimensions.append(fields); renderImageSettings(item, dimensions); row.append(dimensions);
     }
     const actions = document.createElement('div'); actions.className = 'file-actions';
     for (const [direction, label] of [[-1, '위로'], [1, '아래로']] as const) {
@@ -131,6 +139,39 @@ function renderItems(): void {
     detail.onclick = () => { if (isBusy()) return; selectedItemId = item.id; renderSelectedResult(); renderItems(); renderControls(); };
     row.append(detail);
     list.append(row);
+  }
+}
+function renderImageSettings(item: UploadItem, target: HTMLElement): void {
+  const title = document.createElement('p'); title.textContent = '로컬 이미지 연결 (선택)'; target.append(title);
+  const help = document.createElement('p'); help.className = 'muted'; help.textContent = 'HTML에서 참조하는 로컬 이미지가 있다면 추가해 주세요. 파일 선택은 이 파일의 이미지 목록을 교체합니다.'; target.append(help);
+  const picker = document.createElement('input'); picker.type = 'file'; picker.multiple = true; picker.accept = 'image/*'; picker.className = 'item-assets'; picker.id = `asset-files-${item.id}`; picker.disabled = isBusy(); picker.setAttribute('aria-label', `${item.file.name} 이미지 파일 선택`);
+  picker.onchange = () => { const files = Array.from(picker.files || []); picker.value = ''; void selectImages(item, files); };
+  const count = document.createElement('span'); count.className = 'muted asset-count'; count.textContent = `${item.images.length}개 첨부`;
+  target.append(picker, count);
+  const message = document.createElement('p'); message.className = 'asset-error'; message.setAttribute('role', 'alert'); message.textContent = item.imageError || ''; message.hidden = !item.imageError; target.append(message);
+  const notice = document.createElement('p'); notice.className = 'muted asset-notice'; notice.textContent = imageMappingNotice(item.images);
+  const list = document.createElement('ul'); list.className = 'image-list';
+  for (const image of item.images) {
+    const row = document.createElement('li'), name = document.createElement('span'); name.textContent = `${image.name} · ${(image.size / 1024).toFixed(1)} KB`; row.append(name);
+    const path = document.createElement('input'); path.type = 'text'; path.className = 'image-path'; path.value = image.path; path.placeholder = '상대 경로 (예: images/logo.png)'; path.setAttribute('aria-label', `${image.name} 상대 경로`); path.disabled = isBusy();
+    path.oninput = () => { if (isBusy()) return; image.path = path.value; notice.textContent = imageMappingNotice(item.images); }; row.append(path);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary remove-image'; remove.textContent = '이미지 삭제'; remove.disabled = isBusy();
+    remove.onclick = () => { if (isBusy()) return; item.images = item.images.filter(entry => entry.id !== image.id); delete item.imageError; renderItems(); renderControls(); }; row.append(remove); list.append(row);
+  }
+  target.append(list, notice);
+  const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'secondary clear-images'; clear.textContent = '이미지 전체 삭제'; clear.disabled = isBusy() || !item.images.length; clear.dataset.boundary = String(!item.images.length);
+  clear.onclick = () => { if (isBusy()) return; item.images = []; delete item.imageError; renderItems(); renderControls(); }; target.append(clear);
+}
+async function selectImages(item: UploadItem, files: File[]): Promise<void> {
+  if (isBusy() || !files.length || !items.includes(item)) return;
+  const previousState = conversionStatus, previousStatus = get('status').textContent || '';
+  cancelled = false; readingFiles = true; status('이미지를 읽고 있습니다.'); renderControls();
+  try {
+    const next = await readFileImages(files, newId);
+    if (!cancelled && items.includes(item)) { item.images = next; delete item.imageError; }
+  } catch (error) { if (items.includes(item)) item.imageError = errorMessage(error); }
+  finally {
+    cancelled = false; readingFiles = false; status(previousStatus, previousState); renderItems(); renderControls();
   }
 }
 function updateSelectionLabel(): void {
@@ -206,7 +247,6 @@ function removeItem(id: string): void {
 function clearFiles(): void {
   if (isBusy()) return;
   items = []; selectedItemId = null; currentItem = null; requestId = batchId = null;
-  localAssets = {}; assetFiles.value = ''; get('asset-count').textContent = '상대 경로 이미지용';
   revokeDownloads(); input.value = ''; clearReport(); get('batch-summary').hidden = true; get('batch-summary').textContent = '';
   uploadError(); status('', 'idle'); renderSelectedResult(); updateSelectionLabel(); renderItems(); renderControls();
 }
@@ -226,7 +266,7 @@ async function selectFiles(files: File[]): Promise<void> {
     await validateHTMLSelection(files, () => cancelled);
     if (cancelled) return;
     // Keep the existing replace policy; duplicates are checked inside the proposed new list.
-    items = files.map(file => ({ id: newId(), file, state: 'WAITING' }));
+    items = files.map(file => ({ id: newId(), file, state: 'WAITING', images: [] }));
     requestId = batchId = null; currentItem = null; selectedItemId = null;
     revokeDownloads(); clearReport(); get('batch-summary').hidden = true; uploadError();
     get<HTMLDetailsElement>('developer-options').open = false; renderSelectedResult();
@@ -238,31 +278,6 @@ async function selectFiles(files: File[]): Promise<void> {
   }
 }
 input.addEventListener('change', () => { void selectFiles(Array.from(input.files || [])); });
-assetFiles.addEventListener('change', async () => {
-  if (isBusy() || !assetFiles.files?.length) return;
-  const files = [...assetFiles.files];
-  if (files.length > 100 || files.some(file => file.size > LIMITS.imageBytes) || files.reduce((sum, file) => sum + file.size, 0) > LIMITS.assetBytes) { status('이미지는 파일당 4MB, 총 16MB, 최대 100개까지 추가할 수 있습니다.', 'error'); return; }
-  cancelled = false; readingFiles = true; status('이미지를 읽고 있습니다.', 'idle'); renderControls();
-  try {
-    const entries = await Promise.all(files.map(async file => {
-      const data = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader(); reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('이미지 읽기 실패')); reader.onerror = () => reject(new Error('이미지 읽기 실패')); reader.readAsDataURL(file);
-      });
-      if (!/^data:image\//i.test(data)) throw new Error(`${file.name}은 지원하는 이미지 파일이 아닙니다.`);
-      return { path: file.webkitRelativePath || file.name, basename: file.name, data };
-    }));
-    if (cancelled) return;
-    localAssets = {};
-    const duplicates = new Set(entries.filter(entry => entries.filter(other => other.basename === entry.basename).length > 1).map(entry => entry.basename));
-    for (const entry of entries) { if (!duplicates.has(entry.path)) localAssets[entry.path] = entry.data; if (!duplicates.has(entry.basename)) localAssets[entry.basename] = entry.data; }
-    get('asset-count').textContent = `${files.length}개 선택`;
-    status(duplicates.size ? `이름이 중복된 이미지 ${[...duplicates].join(', ')}는 경로가 일치할 때만 사용합니다.` : '이미지를 추가했습니다. HTML 변환 시 상대 경로에 적용합니다.');
-  } catch (error) { status(errorMessage(error), 'error'); }
-  finally {
-    if (cancelled) status('이미지 선택을 취소했습니다.', 'idle');
-    cancelled = false; readingFiles = false; renderControls(); assetFiles.value = '';
-  }
-});
 dropzone.addEventListener('keydown', event => { if (!isBusy() && ['Enter', ' '].includes(event.key)) { event.preventDefault(); input.value = ''; input.click(); } });
 dropzone.addEventListener('click', event => { if (isBusy()) event.preventDefault(); else input.value = ''; });
 for (const type of ['dragenter', 'dragover']) dropzone.addEventListener(type, event => { event.preventDefault(); if (!isBusy()) dropzone.classList.add('drag'); });
@@ -287,7 +302,6 @@ convert.addEventListener('click', async () => {
   if (isBusy() || !items.length || !validateViewport()) return;
   const options: ImportOptions = { viewport: viewportWidth.valueAsNumber, viewportHeight: viewportHeight.valueAsNumber, autoLayout: autoLayout.checked, styles: styles.checked,
     images: images.checked, shadows: shadows.checked, optimizeWrappers: optimize.checked, debug: debug.checked };
-  const assets = localAssets; // An explicit user-selected asset map; parser caches remain per file.
   batchId = items.length > 1 ? newId() : null;
   cancelled = false; currentItem = null;
   for (const item of items) { item.state = 'WAITING'; delete item.outcome; delete item.report; delete item.frameId; delete item.snapshot; delete item.snapshotOptions; delete item.snapshotError; }
@@ -311,7 +325,7 @@ convert.addEventListener('click', async () => {
         const source = await readHTMLFile(item.file);
         if (!source.trim()) throw new Error('HTML 파일이 비어 있습니다.');
         const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
-        if (!cancelled) parsed = await parseHTML(source, fileOptions, get('render-host'), assets);
+        if (!cancelled) parsed = await parseHTML(source, fileOptions, get('render-host'), buildImageBundle(item.images));
         if (cancelled) throw new Error('변환을 취소했습니다.');
         if (parsed) {
           item.snapshotOptions = { ...fileOptions };

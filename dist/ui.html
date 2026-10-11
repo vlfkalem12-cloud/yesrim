@@ -24,6 +24,11 @@
     input[aria-invalid="true"] { border-color: var(--figma-color-border-danger, #b13247); }
     #viewport-error { margin: 0; color: var(--figma-color-text-danger, #b13247); font-size: 11px; }
     .options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 22px; }
+    .image-list { list-style: none; padding: 0; }
+    .image-list li { display: grid; gap: 5px; padding: 8px 0; }
+    .image-path { width: 100%; padding: 6px; border: 1px solid var(--figma-color-border, #ddd); border-radius: 4px; font: inherit; }
+    .item-assets { width: 100%; margin-bottom: 6px; }
+    .asset-error { color: var(--figma-color-text-danger, #b13247); }
     .asset-picker { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
     .check { display: flex; gap: 9px; align-items: center; cursor: pointer; }
     input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: #7160d8; }
@@ -89,8 +94,6 @@
   <section id="file-list-section" hidden aria-label="선택한 파일"><div class="file-list-header"><strong id="file-list-title"></strong><button id="clear-files" class="secondary" type="button">전체 삭제</button></div><ol id="file-list"></ol></section>
   <dialog id="clear-confirm" aria-labelledby="clear-confirm-title" aria-describedby="clear-confirm-description"><h2 id="clear-confirm-title">선택한 파일을 모두 삭제하시겠습니까?</h2><p id="clear-confirm-description">업로드한 파일과 변환 결과 목록이 삭제됩니다. Figma에 생성된 화면은 유지됩니다.</p><div class="file-actions"><button id="clear-confirm-cancel" class="secondary" type="button" autofocus>취소</button><button id="clear-confirm-submit" class="secondary" type="button">전체 삭제</button></div></dialog>
   <p id="file-viewport-error" role="alert" hidden>파일별 Viewport도 1~10,000px의 정수로 입력하세요. 빈 값은 공통 설정을 사용합니다.</p>
-  <div class="asset-picker"><label class="secondary" for="asset-files">이미지 파일 추가 (선택)</label><span class="muted" id="asset-count">상대 경로 이미지용</span></div>
-  <input class="sr-only" type="file" id="asset-files" multiple accept="image/*" aria-label="HTML에서 사용하는 이미지 파일 추가">
   <div class="field">
     <label class="field-label" for="viewport">Viewport</label>
     <select id="viewport"><option value="1440">Desktop 1440 · 1440 × 900</option><option value="1280">Desktop 1280 · 1280 × 800</option><option value="768">Tablet 768 · 768 × 1024</option><option value="375">Mobile 375 · 375 × 812</option><option value="custom">직접 입력</option></select>
@@ -631,15 +634,30 @@
 
   // src/assets.ts
   var allowedAsset = (url) => /^https:\/\//i.test(url) || /^data:image\//i.test(url);
-  function resolveLocalAsset(url, files) {
-    if (/^[a-z][a-z\d+.-]*:/i.test(url) || url.startsWith("//")) return void 0;
-    let path;
+  function normalizeLocalAssetPath(url) {
+    const input2 = url.trim();
+    if (/^[a-z][a-z\d+.-]*:/i.test(input2) || input2.startsWith("//")) return void 0;
+    let decoded;
     try {
-      path = decodeURIComponent(url.split(/[?#]/)[0]).replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+      decoded = decodeURIComponent(input2.split(/[?#]/)[0]).replace(/\\/g, "/");
     } catch {
       return void 0;
     }
-    const found = files[path] || files[path.split("/").pop()];
+    if (/^[a-z][a-z\d+.-]*:/i.test(decoded) || decoded.startsWith("//")) return void 0;
+    const segments = [];
+    for (const part of decoded.replace(/^\/+/, "").split("/")) {
+      if (!part || part === ".") continue;
+      if (part === ".." && segments.length && segments[segments.length - 1] !== "..") segments.pop();
+      else segments.push(part);
+    }
+    return segments.length ? segments.join("/") : void 0;
+  }
+  function resolveLocalAsset(url, files) {
+    const path = normalizeLocalAssetPath(url);
+    if (!path) return void 0;
+    const own = (map, key) => Object.prototype.hasOwnProperty.call(map, key) ? map[key] : void 0;
+    const bundled = typeof files.paths === "object" && typeof files.basenames === "object";
+    const found = bundled ? own(files.paths, path) ?? own(files.basenames, path.split("/").pop()) : own(files, path) || own(files, path.split("/").pop());
     return found && allowedAsset(found) ? found : void 0;
   }
   async function collectImages(root, doc, options, assets, warn) {
@@ -1517,7 +1535,7 @@
   var zero2 = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
   var layerName = (el) => el.id || el.getAttribute("class")?.trim().split(/\s+/)[0] || el.tagName.toLowerCase();
   var selector = (el) => `${el.localName}${el.id ? `#${el.id}` : ""}${[...el.classList].map((name) => `.${name}`).join("")}`;
-  function sanitizeHTML(html, warnings, localAssets2) {
+  function sanitizeHTML(html, warnings, localAssets) {
     const doc = new DOMParser().parseFromString(html, "text/html");
     const warn = warningCollector(warnings, 500);
     const scripts = doc.querySelectorAll("script");
@@ -1532,7 +1550,7 @@
       }
       if (el.localName === "a") el.removeAttribute("href");
       const resolveCSSAssets = (css) => css.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (original, _quote, url) => {
-        const resolved = resolveLocalAsset(url, localAssets2);
+        const resolved = resolveLocalAsset(url, localAssets);
         return resolved ? `url("${resolved}")` : original;
       });
       if (el.localName === "style") el.textContent = resolveCSSAssets(el.textContent || "");
@@ -1548,7 +1566,7 @@
         el.removeAttribute("srcset");
         el.removeAttribute("loading");
         const originalSrc = el.getAttribute("src") || "";
-        const src = resolveLocalAsset(originalSrc, localAssets2) || originalSrc;
+        const src = resolveLocalAsset(originalSrc, localAssets) || originalSrc;
         if (src !== originalSrc) {
           el.setAttribute("src", src);
           el.setAttribute("data-original-src", originalSrc);
@@ -1569,7 +1587,7 @@
     doc.head.append(stable);
     return "<!doctype html>" + doc.documentElement.outerHTML;
   }
-  async function renderHTML(html, viewport2, viewportHeight2, host, localAssets2 = {}) {
+  async function renderHTML(html, viewport2, viewportHeight2, host, localAssets = {}) {
     if (!isViewportDimension(viewport2) || !isViewportDimension(viewportHeight2)) throw new Error("Viewport \uB108\uBE44\uC640 \uB192\uC774\uB294 1~10,000px\uC758 \uC815\uC218\uB85C \uC785\uB825\uD558\uC138\uC694.");
     const warnings = [];
     const iframe = document.createElement("iframe");
@@ -1577,7 +1595,7 @@
     iframe.setAttribute("sandbox", "allow-same-origin");
     iframe.setAttribute("aria-hidden", "true");
     Object.assign(iframe.style, { position: "absolute", left: "-120000px", top: "0", width: `${viewport2}px`, height: `${viewportHeight2}px`, border: "0", pointerEvents: "none" });
-    iframe.srcdoc = sanitizeHTML(html, warnings, localAssets2);
+    iframe.srcdoc = sanitizeHTML(html, warnings, localAssets);
     const loaded = new Promise((resolve) => iframe.addEventListener("load", () => resolve(), { once: true }));
     host.append(iframe);
     const failedStylesheets = /* @__PURE__ */ new Set();
@@ -2036,8 +2054,8 @@
     if (transform === "capitalize") return text.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
     return text;
   }
-  async function parseHTML(html, options, host, localAssets2 = {}) {
-    const rendered = await renderHTML(html, options.viewport, options.viewportHeight, host, localAssets2);
+  async function parseHTML(html, options, host, localAssets = {}) {
+    const rendered = await renderHTML(html, options.viewport, options.viewportHeight, host, localAssets);
     try {
       return await parseRenderedHTML(rendered, options);
     } finally {
@@ -2094,6 +2112,41 @@
       seen.add(fingerprint);
       contentKeys.set(key(file), seen);
     }
+  }
+
+  // src/file-images.ts
+  function buildImageBundle(images2) {
+    const paths = /* @__PURE__ */ Object.create(null), basenames = /* @__PURE__ */ Object.create(null);
+    const byPath = /* @__PURE__ */ new Map(), byName = /* @__PURE__ */ new Map();
+    for (const image of images2) {
+      const path = image.path.trim() ? normalizeLocalAssetPath(image.path) : void 0;
+      if (path) byPath.set(path, [...byPath.get(path) || [], image]);
+      byName.set(image.name, [...byName.get(image.name) || [], image]);
+    }
+    for (const [path, candidates] of byPath) paths[path] = candidates.length === 1 ? candidates[0].dataURL : "";
+    for (const [name, candidates] of byName) if (candidates.length === 1) basenames[name] = candidates[0].dataURL;
+    return { paths, basenames };
+  }
+  function imageMappingNotice(images2) {
+    if (images2.some((image) => image.path.trim() && !normalizeLocalAssetPath(image.path))) return "\uC0C1\uB300 \uACBD\uB85C\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694. URL\uC774\uB098 \uC798\uBABB\uB41C \uACBD\uB85C\uB294 \uC5F0\uACB0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.";
+    const paths = images2.filter((image) => image.path.trim()).map((image) => normalizeLocalAssetPath(image.path));
+    if (new Set(paths).size !== paths.length) return "\uB3D9\uC77C\uD55C \uACBD\uB85C\uAC00 \uC911\uBCF5\uB418\uC5B4 \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC774\uBBF8\uC9C0\uBCC4 \uACBD\uB85C\uB97C \uB2E4\uB974\uAC8C \uC9C0\uC815\uD574 \uC8FC\uC138\uC694.";
+    if (new Set(images2.map((image) => image.name)).size !== images2.length) return "\uAC19\uC740 \uD30C\uC77C\uBA85\uC758 \uC774\uBBF8\uC9C0\uAC00 \uC788\uC2B5\uB2C8\uB2E4. \uC815\uD655\uD55C \uC0C1\uB300 \uACBD\uB85C\uAC00 \uC77C\uCE58\uD560 \uB54C\uB9CC \uC5F0\uACB0\uD569\uB2C8\uB2E4.";
+    return "\uACBD\uB85C\uAC00 \uC77C\uCE58\uD558\uB294 \uC774\uBBF8\uC9C0\uB97C \uC6B0\uC120 \uC5F0\uACB0\uD569\uB2C8\uB2E4. \uACBD\uB85C\uAC00 \uC5C6\uC73C\uBA74 \uC720\uC77C\uD55C \uD30C\uC77C\uBA85\uC744 \uC0AC\uC6A9\uD569\uB2C8\uB2E4.";
+  }
+  async function readFileImages(files, id) {
+    if (files.length > 100 || files.some((file) => file.size > LIMITS.imageBytes) || files.reduce((sum, file) => sum + file.size, 0) > LIMITS.assetBytes)
+      throw new Error("\uC774\uBBF8\uC9C0\uB294 \uD30C\uC77C\uB2F9 4MB, \uCD1D 16MB, \uCD5C\uB300 100\uAC1C\uAE4C\uC9C0 \uCD94\uAC00\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.");
+    return Promise.all(files.map(async (file) => {
+      const dataURL = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("\uC774\uBBF8\uC9C0 \uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."));
+        reader.onerror = () => reject(new Error("\uC774\uBBF8\uC9C0 \uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."));
+        reader.readAsDataURL(file);
+      });
+      if (!/^data:image\//i.test(dataURL)) throw new Error(`${file.name}\uC740 \uC9C0\uC6D0\uD558\uB294 \uC774\uBBF8\uC9C0 \uD30C\uC77C\uC774 \uC544\uB2D9\uB2C8\uB2E4.`);
+      return { id: id(), name: file.name, size: file.size, dataURL, path: file.webkitRelativePath || "" };
+    }));
   }
 
   // src/json-snapshots.ts
@@ -2173,8 +2226,6 @@
   var shadows = get("shadows");
   var optimize = get("optimize");
   var debug = get("debug");
-  var assetFiles = get("asset-files");
-  var localAssets = {};
   var items = [];
   var batchId = null;
   var currentItem = null;
@@ -2204,9 +2255,16 @@
     get("viewport-error").hidden = widthValid && heightValid;
     const filesValid = items.every((item) => [item.viewport?.width, item.viewport?.height].every((value) => value === void 0 || isViewportDimension(value)));
     get("file-viewport-error").hidden = filesValid;
-    for (const field of document.querySelectorAll(".file-viewport input")) field.placeholder = field.dataset.dimension === "width" ? viewportWidth.value : viewportHeight.value;
+    for (const field of document.querySelectorAll(".file-viewport input[data-dimension]")) field.placeholder = field.dataset.dimension === "width" ? viewportWidth.value : viewportHeight.value;
+    for (const row of document.querySelectorAll("#file-list > li")) {
+      const item = items.find((entry) => entry.id === row.dataset.itemId), summary = row.querySelector("details > summary");
+      if (item && summary) summary.textContent = itemSettingsLabel(item);
+    }
     convert.disabled = isBusy() || items.length === 0 || !widthValid || !heightValid || !filesValid;
     return widthValid && heightValid && filesValid;
+  }
+  function itemSettingsLabel(item) {
+    return `\uD30C\uC77C\uBCC4 \uC124\uC815 \xB7 Viewport: ${item.viewport?.width ?? viewportWidth.value} \xD7 ${item.viewport?.height ?? viewportHeight.value} \xB7 \uC774\uBBF8\uC9C0 ${item.images.length}\uAC1C`;
   }
   viewport.addEventListener("change", () => {
     const preset = VIEWPORT_PRESETS[viewport.value];
@@ -2224,7 +2282,7 @@
     const value = isBusy();
     validateViewport();
     input.disabled = viewport.disabled = viewportWidth.disabled = viewportHeight.disabled = autoLayout.disabled = styles.disabled = value;
-    images.disabled = shadows.disabled = optimize.disabled = debug.disabled = assetFiles.disabled = value;
+    images.disabled = shadows.disabled = optimize.disabled = debug.disabled = value;
     dropzone.setAttribute("aria-disabled", String(value));
     for (const field of document.querySelectorAll(".file-viewport input")) field.disabled = value;
     cancel.hidden = !value;
@@ -2252,12 +2310,17 @@
       state.className = "muted";
       state.textContent = `${labels[item.state]}${item.outcome && item.state !== "ERROR" ? ` \xB7 \uACBD\uACE0 ${item.outcome.warningCount}\uAC74` : ""}`;
       row.append(state);
-      if (items.length > 1) {
+      {
         const dimensions = document.createElement("details");
         dimensions.className = "file-viewport";
         const summary = document.createElement("summary");
-        summary.textContent = item.viewport && Object.values(item.viewport).some((value) => value !== void 0) ? `Viewport: ${item.viewport.width ?? viewportWidth.value} \xD7 ${item.viewport.height ?? viewportHeight.value}` : "Viewport \uC9C0\uC815 (\uAE30\uBCF8: \uACF5\uD1B5 \uC124\uC815)";
+        const settingsLabel = () => itemSettingsLabel(item);
+        summary.textContent = settingsLabel();
         dimensions.append(summary);
+        dimensions.open = !!item.settingsOpen;
+        dimensions.ontoggle = () => {
+          item.settingsOpen = dimensions.open;
+        };
         const fields = document.createElement("div");
         fields.className = "dimensions";
         for (const [dimension, label] of [["width", "\uB108\uBE44"], ["height", "\uB192\uC774"]]) {
@@ -2279,13 +2342,14 @@
             item.viewport || (item.viewport = {});
             item.viewport[dimension] = field.value === "" && !field.validity.badInput ? void 0 : field.valueAsNumber;
             field.setAttribute("aria-invalid", String(item.viewport[dimension] !== void 0 && !isViewportDimension(item.viewport[dimension])));
-            summary.textContent = `Viewport: ${item.viewport.width ?? viewportWidth.value} \xD7 ${item.viewport.height ?? viewportHeight.value}`;
+            summary.textContent = settingsLabel();
             validateViewport();
           };
           wrapper.append(field);
           fields.append(wrapper);
         }
         dimensions.append(fields);
+        renderImageSettings(item, dimensions);
         row.append(dimensions);
       }
       const actions = document.createElement("div");
@@ -2325,6 +2389,113 @@
       };
       row.append(detail);
       list.append(row);
+    }
+  }
+  function renderImageSettings(item, target) {
+    const title = document.createElement("p");
+    title.textContent = "\uB85C\uCEEC \uC774\uBBF8\uC9C0 \uC5F0\uACB0 (\uC120\uD0DD)";
+    target.append(title);
+    const help = document.createElement("p");
+    help.className = "muted";
+    help.textContent = "HTML\uC5D0\uC11C \uCC38\uC870\uD558\uB294 \uB85C\uCEEC \uC774\uBBF8\uC9C0\uAC00 \uC788\uB2E4\uBA74 \uCD94\uAC00\uD574 \uC8FC\uC138\uC694. \uD30C\uC77C \uC120\uD0DD\uC740 \uC774 \uD30C\uC77C\uC758 \uC774\uBBF8\uC9C0 \uBAA9\uB85D\uC744 \uAD50\uCCB4\uD569\uB2C8\uB2E4.";
+    target.append(help);
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.multiple = true;
+    picker.accept = "image/*";
+    picker.className = "item-assets";
+    picker.id = `asset-files-${item.id}`;
+    picker.disabled = isBusy();
+    picker.setAttribute("aria-label", `${item.file.name} \uC774\uBBF8\uC9C0 \uD30C\uC77C \uC120\uD0DD`);
+    picker.onchange = () => {
+      const files = Array.from(picker.files || []);
+      picker.value = "";
+      void selectImages(item, files);
+    };
+    const count = document.createElement("span");
+    count.className = "muted asset-count";
+    count.textContent = `${item.images.length}\uAC1C \uCCA8\uBD80`;
+    target.append(picker, count);
+    const message = document.createElement("p");
+    message.className = "asset-error";
+    message.setAttribute("role", "alert");
+    message.textContent = item.imageError || "";
+    message.hidden = !item.imageError;
+    target.append(message);
+    const notice = document.createElement("p");
+    notice.className = "muted asset-notice";
+    notice.textContent = imageMappingNotice(item.images);
+    const list = document.createElement("ul");
+    list.className = "image-list";
+    for (const image of item.images) {
+      const row = document.createElement("li"), name = document.createElement("span");
+      name.textContent = `${image.name} \xB7 ${(image.size / 1024).toFixed(1)} KB`;
+      row.append(name);
+      const path = document.createElement("input");
+      path.type = "text";
+      path.className = "image-path";
+      path.value = image.path;
+      path.placeholder = "\uC0C1\uB300 \uACBD\uB85C (\uC608: images/logo.png)";
+      path.setAttribute("aria-label", `${image.name} \uC0C1\uB300 \uACBD\uB85C`);
+      path.disabled = isBusy();
+      path.oninput = () => {
+        if (isBusy()) return;
+        image.path = path.value;
+        notice.textContent = imageMappingNotice(item.images);
+      };
+      row.append(path);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "secondary remove-image";
+      remove.textContent = "\uC774\uBBF8\uC9C0 \uC0AD\uC81C";
+      remove.disabled = isBusy();
+      remove.onclick = () => {
+        if (isBusy()) return;
+        item.images = item.images.filter((entry) => entry.id !== image.id);
+        delete item.imageError;
+        renderItems();
+        renderControls();
+      };
+      row.append(remove);
+      list.append(row);
+    }
+    target.append(list, notice);
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "secondary clear-images";
+    clear.textContent = "\uC774\uBBF8\uC9C0 \uC804\uCCB4 \uC0AD\uC81C";
+    clear.disabled = isBusy() || !item.images.length;
+    clear.dataset.boundary = String(!item.images.length);
+    clear.onclick = () => {
+      if (isBusy()) return;
+      item.images = [];
+      delete item.imageError;
+      renderItems();
+      renderControls();
+    };
+    target.append(clear);
+  }
+  async function selectImages(item, files) {
+    if (isBusy() || !files.length || !items.includes(item)) return;
+    const previousState = conversionStatus, previousStatus = get("status").textContent || "";
+    cancelled = false;
+    readingFiles = true;
+    status("\uC774\uBBF8\uC9C0\uB97C \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.");
+    renderControls();
+    try {
+      const next = await readFileImages(files, newId);
+      if (!cancelled && items.includes(item)) {
+        item.images = next;
+        delete item.imageError;
+      }
+    } catch (error) {
+      if (items.includes(item)) item.imageError = errorMessage(error);
+    } finally {
+      cancelled = false;
+      readingFiles = false;
+      status(previousStatus, previousState);
+      renderItems();
+      renderControls();
     }
   }
   function updateSelectionLabel() {
@@ -2424,9 +2595,6 @@
     selectedItemId = null;
     currentItem = null;
     requestId = batchId = null;
-    localAssets = {};
-    assetFiles.value = "";
-    get("asset-count").textContent = "\uC0C1\uB300 \uACBD\uB85C \uC774\uBBF8\uC9C0\uC6A9";
     revokeDownloads();
     input.value = "";
     clearReport();
@@ -2462,7 +2630,7 @@
     try {
       await validateHTMLSelection(files, () => cancelled);
       if (cancelled) return;
-      items = files.map((file) => ({ id: newId(), file, state: "WAITING" }));
+      items = files.map((file) => ({ id: newId(), file, state: "WAITING", images: [] }));
       requestId = batchId = null;
       currentItem = null;
       selectedItemId = null;
@@ -2488,47 +2656,6 @@
   }
   input.addEventListener("change", () => {
     void selectFiles(Array.from(input.files || []));
-  });
-  assetFiles.addEventListener("change", async () => {
-    if (isBusy() || !assetFiles.files?.length) return;
-    const files = [...assetFiles.files];
-    if (files.length > 100 || files.some((file) => file.size > LIMITS.imageBytes) || files.reduce((sum, file) => sum + file.size, 0) > LIMITS.assetBytes) {
-      status("\uC774\uBBF8\uC9C0\uB294 \uD30C\uC77C\uB2F9 4MB, \uCD1D 16MB, \uCD5C\uB300 100\uAC1C\uAE4C\uC9C0 \uCD94\uAC00\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", "error");
-      return;
-    }
-    cancelled = false;
-    readingFiles = true;
-    status("\uC774\uBBF8\uC9C0\uB97C \uC77D\uACE0 \uC788\uC2B5\uB2C8\uB2E4.", "idle");
-    renderControls();
-    try {
-      const entries = await Promise.all(files.map(async (file) => {
-        const data = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("\uC774\uBBF8\uC9C0 \uC77D\uAE30 \uC2E4\uD328"));
-          reader.onerror = () => reject(new Error("\uC774\uBBF8\uC9C0 \uC77D\uAE30 \uC2E4\uD328"));
-          reader.readAsDataURL(file);
-        });
-        if (!/^data:image\//i.test(data)) throw new Error(`${file.name}\uC740 \uC9C0\uC6D0\uD558\uB294 \uC774\uBBF8\uC9C0 \uD30C\uC77C\uC774 \uC544\uB2D9\uB2C8\uB2E4.`);
-        return { path: file.webkitRelativePath || file.name, basename: file.name, data };
-      }));
-      if (cancelled) return;
-      localAssets = {};
-      const duplicates = new Set(entries.filter((entry) => entries.filter((other) => other.basename === entry.basename).length > 1).map((entry) => entry.basename));
-      for (const entry of entries) {
-        if (!duplicates.has(entry.path)) localAssets[entry.path] = entry.data;
-        if (!duplicates.has(entry.basename)) localAssets[entry.basename] = entry.data;
-      }
-      get("asset-count").textContent = `${files.length}\uAC1C \uC120\uD0DD`;
-      status(duplicates.size ? `\uC774\uB984\uC774 \uC911\uBCF5\uB41C \uC774\uBBF8\uC9C0 ${[...duplicates].join(", ")}\uB294 \uACBD\uB85C\uAC00 \uC77C\uCE58\uD560 \uB54C\uB9CC \uC0AC\uC6A9\uD569\uB2C8\uB2E4.` : "\uC774\uBBF8\uC9C0\uB97C \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4. HTML \uBCC0\uD658 \uC2DC \uC0C1\uB300 \uACBD\uB85C\uC5D0 \uC801\uC6A9\uD569\uB2C8\uB2E4.");
-    } catch (error) {
-      status(errorMessage(error), "error");
-    } finally {
-      if (cancelled) status("\uC774\uBBF8\uC9C0 \uC120\uD0DD\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.", "idle");
-      cancelled = false;
-      readingFiles = false;
-      renderControls();
-      assetFiles.value = "";
-    }
   });
   dropzone.addEventListener("keydown", (event) => {
     if (!isBusy() && ["Enter", " "].includes(event.key)) {
@@ -2582,7 +2709,6 @@
       optimizeWrappers: optimize.checked,
       debug: debug.checked
     };
-    const assets = localAssets;
     batchId = items.length > 1 ? newId() : null;
     cancelled = false;
     currentItem = null;
@@ -2623,7 +2749,7 @@
           const source = await readHTMLFile(item.file);
           if (!source.trim()) throw new Error("HTML \uD30C\uC77C\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
           const fileOptions = { ...options, viewport: item.viewport?.width ?? options.viewport, viewportHeight: item.viewport?.height ?? options.viewportHeight };
-          if (!cancelled) parsed = await parseHTML(source, fileOptions, get("render-host"), assets);
+          if (!cancelled) parsed = await parseHTML(source, fileOptions, get("render-host"), buildImageBundle(item.images));
           if (cancelled) throw new Error("\uBCC0\uD658\uC744 \uCDE8\uC18C\uD588\uC2B5\uB2C8\uB2E4.");
           if (parsed) {
             item.snapshotOptions = { ...fileOptions };

@@ -8,12 +8,15 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { createFigmaMock } from './figma-mock.mjs';
 
-let browser, server, base, mainBundle, oldMain, snapshots;
+let browser, server, base, mainBundle, oldMain, snapshots, imageUtils, assetUtils, oldParser;
 const baseline = process.env.BATCH_UX_BASELINE_SRC;
 before(async () => {
   await build({entryPoints:['src/json-snapshots.ts'],bundle:true,outfile:'test-results/json-snapshots.mjs',format:'esm',platform:'node'});
   snapshots=await import('../test-results/json-snapshots.mjs');
+  await build({entryPoints:['src/file-images.ts'],bundle:true,outfile:'test-results/file-image-utils.mjs',format:'esm',platform:'node'}); imageUtils=await import('../test-results/file-image-utils.mjs');
+  await build({entryPoints:['src/assets.ts'],bundle:true,outfile:'test-results/asset-utils.mjs',format:'esm',platform:'node'}); assetUtils=await import('../test-results/asset-utils.mjs');
   const ui = await readFile('dist/ui.html', 'utf8'); mainBundle = await readFile('dist/code.js', 'utf8');
+  if(baseline) oldParser=(await build({entryPoints:[resolve(baseline,'parser.ts')],bundle:true,write:false,format:'iife',globalName:'UXBaselineParser'})).outputFiles[0].text;
   if (baseline) oldMain = (await build({ entryPoints: [resolve(baseline, 'code.ts')], bundle: true, write: false, format: 'iife', target: 'es2020' })).outputFiles[0].text;
   server = createServer((req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(req.url === '/ui' ? ui : '<!doctype html><iframe src="/ui" width="440" height="1200"></iframe>'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${server.address().port}`;
@@ -85,7 +88,7 @@ async function unlocked(s) {
   assert.equal(await s.ui.locator('#dropzone').getAttribute('aria-disabled'), 'false');
 }
 async function viewportFor(s, index, width, height) {
-  const row = s.ui.locator('#file-list li').nth(index); await row.locator('summary').click();
+  const row = s.ui.locator('#file-list li').nth(index); if (!await row.locator('details').evaluate(el => el.open)) await row.locator('summary').click();
   await row.locator('[data-dimension="width"]').fill(String(width)); await row.locator('[data-dimension="height"]').fill(String(height));
 }
 function snapshot(node, root = true) {
@@ -248,4 +251,141 @@ test('UX streamed snapshots keep the exact version-1 JSON representation, with b
   const saved=await snapshots.createJSONSnapshot(large); assert.ok(saved.blob.size<saved.serializedBytes/20);
   assert.deepEqual(JSON.parse(await (await snapshots.snapshotJSONBlob(saved)).text()),JSON.parse(JSON.stringify(large)));
   await writeFile('test-results/json-snapshot-storage.json',JSON.stringify({sourceImageBytes:large.assets.image.length,serializedBytes:saved.serializedBytes,retainedBlobBytes:saved.blob.size,note:'Storage size measurement; not native Figma or process heap usage'},null,2));
+});
+
+const nodes = node => [node,...node.children.flatMap(nodes)];
+const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+async function colorPNG(s,color){return s.ui.evaluate(color=>{const canvas=document.createElement('canvas');canvas.width=canvas.height=3;const ctx=canvas.getContext('2d');ctx.fillStyle=color;ctx.fillRect(0,0,3,3);return canvas.toDataURL();},color);}
+async function attachImages(s,index,images){
+  const row=s.ui.locator('#file-list > li').nth(index);await row.locator('details').evaluate(el=>el.open=true);
+  await row.locator('.item-assets').setInputFiles(images.map(image=>({name:image.name,mimeType:image.mimeType||'image/png',buffer:image.buffer||Buffer.from(image.data.split(',')[1],'base64')})));
+  await s.ui.waitForFunction(()=>!document.getElementById('convert').disabled);return s.ui.locator('#file-list > li').nth(index);
+}
+
+test('UX local path matching prefers exact paths, normalizes safe relative syntax and refuses ambiguous candidates',()=>{
+  const entry=(name,path,dataURL=png)=>({id:name+path,name,path,dataURL,size:1});
+  const bundle=imageUtils.buildImageBundle([entry('logo.png','a/logo.png'),entry('logo.png','b/logo.png','data:image/png;base64,BLUE'),entry('only.png','')]);
+  for(const path of ['./a/logo.png','a/./logo.png','x/../a/logo.png','a\\logo.png','a/logo.png?v=1#x','%61/logo.png']) assert.equal(assetUtils.resolveLocalAsset(path,bundle),png,path);
+  assert.equal(assetUtils.resolveLocalAsset('b/logo.png',bundle),'data:image/png;base64,BLUE');
+  for(const path of ['logo.png','other/logo.png','https://a/logo.png','//a/logo.png','file:///a/logo.png','javascript:x','%ZZ']) assert.equal(assetUtils.resolveLocalAsset(path,bundle),undefined,path);
+  assert.equal(assetUtils.resolveLocalAsset('../../deep/only.png',bundle),png);
+  assert.equal(assetUtils.resolveLocalAsset('a/logo.png',{ 'a/logo.png':png }),png,'Legacy local maps retained');
+  const collision=imageUtils.buildImageBundle([entry('logo.png','a/logo.png'),entry('other.png','a/logo.png')]);assert.equal(assetUtils.resolveLocalAsset('a/logo.png',collision),undefined,'Ambiguous exact path must not fall back');
+  assert.match(imageUtils.imageMappingNotice([entry('logo.png',''),entry('logo.png','')]),/同|같은/);
+  assert.equal(assetUtils.resolveLocalAsset('toString',{}),undefined,'No inherited map entries');
+});
+
+test('UX images belong to each Item ID, remain editable after completion and change only its next conversion',async()=>{
+  const s=await session();try{
+    const imageHTML=`${basic('Images')}<img id="logo" src="./images/logo.png" width="10" height="10"><div id="bg" style="height:20px;background-image:url(images/logo.png)">BG</div>`;
+    await choose(s,[file('A.html',imageHTML),file('B.html',imageHTML)]);const original=await ids(s);
+    const red=await colorPNG(s,'red'),blue=await colorPNG(s,'blue');
+    await attachImages(s,0,[{name:'logo.png',data:red}]);await attachImages(s,1,[{name:'logo.png',data:blue}]);
+    await s.ui.locator('.move-up').nth(1).click();assert.deepEqual(await ids(s),[original[1],original[0]]);
+    await convert(s);const first=creates(s).slice();
+    assert.ok(!first.some(m=>m.payload.warnings.some(w=>w.code==='IMAGE_SOURCE')));
+    assert.equal(Object.keys(first[0].payload.assets).length,1);assert.equal(Object.keys(first[1].payload.assets).length,1);
+    assert.notDeepEqual(Object.values(first[0].payload.assets),Object.values(first[1].payload.assets));
+    const initial=s.mock.figma.currentPage.children.map(node=>snapshot(node)); const old=await downloadJSON(s,0);
+    await s.ui.locator('.remove-image').first().click();assert.equal(await s.ui.locator('.asset-count').first().textContent(),'0개 첨부');
+    assert.deepEqual(s.mock.figma.currentPage.children.map(node=>snapshot(node)),initial);
+    const unchanged=await downloadJSON(s,0);assert.equal(unchanged.text,old.text);
+    await convert(s);const second=creates(s).slice(2);assert.equal(Object.keys(second[0].payload.assets).length,0);assert.ok(second[0].payload.warnings.some(w=>w.code==='IMAGE_SOURCE'));
+    assert.deepEqual(second[1].payload.assets,first[1].payload.assets);
+    await choose(s,[file('new.html',imageHTML)]);assert.equal(await s.ui.locator('.asset-count').textContent(),'0개 첨부');await convert(s);assert.equal(Object.keys(creates(s).at(-1).payload.assets).length,0);
+  }finally{await s.page.close();}
+});
+
+test('UX duplicate image filenames are not connected until their exact per-file paths disambiguate img and CSS backgrounds',async()=>{
+  const s=await session();try{
+    const html=await readFile('test/batch-images-regression.html','utf8');
+    await choose(s,[file('paths.html',html)]);const red=await colorPNG(s,'red'),blue=await colorPNG(s,'blue');await attachImages(s,0,[{name:'logo.png',data:red},{name:'logo.png',data:blue}]);
+    await convert(s);assert.equal(Object.keys(creates(s)[0].payload.assets).length,0);assert.match(await s.ui.locator('.asset-notice').textContent(),/같은 파일명/);
+    await s.ui.locator('.image-path').nth(0).fill('./a/logo.png');await s.ui.locator('.image-path').nth(1).fill('b/logo.png');
+    await convert(s);const doc=creates(s)[1].payload;assert.equal(Object.keys(doc.assets).length,2);
+    assert.ok(nodes(doc.root).find(n=>n.name==='a').image.key);assert.ok(nodes(doc.root).find(n=>n.name==='bg').style.backgroundImage.key);
+    assert.ok(!nodes(doc.root).find(n=>n.name==='unknown').image?.key);
+    assert.equal(doc.warnings.filter(w=>w.code==='IMAGE_SOURCE').length,1);
+    await s.ui.locator('.clear-images').click();assert.equal(await s.ui.locator('.asset-count').textContent(),'0개 첨부');assert.equal(await s.ui.locator('.image-path').count(),0);
+  }finally{await s.page.close();}
+});
+
+test('UX image validation is atomic, isolated and locks attachment changes during conversion',async()=>{
+  const s=await session();try{
+    await choose(s,[file('A.html'),file('B.html')]);await attachImages(s,0,[{name:'logo.png',data:png}]);
+    await attachImages(s,0,[{name:'invalid.txt',mimeType:'text/plain',buffer:Buffer.from('bad')}]);
+    assert.equal(await s.ui.locator('.asset-count').first().textContent(),'1개 첨부');assert.match(await s.ui.locator('.asset-error').first().textContent(),/지원하는 이미지/);assert.equal(await s.ui.locator('.asset-count').nth(1).textContent(),'0개 첨부');
+    await attachImages(s,0,[{name:'big.png',buffer:Buffer.alloc(4*1024*1024+1)}]);assert.match(await s.ui.locator('.asset-error').first().textContent(),/4MB/);assert.equal(await s.ui.locator('.asset-count').first().textContent(),'1개 첨부');
+    await attachImages(s,0,[{name:'logo.png',data:png}]);assert.ok(await s.ui.locator('.asset-error').first().isHidden());
+    s.hold();await s.ui.locator('#convert').click();await until(()=>terminals(s).length===1);
+    for(const selector of ['.item-assets','.image-path','.remove-image','.clear-images']) assert.ok(await s.ui.locator(selector).evaluateAll(elements=>elements.every(el=>el.disabled)),selector);
+    s.release();await s.ui.waitForFunction(()=>document.getElementById('status').dataset.state==='success');assert.ok(await s.ui.locator('.item-assets').evaluateAll(elements=>elements.every(el=>!el.disabled)));
+  }finally{await s.page.close();}
+});
+
+test('UX native Inline SVG, Data URL and HTTPS image handling retain their existing pipeline with per-file assets',async()=>{
+  const s=await session();try{
+    const red=await colorPNG(s,'red');await s.page.route('https://example.test/logo.png',route=>route.fulfill({status:200,headers:{'access-control-allow-origin':'*'},contentType:'image/png',body:Buffer.from(red.split(',')[1],'base64')}));
+    const html=`${basic('Sources')}<img src="${png}" width="10" height="10"><img src="https://example.test/logo.png" width="10" height="10"><svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="red"/></svg>`;
+    await choose(s,[file('sources.html',html)]);await convert(s);const doc=creates(s)[0].payload;
+    assert.equal(Object.keys(doc.assets).length,2);assert.equal(s.mock.svgImports.length,1);assert.ok(!doc.warnings.some(w=>['IMAGE_SOURCE','IMAGE_LOAD'].includes(w.code)));
+  }finally{await s.page.close();}
+});
+
+
+test('UX 10 image-bearing files measure browser heap and release all snapshot/resource references on clear',async()=>{
+  const s=await session();let timer;try{
+    const cdp=await s.page.context().newCDPSession(s.page);await cdp.send('HeapProfiler.enable');
+    const measure=async()=>{await cdp.send('HeapProfiler.collectGarbage');return cdp.send('Runtime.getHeapUsage');};
+    const empty=await measure();
+    const image=await s.ui.evaluate(()=>{
+      const canvas=document.createElement('canvas');canvas.width=canvas.height=256;const ctx=canvas.getContext('2d');const pixels=ctx.createImageData(256,256);let seed=7;
+      for(let i=0;i<pixels.data.length;i++) {seed=(Math.imul(seed,1664525)+1013904223)>>>0;pixels.data[i]=i%4===3?255:seed>>>24;}
+      ctx.putImageData(pixels,0,0);return canvas.toDataURL('image/png');
+    });
+    const html=`${basic('Memory')}<img src="./assets/logo.png" width="128" height="128">`;
+    await choose(s,Array.from({length:10},(_,i)=>file(`image-${i}.html`,html)));
+    for(let i=0;i<10;i++)await attachImages(s,i,[{name:'logo.png',data:image}]);
+    const attached=await measure();let sampledPeak=attached.usedSize,polling=false;
+    timer=setInterval(async()=>{if(polling)return;polling=true;try{sampledPeak=Math.max(sampledPeak,(await cdp.send('Runtime.getHeapUsage')).usedSize);}finally{polling=false;}},40);
+    await convert(s);clearInterval(timer);timer=undefined;await until(()=>!polling);
+    const converted=await measure(); const storageText=await s.ui.locator('#snapshot-storage').textContent();
+    const sourceImageBytes=Buffer.from(image.split(',')[1],'base64').length;
+    assert.equal(creates(s).length,10);assert.ok(creates(s).every(m=>Object.keys(m.payload.assets).length===1));
+    await s.ui.locator('#clear-files').click();await s.ui.locator('#clear-confirm-submit').click();
+    assert.equal(await s.ui.locator('#snapshot-storage').textContent(),'JSON 보관 합계: 0.0 KB');assert.equal(await s.ui.locator('.item-assets').count(),0);assert.ok(await s.ui.locator('#json').isDisabled());
+    const cleared=await measure();await cdp.detach();
+    await writeFile('test-results/batch-memory.json',JSON.stringify({files:10,sourceImageBytesPerFile:sourceImageBytes,empty,attached,sampledPeakJSHeapBytes:sampledPeak,converted,storageText,cleared,note:'Chromium renderer heap after forced GC and sampled conversion peak; excludes native Figma Canvas. Native Blob storage is separately counted. This 256px fixture is not a worst-case 10×16MB guarantee.'},null,2));
+    assert.equal(s.mock.figma.currentPage.children.length,10);
+  }finally{if(timer)clearInterval(timer);await s.page.close();}
+});
+
+test('UX keeps all protected engine modules and complete current parser/tree/paint/assets results identical to c993265', {skip:!baseline},async()=>{
+  for(const name of await readdir(baseline)) if(name.endsWith('.ts')&&!['ui.ts','parser.ts','assets.ts','types.ts'].includes(name))
+    assert.equal(await readFile(`src/${name}`,'utf8'),await readFile(resolve(baseline,name),'utf8'),`${name}: protected source`);
+  assert.equal((await readFile('src/parser.ts','utf8')).replaceAll('LocalAssetInput','LocalAssets'),await readFile(resolve(baseline,'parser.ts'),'utf8'),'Parser changes are resource input types only');
+  assert.equal((await readFile('src/assets.ts','utf8')).split('export async function collectImages')[1],(await readFile(resolve(baseline,'assets.ts'),'utf8')).split('export async function collectImages')[1],'Image decoding and bytes pipeline unchanged');
+  assert.equal((await readFile('src/types.ts','utf8')).split('// UI-only resource input.')[0].trim(),(await readFile(resolve(baseline,'types.ts'),'utf8')).trim(),'Intermediate JSON/protocol unchanged');
+  const files=['test/actual/09-01_A-pc-list.html','examples/mvp.html','test/dashboard-rendering-regression.html','test/form-controls-regression.html','test/fixed-position-regression.html','test/phase2-test.html','test/rendering-regression.html','test/gradient-regression.html','test/inline-accessibility-regression.html','test/layer-naming-regression.html','test/rich-text-regression.html','test/content-components-regression.html'];
+  const s=await session(),evidence=[];try{
+    await s.ui.addScriptTag({content:oldParser});await s.ui.locator('#viewport-width').fill('1920');
+    for(const chunk of [files.slice(0,6),files.slice(6)]){
+      const input=await Promise.all(chunk.map(async path=>file(path.split('/').at(-1),await readFile(path,'utf8'))));
+      await choose(s,input);const start=creates(s).length,rootStart=s.mock.figma.currentPage.children.length;await convert(s);
+      for(const [i,path]of chunk.entries()){
+        const request=creates(s)[start+i],root=s.mock.figma.currentPage.children[rootStart+i];
+        const oldDoc=JSON.parse(await s.ui.evaluate(async({html,options})=>JSON.stringify(await UXBaselineParser.parseHTML(html,options,document.getElementById('render-host'))),{html:input[i].content,options:request.payload.options}));
+        assert.deepEqual(JSON.parse(JSON.stringify(request.payload)),oldDoc,`${path}: entire current parser output`);
+        const previous=createFigmaMock(),messages=[];previous.figma.ui.postMessage=m=>messages.push(m);
+        runInNewContext(oldMain,{figma:previous.figma,__html__:'',setTimeout,Uint8Array,console:{warn(){},info(){}}});
+        await previous.figma.ui.onmessage({type:'CREATE_FIGMA',requestId:`old-${i}`,fileName:request.fileName,payload:oldDoc});
+        const normalize=node=>JSON.parse(JSON.stringify(snapshot(node)).replace(/"imageHash":"hash-\d+"/g,'"imageHash":"image-handle"'));
+        assert.deepEqual(normalize(root),normalize(previous.figma.currentPage.children[0]),`${path}: final native API properties`);
+        assert.deepEqual(s.artifacts.get(request.requestId).images,previous.images.map(bytes=>Array.from(bytes)),`${path}: image bytes`);
+        assert.deepEqual(s.artifacts.get(request.requestId).svg,previous.svgImports,`${path}: native SVG`);
+        evidence.push({file:path,nodes:nodes(root).length,entireIRIdentical:true,finalTreeIdentical:true});
+      }
+    }
+    await writeFile('test-results/batch-ux-regression.json',JSON.stringify({baseline:'c993265',evidence,note:'Chromium + Figma API mock; user-excluded mobile attachments are not used; native Figma edits require manual checks'},null,2));
+  }finally{await s.page.close();}
 });

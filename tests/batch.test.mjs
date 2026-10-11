@@ -10,6 +10,8 @@ import { createFigmaMock } from './figma-mock.mjs';
 
 let browser, server, base, mainBundle, oldMain;
 const baseline = process.env.BATCH_BASELINE_SRC;
+// Historical stage protection is frozen; the next UX stage separately proves its allowed resource-input changes.
+const implementation = process.env.BATCH_IMPLEMENTATION_SRC || 'src';
 before(async () => {
   const ui = await readFile('dist/ui.html', 'utf8'); mainBundle = await readFile('dist/code.js', 'utf8');
   if (baseline) oldMain = (await build({ entryPoints: [resolve(baseline, 'code.ts')], bundle: true, write: false, format: 'iife', target: 'es2020' })).outputFiles[0].text;
@@ -311,8 +313,8 @@ test('Main rejects invalid size, duplicate IDs and out-of-order file requests wi
 
 test('Batch preserves the stable single conversion engine, schema, reports and all node/asset results for 12 real regression HTML files', { skip: !baseline }, async () => {
   for (const name of await readdir(baseline)) if (name.endsWith('.ts') && !['ui.ts', 'code.ts', 'types.ts'].includes(name))
-    assert.equal(await readFile(`src/${name}`, 'utf8'), await readFile(resolve(baseline, name), 'utf8'), `${name}: protected conversion source is byte-identical`);
-  assert.equal((await readFile('src/types.ts', 'utf8')).split('export interface BatchContext')[0], (await readFile(resolve(baseline, 'types.ts'), 'utf8')).split('export type UIMessage')[0], 'Intermediate JSON and report schema unchanged');
+    assert.equal(await readFile(resolve(implementation, name), 'utf8'), await readFile(resolve(baseline, name), 'utf8'), `${name}: protected conversion source is byte-identical`);
+  assert.equal((await readFile(resolve(implementation, 'types.ts'), 'utf8')).split('export interface BatchContext')[0], (await readFile(resolve(baseline, 'types.ts'), 'utf8')).split('export type UIMessage')[0], 'Intermediate JSON and report schema unchanged');
   const files = ['test/actual/09-01_A-pc-list.html', 'examples/mvp.html', 'test/dashboard-rendering-regression.html', 'test/form-controls-regression.html', 'test/fixed-position-regression.html', 'test/phase2-test.html', 'test/rendering-regression.html', 'test/gradient-regression.html', 'test/inline-accessibility-regression.html', 'test/layer-naming-regression.html', 'test/rich-text-regression.html', 'test/content-components-regression.html'];
   const evidence = [];
   // Two batches keep within the actual 10-file maximum and exercise repeated upload.

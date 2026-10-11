@@ -194,3 +194,7 @@ export const VIEWPORT_PRESETS: Readonly<Record<string, Readonly<ViewportPreset>>
 };
 export const VIEWPORT = { ...VIEWPORT_PRESETS['1440']!, minDimension: 1, maxDimension: 10000 } as const;
 export const IMPORT_DEFAULTS = { images: true, shadows: true, optimizeWrappers: true, debug: false } as const;
+
+// UI-only resource input. Version-1 Intermediate JSON keeps numeric image bytes.
+export interface LocalAssetBundle { paths: LocalAssets; basenames: LocalAssets }
+export type LocalAssetInput = LocalAssets | LocalAssetBundle;

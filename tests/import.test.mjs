@@ -1386,8 +1386,9 @@ test('UI exposes phase 2 options, local image upload, debug mode and grouped rep
     await page.evaluate(() => { window.addEventListener('message', event => { if (event.data?.pluginMessage?.type === 'CREATE_FIGMA') window.importMessage = event.data.pluginMessage; }); });
     await page.locator('#file').setInputFiles({ name: 'phase2.html', mimeType: 'text/html', buffer: await readFile('test/phase2-test.html') });
     await page.waitForFunction(() => !document.getElementById('convert').disabled);
-    await page.locator('#asset-files').setInputFiles({ name: 'banner.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64') });
-    await page.waitForFunction(() => document.getElementById('asset-count').textContent === '1개 선택');
+    await page.locator('.file-viewport > summary').click();
+    await page.locator('.item-assets').setInputFiles({ name: 'banner.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64') });
+    await page.waitForFunction(() => document.querySelector('.asset-count').textContent === '1개 첨부');
     await page.locator('#debug').check();
     await page.locator('#convert').click();
     await page.waitForFunction(() => !!window.importMessage);
