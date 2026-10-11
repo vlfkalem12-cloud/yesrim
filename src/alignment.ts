@@ -6,7 +6,7 @@ export type SelfAlignment = 'MIN' | 'CENTER' | 'MAX';
 export const alignmentIntent = (value: string): SelfAlignment | undefined => value === 'center' ? 'CENTER' : value === 'flex-start' ? 'MIN' : value === 'flex-end' ? 'MAX' : undefined;
 
 export function selfAlignment(parsed: ParsedNode, parent: FrameNode | undefined, parentParsed: ParsedNode | undefined): SelfAlignment | undefined {
-  if (!parent || !parentParsed || parent.layoutMode === 'NONE' || parsed.layout.absolute ||
+  if (!parent || !parentParsed || parent.layoutMode === 'NONE' || parsed.layout.absolute || parsed.source?.synthetic ||
     !['flex', 'inline-flex'].includes(parentParsed.layout.display)) return;
   const target = alignmentIntent(parsed.layout.alignSelf);
   if (!target || target === (parent.counterAxisAlignItems || 'MIN')) return;

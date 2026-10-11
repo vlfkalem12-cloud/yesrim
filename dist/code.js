@@ -222,7 +222,7 @@
   // src/alignment.ts
   var alignmentIntent = (value) => value === "center" ? "CENTER" : value === "flex-start" ? "MIN" : value === "flex-end" ? "MAX" : void 0;
   function selfAlignment(parsed, parent, parentParsed) {
-    if (!parent || !parentParsed || parent.layoutMode === "NONE" || parsed.layout.absolute || !["flex", "inline-flex"].includes(parentParsed.layout.display)) return;
+    if (!parent || !parentParsed || parent.layoutMode === "NONE" || parsed.layout.absolute || parsed.source?.synthetic || !["flex", "inline-flex"].includes(parentParsed.layout.display)) return;
     const target = alignmentIntent(parsed.layout.alignSelf);
     if (!target || target === (parent.counterAxisAlignItems || "MIN")) return;
     const cross = parent.layoutMode === "VERTICAL" ? "widthMode" : "heightMode";
@@ -969,7 +969,7 @@ reason: ${entry.reason}`);
             warn("ALIGN_SELF", parsed.name, `\uAC1C\uBCC4 \uC815\uB82C Auto Layout\uC744 \uC801\uC6A9\uD558\uC9C0 \uBABB\uD574 \uAE30\uC874 \uBD80\uBAA8 \uC815\uB82C\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4: ${errorMessage(error)}`);
           }
         }
-        if (autoParent && parent && parentParsed && ["flex", "inline-flex"].includes(parentParsed.layout.display)) {
+        if (autoParent && !parsed.source?.synthetic && parent && parentParsed && ["flex", "inline-flex"].includes(parentParsed.layout.display)) {
           const target = alignmentIntent(parsed.layout.alignSelf);
           if (target && target !== (parent.counterAxisAlignItems || "MIN") && !alignment) warn("ALIGN_SELF", parsed.name, "Wrap \uB610\uB294 Cross-axis Hug\uC5D0\uC11C \uAC1C\uBCC4 align-self\uB97C \uC548\uC804\uD558\uAC8C \uD45C\uD604\uD560 \uC218 \uC5C6\uC5B4 \uBD80\uBAA8 \uC815\uB82C\uC744 \uC720\uC9C0\uD588\uC2B5\uB2C8\uB2E4.");
         }
@@ -988,7 +988,9 @@ reason: ${entry.reason}`);
           }
           for (const child of children) {
             try {
-              const nativeChild = plainText || centeredStack ? { ...child, size: { ...child.size, widthMode: "FILL" } } : child;
+              let nativeChild = plainText || centeredStack ? { ...child, size: { ...child.size, widthMode: "FILL" } } : child;
+              if (child.type === "TEXT" && child.name === `${parsed.name} / text` && child.source?.selector === parsed.source?.selector)
+                nativeChild = { ...nativeChild, layout: { ...nativeChild.layout, alignSelf: "auto" } };
               childNodes.push({ parsed: child, node: await create(nativeChild, node, nativeParsed, alignmentContext) });
             } catch (error) {
               if (cancelled2()) throw error;

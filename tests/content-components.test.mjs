@@ -208,7 +208,8 @@ test('Only approved atomic components change against d1d9cf6; every ancestor and
     const rows=new Set(nodes(doc.root).filter(n=>n.layout.wrapSpacing!==undefined&&n.children.some(child=>child.layout.contentComponent)).map(n=>n.layerName||n.name));
     assert.deepEqual(restoreComponentSnapshot(snapshot(after.frame),snapshot(before.frame),components,rows),snapshot(before.frame),`${file}: full tree outside component/verified chip-row layout`);
     assert.deepEqual(after.svgImports,before.svgImports);assert.deepEqual(after.images,before.images);
-    for(const key of ['total','frames','text','image','grid','svg','absolute']) assert.equal(after.report[key],before.report[key]);
+    const alignmentHelpers=flatten(after.frame).filter(n=>n.getPluginData('html-alignment-wrapper')==='true').length;
+    for(const key of ['total','frames','text','image','grid','svg','absolute']) assert.equal(after.report[key]-(key==='total'||key==='frames'?alignmentHelpers:0),before.report[key]);
     outcomes.push({file,components:components.size,nodes:after.report.total,unchangedAncestors:true,paintsNamesRangesAssetsEqual:true});
   }
   evidence.regression=outcomes;

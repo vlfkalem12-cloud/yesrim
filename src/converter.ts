@@ -618,7 +618,7 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
           warn('ALIGN_SELF', parsed.name, `개별 정렬 Auto Layout을 적용하지 못해 기존 부모 정렬을 유지합니다: ${errorMessage(error)}`);
         }
       }
-      if (autoParent && parent && parentParsed && ['flex', 'inline-flex'].includes(parentParsed.layout.display)) {
+      if (autoParent && !parsed.source?.synthetic && parent && parentParsed && ['flex', 'inline-flex'].includes(parentParsed.layout.display)) {
         const target = alignmentIntent(parsed.layout.alignSelf);
         if (target && target !== (parent.counterAxisAlignItems || 'MIN') && !alignment) warn('ALIGN_SELF', parsed.name, 'Wrap 또는 Cross-axis Hug에서 개별 align-self를 안전하게 표현할 수 없어 부모 정렬을 유지했습니다.');
       }
@@ -640,7 +640,11 @@ export async function convertDocument(doc: ParsedDocument, onProgress: (count: n
         }
         for (const child of children) {
           try {
-            const nativeChild = (plainText || centeredStack) ? { ...child, size: { ...child.size, widthMode: 'FILL' as const } } : child;
+            let nativeChild = (plainText || centeredStack) ? { ...child, size: { ...child.size, widthMode: 'FILL' as const } } : child;
+            // Decorated TEXT_TAGS create an inner Text by cloning the element.
+            // Its align-self belongs to the outer element, not this anonymous content.
+            if (child.type === 'TEXT' && child.name === `${parsed.name} / text` && child.source?.selector === parsed.source?.selector)
+              nativeChild = { ...nativeChild, layout: { ...nativeChild.layout, alignSelf: 'auto' } };
             childNodes.push({ parsed: child, node: await create(nativeChild, node, nativeParsed, alignmentContext) });
           }
           catch (error) {

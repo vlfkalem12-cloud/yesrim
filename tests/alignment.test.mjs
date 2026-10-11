@@ -159,10 +159,19 @@ test('4304645 protection: full IR, source nodes, paints, names, text/ranges and 
   const mock=createFigmaMock();globalThis.figma=mock.figma;const current=await converter.convertDocument(doc);
   assert.deepEqual(snapshot(current.frame),snapshot(prior.frame),`${file}: every existing API property/name/paint/range`);
   assert.deepEqual(mock.svgImports,priorMock.svgImports);assert.deepEqual(mock.images,priorMock.images);assert.deepEqual(mock.fontLoads,priorMock.fontLoads);
-  const helpers=flatten(current.frame).filter(n=>n.getPluginData('html-alignment-wrapper')==='true');assert.equal(helpers.length,file.includes('09-01_A-pc-list')?2:0);
+  const helpers=flatten(current.frame).filter(n=>n.getPluginData('html-alignment-wrapper')==='true');assert.equal(helpers.length,file.includes('09-01_A-pc-list')?1:0);
   const warnings=report=>report.warnings.filter(w=>w.code!=='ALIGN_SELF');assert.deepEqual(warnings(current.report),warnings(prior.report),`${file}: non-alignment warnings`);
   for(const key of ['text','image','grid','absolute','svg'])assert.equal(current.report[key],prior.report[key],`${file}: ${key} count`);
   evidence.push({file,nodesBefore:prior.report.total,nodesAfter:current.report.total,alignmentHelpers:helpers.length,entireIRIdentical:true,existingNodesAndAssetsIdentical:true,alignmentWarningsBefore:prior.report.warnings.filter(w=>w.code==='ALIGN_SELF').length,alignmentWarningsAfter:current.report.warnings.filter(w=>w.code==='ALIGN_SELF').length});
  }
  await writeFile('test-results/alignment-regression.json',JSON.stringify({baseline:'4304645',evidence,note:'Current converter tested directly. Only tagged transparent alignment helpers are excluded from source-tree equality; all non-alignment warnings are compared. Native Figma editing not executed.'},null,2));
+});
+
+
+test('Anonymous Text copied from an align-self element inherits its own container alignment instead of generating another helper',async()=>{
+ const {doc}=await parse('<style>body{margin:0}</style><main style="display:flex;flex-direction:column;width:360px"><span style="align-self:flex-start;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border:1px solid red">이 항목 AI에게 묻기</span></main>');
+ const result=await convert(doc,converter,{simulateAlignment:true});
+ assert.ok(!flatten(result.frame).some(n=>n.getPluginData('html-alignment-wrapper')));
+ const text=flatten(result.frame).find(n=>n.type==='TEXT');assert.equal(text.parent.counterAxisAlignItems,'CENTER');
+ assert.ok(!result.report.warnings.some(w=>w.code==='ALIGN_SELF'));
 });
