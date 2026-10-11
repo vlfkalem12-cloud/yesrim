@@ -34,15 +34,17 @@ npm run dev
 3. **Figma로 변환**을 클릭합니다.
 4. 현재 viewport 중앙에 생성된 최상위 Frame을 확인합니다. HTML 정보에 따라 `Page`, `Dashboard`, `Main` 등의 이름을 사용하고, 정보가 없으면 `Imported HTML`을 사용합니다. 자동 선택 및 화면 맞춤이 적용됩니다.
 5. Layers에서 Header / Navigation, Section / Hero, Card / 제목, Button / 표시 텍스트를 탐색합니다. Text 내용, Auto Layout 방향·gap·padding, 카드 배경·border·radius를 직접 편집해 보세요. 텍스트의 기본 CSS margin을 표현하는 Margin Frame도 유지됩니다.
-6. UI에서 파일명, Figma 결과 Frame 생성 여부와 경고를 확인합니다. 경고는 원인별로 묶고 반복 횟수·대표 위치를 표시하며 **상세 내용 보기**는 처음에 접혀 있습니다. 기존 Node 통계와 생성 시간은 **생성된 레이어 통계**에서 확인합니다. **JSON 저장**은 변환에 사용한 중간 데이터를 저장합니다. Debug Mode에서는 플러그인 UI 콘솔에도 동일한 데이터가 출력됩니다.
+6. UI에서 파일명, Figma 결과 Frame 생성 여부와 경고를 확인합니다. 경고는 원인별로 묶고 반복 횟수·대표 위치를 표시하며 **상세 내용 보기**는 처음에 접혀 있습니다. 기존 Node 통계와 생성 시간은 **생성된 레이어 통계**에서 확인합니다. **개발자 옵션 → 변환 데이터(JSON) 다운로드**는 현재 선택한 파일의 실제 분석 데이터를 저장합니다. Debug Mode의 콘솔에는 파일 식별자·version·용량 등의 metadata가 출력됩니다.
 
 변환 상태는 idle → converting → success / error로 관리합니다. 생성 완료 또는 오류 후 Loading이 종료되고 파일 선택·Convert·Drag & Drop이 다시 활성화됩니다. 같은 HTML 파일도 연속으로 선택하거나 바로 다시 변환할 수 있으며 플러그인을 닫을 필요가 없습니다. 새 HTML 파일을 선택하면 idle 상태로 초기화됩니다. 완료 보고서 표시 오류가 있어도 다음 변환은 가능합니다.
 
-Conversion Report는 **SUCCESS / SUCCESS_WITH_WARNINGS / ERROR**를 구분합니다. 경고가 있어도 결과 Frame 생성에 성공하면 완료로 표시하고, 루트 생성 실패는 기존 정리 후 실패로 표시합니다. 외부 리소스, 지원하지 않는 스타일, 글꼴 대체, 이미지·SVG 오류, 크기 대체와 기타 생략을 구분합니다. 동일 원인은 한 경고로 묶고 발생 횟수를 별도로 표시합니다. 정상 Fixed/Absolute 매핑과 Debug 기록은 경고 수에 포함하지 않습니다. Debug Mode의 raw 기록은 별도 접힌 **Debug 정보**에서 확인합니다. 기존 Request ID 제어를 유지하며 새 파일/변환에는 이전 결과를 표시하지 않습니다. 감지 범위·한계·메시지 구조와 검증은 [Conversion Report 문서](docs/conversion-report.md)에 정리했습니다.
+Conversion Report는 **SUCCESS / SUCCESS_WITH_WARNINGS / ERROR**를 구분합니다. 경고가 있어도 결과 Frame 생성에 성공하면 완료로 표시하고, 루트 생성 실패는 기존 정리 후 실패로 표시합니다. 외부 리소스, 지원하지 않는 스타일, 글꼴 대체, 이미지·SVG 오류, 크기 대체와 기타 생략을 구분합니다. 동일 원인은 한 경고로 묶고 발생 횟수를 별도로 표시합니다. 정상 Fixed/Absolute 매핑과 Debug 기록은 경고 수에 포함하지 않습니다. Debug Mode의 raw 기록은 접힌 **개발자 옵션 → Debug 정보**에서 확인합니다. 기존 Request ID 제어를 유지하며 새 파일/변환에는 이전 결과를 표시하지 않습니다. 감지 범위·한계·메시지 구조와 검증은 [Conversion Report 문서](docs/conversion-report.md)에 정리했습니다.
 
 배경/Border와 Padding이 있는 단순한 한 줄 Chip / Badge / Button은 기존 Frame + Text 구조 안에서 선택적으로 **Horizontal / Width Hug / Height Hug / Center**로 변환합니다. Flex item의 blockification으로 `span`의 computed display가 block이 된 경우도 지원합니다. 기존 Auto Layout, 명시적 크기, Fill, min/max와 multiline, Absolute/Fixed, Rich Text range는 유지합니다. 승인된 칩을 포함하며 원본의 행 배치가 검증된 Flex Wrap만 native Wrap으로 연결해 칩 폭·행 높이 변화를 전파합니다. Wrapper 추가/제거와 Naming 변경은 없습니다. `test/content-components-regression.html`과 실제 원본으로 확인할 수 있으며 [판별 기준·이전/수정 속성·검증 한계](docs/content-components.md)를 정리했습니다.
 
-HTML을 최대 **10개**까지 선택하면 목록 순서대로 기존 단일 엔진을 실행합니다. 각 파일은 독립 Frame/Report를 가지며 한 파일이 실패해도 다음 파일을 계속 처리합니다. 성공 Frame은 실제 폭 기준으로 **120px 간격**을 두고 가로 배치합니다. 전체 결과는 정상 완료·경고 포함 완료·실패 수를 표시하고 목록에서 각 Report를 열 수 있습니다. 11개 이상 또는 잘못된 교체 업로드는 안내 후 기존 유효 선택을 유지합니다. 공통 Viewport를 기본으로 사용하며, 목록의 **Viewport 지정**에서 필요한 파일만 너비·높이를 따로 입력할 수 있습니다. 같은 파일/Batch 재실행, 이전 요청 무시, 전체 취소 후 재실행을 지원합니다. 변경 구조·메시지·메모리 정책·자동/수동 검증 구분은 [Batch Conversion 문서](docs/batch-conversion.md)에 정리했습니다.
+HTML을 최대 **10개**까지 선택하면 목록 순서대로 기존 단일 엔진을 실행합니다. 각 파일은 독립 Frame/Report를 가지며 한 파일이 실패해도 다음 파일을 계속 처리합니다. 성공 Frame은 실제 폭 기준으로 **120px 간격**을 두고 가로 배치합니다. 전체 결과는 정상 완료·경고 포함 완료·실패 수를 표시하고 목록에서 각 Report를 열 수 있습니다. 11개 이상 또는 잘못된 교체 업로드는 안내 후 기존 유효 선택을 유지합니다. 공통 Viewport를 기본으로 사용하며, 목록의 **파일별 설정**에서 필요한 파일만 너비·높이를 따로 입력할 수 있습니다. 같은 파일/Batch 재실행, 이전 요청 무시, 전체 취소 후 재실행을 지원합니다. 변경 구조·메시지·메모리 정책·자동/수동 검증 구분은 [Batch Conversion 문서](docs/batch-conversion.md)에 정리했습니다.
+
+목록의 **위로/아래로·삭제·전체 삭제**로 파일을 관리합니다. 완료 후에도 사용 가능하며, 생성된 Canvas는 유지합니다. **결과 보기**는 Item ID로 Report와 JSON을 선택하고, 최초 완료 시 첫 번째 결과를 표시합니다. 파일별 이미지와 JSON은 서로 격리됩니다. 업로드 오류는 업로드 영역 바로 아래 표시하며 기존 목록을 보호합니다. 정책·소스 변경·메모리 측정·원본 파일 제외·수동 확인 항목은 [Batch 파일 관리 문서](docs/batch-file-management.md)에 정리했습니다.
 
 Viewport 너비와 높이를 **1~10,000px의 정수**로 직접 입력할 수 있습니다. `ViewportPreset` 타입과 `VIEWPORT_PRESETS`는 문서 크기와 분리된 너비·높이 쌍입니다. 기본값은 Desktop 1440의 1440 × 900px입니다. Desktop 1280은 1280 × 800, Tablet 768은 768 × 1024, Mobile 375는 375 × 812로 설정됩니다. 프리셋 선택 시 두 값이 함께 적용되며, 직접 입력한 너비·높이가 프리셋과 모두 일치할 때만 해당 프리셋으로 표시합니다.
 
@@ -104,7 +106,7 @@ Wrap은 가로 row / 기본 wrap / 고정된 자식 폭 / margin 없음이며 �
 
 실제 1920px 원본에서 scrollbar 공간 때문에 DOM 폭이 1905px가 되는 경우, 기존 viewport 보호 검사가 검증된 중앙 정렬 Block을 NONE/Fixed로 되돌리는 경로를 재현했습니다. 해당 폭 차이가 실제 gutter와 일치하고 고정 폭 자식이 들어가는 경우에만 기존 Vertical/Hug를 유지합니다. Tax Section Width 1920 Fill, padding 96/40, Inner max-width 1280와 중앙 정렬, gap 52, 기존 3열 Wrap을 유지합니다. 명시적 CSS 폭 충돌과 복잡한 flow는 기존 fallback을 유지합니다. [1920px NONE/Fixed 수정 보고서](docs/viewport-block-hug-report.md)에 원인 경로와 생성 속성, 실제 Figma 수동 확인을 구분했습니다.
 
-상대 경로 이미지는 **이미지 파일 추가 (선택)**에서 추가할 수 있습니다. HTML의 `images/banner.png`와 선택한 파일의 이름 `banner.png`를 연결합니다. 같은 파일명이 여러 개면 임의로 선택하지 않고 경고합니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
+상대 경로 이미지는 각 HTML 행의 **파일별 설정 → 로컬 이미지 연결 (선택)**에서 추가합니다. HTML의 경로와 첨부 이미지의 지정 경로가 일치하면 우선 연결하며, 경로가 없으면 `images/banner.png`와 유일한 파일명 `banner.png`를 연결합니다. 같은 이름의 후보가 여러 개면 임의로 선택하지 않습니다. 외부 CSS·로컬 폰트 파일은 이 선택 기능에 포함되지 않습니다.
 
 ## 구현 구조
 
@@ -240,3 +242,6 @@ Conversion Report 작업의 검증은 141개 중 140개 테스트 통과, 실패
 Chip / Badge / Button 후속 작업의 최신 검증은 TypeScript 검사·빌드 통과, 전체 149개 중 148개 통과·실패 0개·조건부 skip 1개입니다. 컴포넌트 테스트 8개, 현재 UI/Main의 Report/lifecycle 24개, 원본의 기존 6→7→6·Text 성장·Height 전파 테스트를 모두 실행했습니다. `COMPONENT_BASELINE_SRC`에 직전 `d1d9cf6` source를 지정해 12개 HTML의 승인된 atomic/칩 행 전환 이외의 전체 IR·API tree·paint/name/range/Wrapper·asset bytes를 비교했습니다. 기존 Report 단계의 `be2d331` 비교는 `REPORT_IMPLEMENTATION_SRC`에 `d1d9cf6` source를 지정해 그 단계의 엔진 동일성 증거를 유지합니다. `test-results/content-components.json`에 초기 19개 컴포넌트 박스·Tax의 5개 승인 칩 행 좌표·모의 폭 편집과 회귀 비교 결과를 저장했습니다. 실제 native Figma 텍스트 편집·font metrics는 수동 확인 대상입니다.
 
 Batch Conversion의 최신 검증은 TypeScript 검사·빌드 통과, 전체 **164개 중 163개 통과·실패 0개·조건부 skip 1개**입니다. Batch 테스트 15개와 현재 UI/Main lifecycle 20개, 기존 Layout/Sizing/Form/SVG/Gradient/Report/Content Component 테스트를 실행했습니다. `BATCH_BASELINE_SRC`에 안정화 `6b49a83` source를 지정해 실제 원본을 포함한 12개 HTML의 Batch 결과를 이전 단일 Main과 비교했고, 최상위 Canvas 좌표·실행 시간·API 객체 식별자·mock 전용 폰트 누적 기록을 제외한 내부 tree/getter sizing/Range/paint/name/이미지 bytes/SVG/폰트 로딩/Report가 동일했습니다. 원본 `09-01_A-pc-list.html`은 291개 Node를 유지했습니다. 이전 컴포넌트 단계의 source 증거는 `COMPONENT_IMPLEMENTATION_SRC`에 `6b49a83`를 지정해 보존했고 현재 엔진은 Batch의 바이트 비교와 전체 기존 테스트에서 검증했습니다. 산출물은 `test-results/batch-regression.json`과 `test-results/batch-ui.png`입니다. 이는 Chromium + Figma API mock 자동 검증이며 실제 Figma Editor의 반복 Batch·native Text 편집·Hug/Wrap/시각적 비교는 수동 확인이 필요합니다.
+
+
+Batch 파일 관리 후속 검증은 TypeScript·build 통과, 전체 **180개 중 179개 통과·실패 0개·기존 조건부 skip 1개**입니다. 신규 UX 16개와 기존 163개를 모두 실행했습니다. `c993265` 대비 현재 Parser의 전체 IR와 최종 Node tree·paint·Range·SVG·이미지 bytes가 12개 HTML에서 동일했습니다. 10개 이미지 파일의 Chromium heap과 snapshot 보관량도 측정했습니다. 잘못 전달해 제외 요청한 모바일 두 첨부는 테스트나 커밋에 포함하지 않았습니다. 올바른 원본 기반 비교와 실제 Figma Editor 수동 확인은 남아 있으며, [상세 정책·측정 결과·검증 기록](docs/batch-file-management.md)을 참고하세요.

@@ -1,0 +1,18 @@
+{
+  "tests": 180,
+  "pass": 179,
+  "fail": 0,
+  "skipped": 1,
+  "skipReason": "Existing pre-Rich-Text conditional comparison; no new UX test skipped",
+  "newUXTests": 16,
+  "typecheck": "passed",
+  "build": "passed",
+  "baseline": "c993265",
+  "nativeFigmaEditorTested": false,
+  "excludedUploads": [
+    "A03-02_B3-switch.html",
+    "A03-03_A3-propose.html"
+  ],
+  "comparisonFiles": 12,
+  "method": "Chromium UI, actual parser and Main, Figma Plugin API mock"
+}

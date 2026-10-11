@@ -1,0 +1,78 @@
+{
+  "baseline": "c993265",
+  "evidence": [
+    {
+      "file": "test/actual/09-01_A-pc-list.html",
+      "nodes": 291,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "examples/mvp.html",
+      "nodes": 30,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/dashboard-rendering-regression.html",
+      "nodes": 54,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/form-controls-regression.html",
+      "nodes": 73,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/fixed-position-regression.html",
+      "nodes": 38,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/phase2-test.html",
+      "nodes": 87,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/rendering-regression.html",
+      "nodes": 51,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/gradient-regression.html",
+      "nodes": 26,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/inline-accessibility-regression.html",
+      "nodes": 44,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/layer-naming-regression.html",
+      "nodes": 68,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/rich-text-regression.html",
+      "nodes": 49,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    },
+    {
+      "file": "test/content-components-regression.html",
+      "nodes": 33,
+      "entireIRIdentical": true,
+      "finalTreeIdentical": true
+    }
+  ],
+  "note": "Chromium + Figma API mock; user-excluded mobile attachments are not used; native Figma edits require manual checks"
+}

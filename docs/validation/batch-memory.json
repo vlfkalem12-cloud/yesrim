@@ -1,0 +1,31 @@
+{
+  "files": 10,
+  "sourceImageBytesPerFile": 225872,
+  "empty": {
+    "usedSize": 1823088,
+    "totalSize": 2920448,
+    "embedderHeapUsedSize": 688800,
+    "backingStorageSize": 170922
+  },
+  "attached": {
+    "usedSize": 2571316,
+    "totalSize": 3481600,
+    "embedderHeapUsedSize": 2328056,
+    "backingStorageSize": 473328
+  },
+  "sampledPeakJSHeapBytes": 31360076,
+  "converted": {
+    "usedSize": 4204944,
+    "totalSize": 4603904,
+    "embedderHeapUsedSize": 2377136,
+    "backingStorageSize": 475002
+  },
+  "storageText": "JSON 보관 합계: 5879.3 KB",
+  "cleared": {
+    "usedSize": 4215344,
+    "totalSize": 4866048,
+    "embedderHeapUsedSize": 1152808,
+    "backingStorageSize": 475013
+  },
+  "note": "Chromium renderer heap after forced GC and sampled conversion peak; excludes native Figma Canvas. Native Blob storage is separately counted. This 256px fixture is not a worst-case 10×16MB guarantee."
+}
