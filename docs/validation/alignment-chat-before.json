@@ -1,0 +1,49 @@
+{
+  "baseline": "4304645",
+  "userBubble": {
+    "name": "Container / 2019년에 산 아파트를 팔았는데 세금이 얼마예요?",
+    "layoutMode": "NONE",
+    "widthMode": "FIXED",
+    "heightMode": "FIXED",
+    "width": 273.265625,
+    "height": 60,
+    "x": 16,
+    "y": 363.984375
+  },
+  "conversation": {
+    "name": "Container",
+    "layoutMode": "VERTICAL",
+    "widthMode": "FILL",
+    "heightMode": "FILL",
+    "primaryAlign": "MAX",
+    "counterAlign": "MIN",
+    "width": 360,
+    "height": 614,
+    "x": 0,
+    "y": 84
+  },
+  "centeredText": {
+    "name": "AI 상담 답변은 참고용이며, [서비스명]의 공적 견해표명 및 유권해석…",
+    "layoutMode": "NONE",
+    "widthMode": "FIXED",
+    "heightMode": "HUG",
+    "textAlign": "CENTER",
+    "width": 312,
+    "height": 54,
+    "x": 24,
+    "y": 8
+  },
+  "composer": {
+    "name": "Container",
+    "layoutMode": "VERTICAL",
+    "widthMode": "FILL",
+    "heightMode": "HUG",
+    "primaryAlign": "MIN",
+    "counterAlign": "CENTER",
+    "width": 360,
+    "height": 120,
+    "x": 0,
+    "y": 698
+  },
+  "note": "Frozen pre-fix converter + Chromium IR + box mock; not native Figma Editor"
+}

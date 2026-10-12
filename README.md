@@ -245,3 +245,8 @@ Batch Conversion의 최신 검증은 TypeScript 검사·빌드 통과, 전체 **
 
 
 Batch 파일 관리 후속 검증은 TypeScript·build 통과, 전체 **180개 중 179개 통과·실패 0개·기존 조건부 skip 1개**입니다. 신규 UX 16개와 기존 163개를 모두 실행했습니다. `c993265` 대비 현재 Parser의 전체 IR와 최종 Node tree·paint·Range·SVG·이미지 bytes가 12개 HTML에서 동일했습니다. 10개 이미지 파일의 Chromium heap과 snapshot 보관량도 측정했습니다. 잘못 전달해 제외 요청한 모바일 두 첨부는 테스트나 커밋에 포함하지 않았습니다. 올바른 원본 기반 비교와 실제 Figma Editor 수동 확인은 남아 있으며, [상세 정책·측정 결과·검증 기록](docs/batch-file-management.md)을 참고하세요.
+
+
+Alignment Fidelity 후속 작업은 `align-self:center/flex-start/flex-end`를 필요한 투명 Native Auto Layout span으로 연결합니다. 바텀시트의 기존 Margin Frame을 Fill/Hug/CENTER로 재사용하며, 채팅의 단순 말풍선 Text 높이와 중앙 안내문 폭 변경을 전파합니다. 기존 space-between/flex-end/align-items/text-align 매핑은 유지합니다. Frame/JSON Naming·Batch UX 정책 변경은 없습니다. [원인·최종 속성·자동/수동 검증 및 한계](docs/alignment-fidelity.md)를 참고하세요.
+
+Alignment 최종 검증은 TypeScript·build 통과, 전체 **191개 중 190개 통과·실패 0개·기존 조건부 skip 1개**입니다. 신규 정렬 11개, 기존 Native box/layout·UI/Main·Batch·Nested Hug·Chip·Rich Text·SVG/Form 테스트를 실행했습니다. 원본 두 파일은 업로드와 SHA-256이 같고, 실제 Figma Editor의 폰트 편집·시각적 비교는 수동 확인 항목으로 남겼습니다.

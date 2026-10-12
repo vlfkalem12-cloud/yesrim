@@ -1,0 +1,21 @@
+{
+  "baseline": "4304645",
+  "tests": 191,
+  "passed": 190,
+  "failed": 0,
+  "skipped": 1,
+  "newAlignmentTests": 11,
+  "skipReason": "Existing conditional pre-Rich-Text comparison",
+  "typecheck": "passed",
+  "build": "passed",
+  "nativeFigmaEditorTested": false,
+  "originalFilesUnchanged": true,
+  "comparisonFiles": 12,
+  "unchangedSourceNodeCounts": {
+    "09-01_A-pc-list.html": 291
+  },
+  "addedAlignmentHelpers": {
+    "09-01_A-pc-list.html": 1
+  },
+  "historicalBatchIdentityProofMain": "4304645; current functionality and alignment delta tested separately"
+}

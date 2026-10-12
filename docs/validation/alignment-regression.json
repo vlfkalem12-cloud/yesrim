@@ -1,0 +1,126 @@
+{
+  "baseline": "4304645",
+  "evidence": [
+    {
+      "file": "test/actual/09-01_A-pc-list.html",
+      "nodesBefore": 291,
+      "nodesAfter": 292,
+      "alignmentHelpers": 1,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 2,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "examples/mvp.html",
+      "nodesBefore": 30,
+      "nodesAfter": 30,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/dashboard-rendering-regression.html",
+      "nodesBefore": 54,
+      "nodesAfter": 54,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/form-controls-regression.html",
+      "nodesBefore": 73,
+      "nodesAfter": 73,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/fixed-position-regression.html",
+      "nodesBefore": 38,
+      "nodesAfter": 38,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/phase2-test.html",
+      "nodesBefore": 87,
+      "nodesAfter": 87,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/rendering-regression.html",
+      "nodesBefore": 51,
+      "nodesAfter": 51,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/gradient-regression.html",
+      "nodesBefore": 26,
+      "nodesAfter": 26,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/inline-accessibility-regression.html",
+      "nodesBefore": 44,
+      "nodesAfter": 44,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/layer-naming-regression.html",
+      "nodesBefore": 68,
+      "nodesAfter": 68,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/rich-text-regression.html",
+      "nodesBefore": 49,
+      "nodesAfter": 49,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    },
+    {
+      "file": "test/content-components-regression.html",
+      "nodesBefore": 33,
+      "nodesAfter": 33,
+      "alignmentHelpers": 0,
+      "entireIRIdentical": true,
+      "existingNodesAndAssetsIdentical": true,
+      "alignmentWarningsBefore": 0,
+      "alignmentWarningsAfter": 0
+    }
+  ],
+  "note": "Current converter tested directly. Only tagged transparent alignment helpers are excluded from source-tree equality; all non-alignment warnings are compared. Native Figma editing not executed."
+}

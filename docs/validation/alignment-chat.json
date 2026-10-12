@@ -1,0 +1,280 @@
+{
+  "computed": {
+    "tag": "div",
+    "text": "2019년에 산 아파트를 팔았는데 세금이 얼마예요?",
+    "rect": {
+      "x": 70.734375,
+      "y": 447.984375,
+      "width": 273.265625,
+      "height": 60
+    },
+    "alignSelf": "flex-end",
+    "justify": "normal",
+    "align": "normal",
+    "textAlign": "start"
+  },
+  "ir": {
+    "alignSelf": "flex-end",
+    "justify": "MAX",
+    "textAlign": "center"
+  },
+  "before": {
+    "bubble": {
+      "name": "Container / 2019년에 산 아파트를 팔았는데 세금이 얼마예요?",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FIXED",
+      "heightMode": "HUG",
+      "primaryAlign": "MIN",
+      "counterAlign": "MIN",
+      "width": 273.265625,
+      "height": 59,
+      "x": 54.734375,
+      "y": 0
+    },
+    "helper": {
+      "name": "Alignment",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FILL",
+      "heightMode": "HUG",
+      "primaryAlign": "MIN",
+      "counterAlign": "MAX",
+      "width": 328,
+      "height": 59,
+      "x": 16,
+      "y": 367.65625
+    },
+    "conversation": {
+      "name": "Container",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FILL",
+      "heightMode": "FILL",
+      "primaryAlign": "MAX",
+      "counterAlign": "MIN",
+      "width": 360,
+      "height": 614,
+      "x": 0,
+      "y": 84
+    },
+    "assistant": {
+      "name": "Container",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FIXED",
+      "heightMode": "HUG",
+      "primaryAlign": "MIN",
+      "counterAlign": "MIN",
+      "width": 288.625,
+      "height": 113.34375,
+      "x": 16,
+      "y": 440.65625
+    },
+    "composer": {
+      "name": "Container",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FILL",
+      "heightMode": "HUG",
+      "primaryAlign": "MIN",
+      "counterAlign": "MIN",
+      "width": 360,
+      "height": 120,
+      "x": 0,
+      "y": 698
+    },
+    "centerText": {
+      "name": "AI 상담 답변은 참고용이며, [서비스명]의 공적 견해표명 및 유권해석…",
+      "layoutMode": "NONE",
+      "widthMode": "FILL",
+      "heightMode": "HUG",
+      "width": 312,
+      "height": 54,
+      "x": 10,
+      "y": 0,
+      "textAlign": "CENTER"
+    }
+  },
+  "edited": {
+    "bubble": {
+      "name": "Container / 2019년에 산 아파트를 팔았는데 세금이 얼마예요?",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FIXED",
+      "heightMode": "HUG",
+      "primaryAlign": "MIN",
+      "counterAlign": "MIN",
+      "width": 273.265625,
+      "height": 101,
+      "x": 114.734375,
+      "y": 0
+    },
+    "conversation": {
+      "name": "Container",
+      "layoutMode": "VERTICAL",
+      "widthMode": "FILL",
+      "heightMode": "FILL",
+      "primaryAlign": "MAX",
+      "counterAlign": "MIN",
+      "width": 420,
+      "height": 596,
+      "x": 0,
+      "y": 84
+    },
+    "centerText": {
+      "name": "AI 상담 답변은 참고용이며, [서비스명]의 공적 견해표명 및 유권해석…",
+      "layoutMode": "NONE",
+      "widthMode": "FILL",
+      "heightMode": "HUG",
+      "width": 372,
+      "height": 72,
+      "x": 10,
+      "y": 0
+    }
+  },
+  "reportWarnings": [
+    {
+      "code": "STYLESHEET_LOAD",
+      "node": "document",
+      "message": "외부 CSS를 불러오지 못했습니다: https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap",
+      "element": "link",
+      "detail": {
+        "resource": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap",
+        "resourceType": "stylesheet"
+      },
+      "category": "Layout"
+    },
+    {
+      "code": "FLEX_WRAP",
+      "node": "div",
+      "message": "여러 줄 Flexbox는 측정된 고정 위치로 유지했습니다.",
+      "category": "Layout",
+      "element": "div"
+    },
+    {
+      "code": "INLINE_TEXT",
+      "node": "p",
+      "message": "여러 inline 텍스트 스타일을 부모의 스타일로 통합했습니다.",
+      "category": "Layout",
+      "element": "p"
+    },
+    {
+      "code": "ABSOLUTE_ELEMENT",
+      "node": "div",
+      "message": "절대 위치를 유지하고 Auto Layout 흐름에서 분리했습니다.",
+      "category": "Layout",
+      "element": "div"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "span",
+      "message": "IBM Plex Sans KR, sans-serif 600 → Inter Bold",
+      "element": "span",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 600,
+        "originalStyle": "normal",
+        "fallbackFont": "Inter",
+        "fallbackStyle": "Bold"
+      },
+      "category": "Fonts"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "span / text",
+      "message": "IBM Plex Sans KR, sans-serif 600 → Noto Sans KR Bold",
+      "element": "span",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 600,
+        "originalStyle": "normal",
+        "fallbackFont": "Noto Sans KR",
+        "fallbackStyle": "Bold"
+      },
+      "category": "Fonts"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "a / text",
+      "message": "IBM Plex Sans KR, sans-serif 600 → Inter Bold",
+      "element": "a / text",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 600,
+        "originalStyle": "normal",
+        "fallbackFont": "Inter",
+        "fallbackStyle": "Bold"
+      },
+      "category": "Fonts"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "div / text",
+      "message": "IBM Plex Sans KR, sans-serif 400 → Noto Sans KR Regular",
+      "element": "div / text",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 400,
+        "originalStyle": "normal",
+        "fallbackFont": "Noto Sans KR",
+        "fallbackStyle": "Regular"
+      },
+      "occurrences": 2,
+      "locations": [
+        "div / text"
+      ],
+      "category": "Fonts"
+    },
+    {
+      "code": "SIZING_CYCLE",
+      "node": "div",
+      "message": "Hug 부모와 Fill 자식의 순환 크기를 피하려고 부모의 측정 치수를 고정했습니다.",
+      "occurrences": 2,
+      "category": "Layout",
+      "element": "div"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "a / text",
+      "message": "IBM Plex Sans KR, sans-serif 400 → Noto Sans KR Regular",
+      "element": "a",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 400,
+        "originalStyle": "normal",
+        "fallbackFont": "Noto Sans KR",
+        "fallbackStyle": "Regular"
+      },
+      "occurrences": 2,
+      "locations": [
+        "a"
+      ],
+      "category": "Fonts"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "p",
+      "message": "IBM Plex Sans KR, sans-serif 400 → Noto Sans KR Regular",
+      "element": "p",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 400,
+        "originalStyle": "normal",
+        "fallbackFont": "Noto Sans KR",
+        "fallbackStyle": "Regular"
+      },
+      "category": "Fonts"
+    },
+    {
+      "code": "FONT_REPLACED",
+      "node": "b3msg / text",
+      "message": "IBM Plex Sans KR, sans-serif 400 → Noto Sans KR Regular",
+      "element": "textarea#b3msg / text",
+      "detail": {
+        "originalFont": "IBM Plex Sans KR, sans-serif",
+        "originalWeight": 400,
+        "originalStyle": "normal",
+        "fallbackFont": "Noto Sans KR",
+        "fallbackStyle": "Regular"
+      },
+      "category": "Fonts"
+    }
+  ],
+  "nativeFigmaEditorTested": false,
+  "boxSimulationNotNativeTextEditing": true
+}
